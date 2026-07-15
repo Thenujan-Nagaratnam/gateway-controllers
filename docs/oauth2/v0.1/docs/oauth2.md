@@ -1,27 +1,30 @@
 ---
 title: "Overview"
 ---
-# OAuth2 Authentication
+# OAuth2
 
 ## Overview
 
-The **OAuth2 Authentication** policy authenticates outbound requests to an
-upstream backend using the
-[OAuth2 Client Credentials grant](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)
-before they are forwarded. The gateway acts as a confidential client: it
-exchanges a client ID and secret for a short-lived access token at a
+The **OAuth2** policy authenticates outbound requests to an upstream backend
+using OAuth2 before they are forwarded. The gateway acts as a confidential
+client: it exchanges credentials for a short-lived access token at a
 configured token endpoint, then injects the token as an
 `Authorization: Bearer` header on the proxied request.
 
 This is the policy to use when an upstream — an LLM provider, an internal
 service, or any backend fronted by a standard OAuth2 token endpoint — requires
-a bearer token obtained via client credentials rather than a static, pre-shared
-API key.
+a bearer token rather than a static, pre-shared API key.
+
+The grant used is selected via `grantType`. Only the
+[Client Credentials grant](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)
+(RFC 6749 §4.4) is implemented today, but `grantType` is already a first-class
+parameter so a future grant can be added without a breaking change to this
+policy's configuration shape.
 
 ## Features
 
 - OAuth2 Client Credentials grant (RFC 6749 §4.4) against any standard token
-  endpoint
+  endpoint, with `grantType` as an explicit, forward-compatible parameter
 - Configurable client authentication method: `client_secret_basic` (HTTP
   Basic auth on the token request) or `client_secret_post` (form-encoded
   body) — required, with no default, since identity providers disagree on
@@ -42,6 +45,7 @@ parameters.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
+| `grantType` | string | No | `client_credentials` | OAuth2 grant type. Only `client_credentials` is currently implemented. |
 | `tokenEndpoint` | string | Yes | | URL of the OAuth2 token endpoint this policy calls to obtain an access token. |
 | `clientId` | string | Yes | | OAuth2 client ID used to authenticate to the token endpoint. |
 | `clientSecret` | string | Yes | | OAuth2 client secret paired with `clientId`. |
@@ -58,8 +62,8 @@ parameters.
 Inside the `gateway/build.yaml`, ensure the policy module is added under `policies:`:
 
 ```yaml
-- name: oauth2-authentication
-  gomodule: github.com/wso2/gateway-controllers/policies/oauth2-authentication@v0
+- name: oauth2
+  gomodule: github.com/wso2/gateway-controllers/policies/oauth2@v0
 ```
 
 ## How It Works
@@ -68,11 +72,11 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
    inspection, so this policy processes the request-header phase only; the
    request body is never buffered by this policy.
 2. The policy retrieves the current access token from a token source built
-   once when the policy is instantiated. If a cached token is still valid, it
-   is reused with no network call. If it is missing or expired, the policy
-   calls the configured `tokenEndpoint` with the `client_credentials` grant,
-   using `clientId`/`clientSecret` presented per `clientAuthMethod`, and
-   caches the result.
+   once when the policy is instantiated, based on the configured `grantType`.
+   If a cached token is still valid, it is reused with no network call. If it
+   is missing or expired, the policy calls the configured `tokenEndpoint`
+   with the `client_credentials` grant, using `clientId`/`clientSecret`
+   presented per `clientAuthMethod`, and caches the result.
 3. The resulting `Authorization: Bearer <token>` header is set on the request
    before it is forwarded upstream.
 4. If the token cannot be obtained (network failure, invalid credentials, or
@@ -95,7 +99,7 @@ spec:
     main:
       url: https://my-resource.openai.azure.com
   policies:
-    - name: oauth2-authentication
+    - name: oauth2
       version: v0
       params:
         tokenEndpoint: https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token
@@ -109,13 +113,30 @@ spec:
 
 ```yaml
   policies:
-    - name: oauth2-authentication
+    - name: oauth2
       version: v0
       params:
         tokenEndpoint: https://auth.internal.example.com/oauth2/token
         clientId: gateway-llm-client
         clientSecret: s3cr3t-value
         scope: llm.invoke
+        clientAuthMethod: client_secret_basic
+```
+
+### Example 3: Explicit `grantType`
+
+`grantType` defaults to `client_credentials` when omitted, so Examples 1 and 2
+are equivalent to setting it explicitly:
+
+```yaml
+  policies:
+    - name: oauth2
+      version: v0
+      params:
+        grantType: client_credentials
+        tokenEndpoint: https://auth.internal.example.com/oauth2/token
+        clientId: gateway-llm-client
+        clientSecret: s3cr3t-value
         clientAuthMethod: client_secret_basic
 ```
 
@@ -127,6 +148,7 @@ All error responses are returned as JSON with `Content-Type: application/json`.
 |----------|--------|---------|
 | Token endpoint unreachable or returned an error (e.g. `invalid_client`) | 502 | `failed to authenticate request to upstream service` |
 | Token endpoint response missing an access token | 502 | `failed to authenticate request to upstream service` |
+| `grantType` set to an unimplemented value | Rejected at policy load (configuration error), not a runtime response | `'grantType' must be "client_credentials"` |
 
 **Example error body:**
 ```json
@@ -154,6 +176,6 @@ All error responses are returned as JSON with `Content-Type: application/json`.
 ## Gateway Module Reference
 
 ```yaml
-- name: oauth2-authentication
-  gomodule: github.com/wso2/gateway-controllers/policies/oauth2-authentication@v0
+- name: oauth2
+  gomodule: github.com/wso2/gateway-controllers/policies/oauth2@v0
 ```

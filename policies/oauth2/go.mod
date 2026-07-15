@@ -1,4 +1,4 @@
-module github.com/wso2/gateway-controllers/policies/oauth2-authentication
+module github.com/wso2/gateway-controllers/policies/oauth2
 
 go 1.26.5
 

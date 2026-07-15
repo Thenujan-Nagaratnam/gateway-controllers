@@ -57,7 +57,7 @@ All available policies, sorted alphabetically.
 | [Model Round Robin](./model-round-robin/v1.0/docs/model-round-robin.md) | AI | Implements round-robin load balancing for AI models. |
 | [Model Weighted Round Robin](./model-weighted-round-robin/v1.0/docs/model-weighted-round-robin.md) | AI | Implements weighted round-robin load balancing for AI models. |
 | [NeMo Guard Content Safety](./nvidia-nemoguard-content-safety/v0.9/docs/nvidia-nemoguard-content-safety.md) | Guardrails, AI | Validates request and/or response content using NVIDIA NeMo Guard (llama-3.1-nemoguard-8b-content-safety). |
-| [OAuth2 Authentication](./oauth2-authentication/v0.1/docs/oauth2-authentication.md) | Security, AI | Authenticates outbound requests to an upstream backend using the OAuth2 Client Credentials grant (RFC 6749 Section 4.4). |
+| [OAuth2](./oauth2/v0.2/docs/oauth2.md) | Security, AI | Authenticates outbound requests to an upstream backend using OAuth2. |
 | [Opaque Token Auth](./opaque-token-auth/v1.0/docs/opaque-token-authentication.md) | Security, AI | Validates opaque OAuth 2.0 access tokens via RFC 7662 token introspection. |
 | [PII Masking Regex](./pii-masking-regex/v1.0/docs/pii-masking-regex.md) | Guardrails, AI | Masks or redacts Personally Identifiable Information (PII) from request/response bodies using regex patterns. |
 | [Prompt Compressor](./prompt-compressor/v0.9/docs/prompt-compressor.md) | AI | Compresses selected prompt text in JSON request bodies before upstream LLM calls. |

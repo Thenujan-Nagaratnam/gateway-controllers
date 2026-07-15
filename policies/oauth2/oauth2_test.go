@@ -15,16 +15,18 @@
  *
  */
 
-package oauth2authentication
+package oauth2
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"golang.org/x/oauth2"
+	xoauth2 "golang.org/x/oauth2"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
@@ -51,8 +53,8 @@ func newRequestHeaderCtx() *policy.RequestHeaderContext {
 	}
 }
 
-func newTestPolicy() *OAuth2AuthenticationPolicy {
-	return &OAuth2AuthenticationPolicy{
+func newTestPolicy() *Policy {
+	return &Policy{
 		tokenEndpoint:    "https://idp.example.com/oauth2/token",
 		clientID:         "gateway-client",
 		clientAuthMethod: ClientAuthMethodBasic,
@@ -66,15 +68,166 @@ func TestGetPolicy_ValidParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	oa, ok := p.(*OAuth2AuthenticationPolicy)
+	oa, ok := p.(*Policy)
 	if !ok {
-		t.Fatalf("expected *OAuth2AuthenticationPolicy, got %T", p)
+		t.Fatalf("expected *Policy, got %T", p)
 	}
 	if oa.tokenEndpoint != "https://idp.example.com/oauth2/token" {
 		t.Errorf("unexpected tokenEndpoint: %q", oa.tokenEndpoint)
 	}
 	if oa.clientID != "gateway-client" {
 		t.Errorf("unexpected clientID: %q", oa.clientID)
+	}
+	if oa.grantType != GrantTypeClientCredentials {
+		t.Errorf("expected grantType to default to %q when omitted, got %q", GrantTypeClientCredentials, oa.grantType)
+	}
+}
+
+func TestGetPolicy_ExplicitGrantType(t *testing.T) {
+	params := validParams()
+	params["grantType"] = GrantTypeClientCredentials
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	oa := p.(*Policy)
+	if oa.grantType != GrantTypeClientCredentials {
+		t.Errorf("unexpected grantType: %q", oa.grantType)
+	}
+}
+
+func TestGetPolicy_UnsupportedGrantType(t *testing.T) {
+	// grantType exists precisely so a future grant can be added without a
+	// schema-breaking change - but until that grant is actually implemented,
+	// an unrecognized value must fail loudly at configuration time, not be
+	// silently treated as client_credentials.
+	params := validParams()
+	params["grantType"] = "authorization_code"
+	_, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err == nil {
+		t.Fatal("expected error for unsupported grantType, got nil")
+	}
+	if !strings.Contains(err.Error(), "grantType") {
+		t.Errorf("expected error to mention grantType, got: %v", err)
+	}
+}
+
+// ─── password grant (RFC 6749 Section 4.3) ──────────────────────────────────
+
+func passwordGrantParams() map[string]interface{} {
+	return map[string]interface{}{
+		"grantType":        GrantTypePassword,
+		"tokenEndpoint":    "https://idp.example.com/oauth2/token",
+		"clientId":         "gateway-client",
+		"clientSecret":     "s3cr3t",
+		"clientAuthMethod": ClientAuthMethodBasic,
+		"username":         "resource-owner",
+		"password":         "hunter2",
+	}
+}
+
+func TestGetPolicy_PasswordGrant_ValidParams(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, passwordGrantParams())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pol := p.(*Policy)
+	if pol.grantType != GrantTypePassword {
+		t.Errorf("unexpected grantType: %q", pol.grantType)
+	}
+}
+
+func TestGetPolicy_PasswordGrant_MissingUsername(t *testing.T) {
+	params := passwordGrantParams()
+	delete(params, "username")
+	_, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "username") {
+		t.Errorf("expected error to mention username, got: %v", err)
+	}
+}
+
+func TestGetPolicy_PasswordGrant_MissingPassword(t *testing.T) {
+	params := passwordGrantParams()
+	delete(params, "password")
+	_, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "password") {
+		t.Errorf("expected error to mention password, got: %v", err)
+	}
+}
+
+func TestGetPolicy_ClientCredentials_UsernamePasswordNotRequired(t *testing.T) {
+	// username/password are password-grant-only; client_credentials (the
+	// default grantType) must not require them.
+	params := validParams()
+	if _, ok := params["username"]; ok {
+		t.Fatal("test fixture unexpectedly sets username")
+	}
+	_, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestPasswordGrant_EndToEnd exercises the real passwordTokenSource against
+// an httptest server simulating a password-grant token endpoint - unlike
+// client_credentials (which delegates entirely to the well-exercised
+// golang.org/x/oauth2/clientcredentials package), the password grant's
+// token-fetch path is new code in this policy, so it's worth a real,
+// non-mocked-tokenFunc test.
+func TestPasswordGrant_EndToEnd(t *testing.T) {
+	var gotGrantType, gotUsername, gotPassword string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("failed to parse form: %v", err)
+		}
+		gotGrantType = r.PostForm.Get("grant_type")
+		gotUsername = r.PostForm.Get("username")
+		gotPassword = r.PostForm.Get("password")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "password-grant-token-abc",
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	params := passwordGrantParams()
+	params["tokenEndpoint"] = server.URL
+	params["username"] = "resource-owner"
+	params["password"] = "hunter2"
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pol := p.(*Policy)
+
+	reqCtx := newRequestHeaderCtx()
+	action := pol.OnRequestHeaders(context.Background(), reqCtx, nil)
+	mods, ok := action.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+	if mods.HeadersToSet["Authorization"] != "Bearer password-grant-token-abc" {
+		t.Errorf("unexpected Authorization header: %q", mods.HeadersToSet["Authorization"])
+	}
+
+	if gotGrantType != "password" {
+		t.Errorf("expected token endpoint to receive grant_type=password, got %q", gotGrantType)
+	}
+	if gotUsername != "resource-owner" {
+		t.Errorf("expected username=resource-owner, got %q", gotUsername)
+	}
+	if gotPassword != "hunter2" {
+		t.Errorf("expected password=hunter2, got %q", gotPassword)
 	}
 }
 
@@ -158,10 +311,10 @@ func TestGetPolicy_ScopeIsOptionalAndSplit(t *testing.T) {
 }
 
 func TestAuthStyleFor(t *testing.T) {
-	if got := authStyleFor(ClientAuthMethodBasic); got != oauth2.AuthStyleInHeader {
+	if got := authStyleFor(ClientAuthMethodBasic); got != xoauth2.AuthStyleInHeader {
 		t.Errorf("client_secret_basic: got %v, want AuthStyleInHeader", got)
 	}
-	if got := authStyleFor(ClientAuthMethodPost); got != oauth2.AuthStyleInParams {
+	if got := authStyleFor(ClientAuthMethodPost); got != xoauth2.AuthStyleInParams {
 		t.Errorf("client_secret_post: got %v, want AuthStyleInParams", got)
 	}
 }
@@ -187,9 +340,9 @@ func TestMode(t *testing.T) {
 func TestOnRequestHeaders_Success(t *testing.T) {
 	p := newTestPolicy()
 	var calls int
-	p.tokenFunc = func() (*oauth2.Token, error) {
+	p.tokenFunc = func() (*xoauth2.Token, error) {
 		calls++
-		return &oauth2.Token{AccessToken: "abc123", TokenType: "Bearer"}, nil
+		return &xoauth2.Token{AccessToken: "abc123", TokenType: "Bearer"}, nil
 	}
 
 	reqCtx := newRequestHeaderCtx()
@@ -227,9 +380,9 @@ func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
 	// bypassing it or calling it more than once.
 	p := newTestPolicy()
 	var calls int
-	p.tokenFunc = func() (*oauth2.Token, error) {
+	p.tokenFunc = func() (*xoauth2.Token, error) {
 		calls++
-		return &oauth2.Token{AccessToken: "reused-token"}, nil
+		return &xoauth2.Token{AccessToken: "reused-token"}, nil
 	}
 
 	for i := 0; i < 3; i++ {
@@ -246,7 +399,7 @@ func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
 
 func TestOnRequestHeaders_TokenFetchFailure(t *testing.T) {
 	p := newTestPolicy()
-	p.tokenFunc = func() (*oauth2.Token, error) {
+	p.tokenFunc = func() (*xoauth2.Token, error) {
 		return nil, errors.New("token endpoint returned invalid_client")
 	}
 
@@ -274,8 +427,8 @@ func TestOnRequestHeaders_TokenFetchFailure(t *testing.T) {
 
 func TestOnRequestHeaders_PreservesPreviousAuthContext(t *testing.T) {
 	p := newTestPolicy()
-	p.tokenFunc = func() (*oauth2.Token, error) {
-		return &oauth2.Token{AccessToken: "abc123"}, nil
+	p.tokenFunc = func() (*xoauth2.Token, error) {
+		return &xoauth2.Token{AccessToken: "abc123"}, nil
 	}
 
 	reqCtx := newRequestHeaderCtx()

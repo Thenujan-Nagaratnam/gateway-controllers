@@ -1,0 +1,94 @@
+name: oauth2
+version: v0.2.0
+description: |
+  Authenticates outbound requests to an upstream backend using OAuth2 before
+  they are forwarded. The gateway acts as a confidential client, exchanging
+  credentials for a short-lived access token and injecting it as an
+  Authorization: Bearer header. Tokens are cached and refreshed automatically
+  ahead of expiry. The grant used is selected via grantType: client_credentials
+  (RFC 6749 Section 4.4, the standard machine-to-machine grant) or password
+  (RFC 6749 Section 4.3, Resource Owner Password Credentials).
+
+  Security note on the password grant: current OAuth2 security guidance
+  (RFC 6749 Section 4.3 itself, and the OAuth 2.0 Security Best Current
+  Practice) discourages the password grant for new integrations, because it
+  requires the client to handle the resource owner's raw username/password.
+  It is supported here specifically for bridging to legacy identity
+  providers that only expose this grant - prefer client_credentials whenever
+  the upstream identity provider supports it.
+
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    grantType:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        OAuth2 grant type. "client_credentials" (RFC 6749 4.4) is the
+        standard machine-to-machine grant and should be preferred. "password"
+        (RFC 6749 4.3, Resource Owner Password Credentials) is supported for
+        legacy identity providers only - see the security note above.
+        Defaults to client_credentials when omitted.
+      enum:
+        - client_credentials
+        - password
+      default: client_credentials
+    tokenEndpoint:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        URL of the OAuth2 token endpoint this policy calls to obtain an
+        access token via the configured grantType.
+    clientId:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        OAuth2 client ID used to authenticate to the token endpoint.
+    clientSecret:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        OAuth2 client secret paired with clientId.
+    username:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        Resource owner username. Required when grantType is password;
+        unused for client_credentials.
+    password:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        Resource owner password, paired with username. Required when
+        grantType is password; unused for client_credentials.
+    scope:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        Optional space-separated list of scopes requested from the token
+        endpoint.
+    clientAuthMethod:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        Selects how the client ID and secret are presented to the token
+        endpoint. "client_secret_basic" sends them as HTTP Basic auth on the
+        token request. "client_secret_post" sends them as form fields in the
+        POST body. There is no default: different identity providers require
+        different conventions (for example, Azure AD requires
+        client_secret_post), so a wrong silent default would fail at request
+        time instead of at configuration time.
+      enum:
+        - client_secret_basic
+        - client_secret_post
+  required:
+    - tokenEndpoint
+    - clientId
+    - clientSecret
+    - clientAuthMethod
