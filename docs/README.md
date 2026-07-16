@@ -35,6 +35,7 @@ All available policies, sorted alphabetically.
 | [AWS Authentication](./aws-authentication/v0.9/docs/aws-authentication.md) | Security | Signs outbound requests to AWS-hosted backends using AWS Signature Version 4 (SigV4). |
 | [AWS Bedrock Guardrail](./aws-bedrock-guardrail/v1.0/docs/aws-bedrock-guardrail.md) | Guardrails, AI | Validates request or response body content against AWS Bedrock Guardrails. |
 | [Azure Content Safety Content Moderation](./azure-content-safety-content-moderation/v1.0/docs/azure-content-safety.md) | Guardrails, AI | Validates request or response body content against Azure Content Safety API for content moderation. |
+| [Azure Managed Identity](./azure-managed-identity/v0.1/docs/azure-managed-identity.md) | Security, AI | Authenticates outbound requests to an Azure-hosted backend using a User-Assigned Managed Identity (UMI). |
 | [Backend JWT](./backend-jwt/v1.0/docs/backend-jwt.md) | Security | Generates a signed JWT containing authenticated user information and injects it into the upstream request header. |
 | [Basic Auth](./basic-auth/v1.0/docs/basic-auth.md) | Security, AI, WebSub, WebBroker | Implements HTTP Basic Authentication to protect APIs with username and password credentials. |
 | [Content Length Guardrail](./content-length-guardrail/v1.0/docs/content-length.md) | Guardrails, AI | Validates the byte length of request or response body content. |

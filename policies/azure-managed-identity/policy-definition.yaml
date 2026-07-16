@@ -1,0 +1,167 @@
+name: azure-managed-identity
+version: v0.1.0
+description: |
+  Authenticates outbound requests to an Azure-hosted backend using a User-Assigned
+  Managed Identity (UMI) before they are forwarded. Unlike the oauth2 policy, there
+  is no client secret to configure: the gateway asks the Azure platform's Instance
+  Metadata Service (IMDS, http://169.254.169.254/metadata/identity/oauth2/token)
+  for a token on the identity's behalf, and Azure handles authenticating that
+  identity internally. This only works when gateway-runtime is actually running on
+  Azure compute (a VM, App Service, or an AKS node) that has the target user-assigned
+  identity attached - it cannot work from any other environment, since the metadata
+  endpoint is a link-local address only reachable from inside Azure's own
+  virtualization host.
+
+  This policy covers the classic IMDS mechanism only (node/VM-level managed
+  identity). AKS Workload Identity (Kubernetes service-account/OIDC federation) is
+  a different mechanism and is not implemented here.
+
+  The resulting access token is still an ordinary Microsoft Entra ID (Azure AD)
+  token - same issuer, same shape as a token obtained via a regular App
+  Registration's client_credentials grant (see the oauth2 policy) - only the method
+  of obtaining it differs.
+
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    clientId:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        Client ID of the user-assigned managed identity to use. Required: if the
+        Azure compute resource has more than one identity attached (multiple
+        user-assigned identities, or a user-assigned identity alongside a
+        system-assigned one), IMDS rejects an ambiguous request with no clientId
+        specified - so this policy always sends it explicitly rather than
+        relying on there being exactly one identity present.
+    resource:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        The audience (App ID URI or client ID) of the resource the token should be
+        valid for, for example "https://cognitiveservices.azure.com/" for Azure
+        OpenAI / Cognitive Services, or "https://management.azure.com/" for ARM.
+        This becomes the token's aud claim - requesting the wrong resource here
+        produces a token the backend will reject, not an error from this policy.
+  required:
+    - clientId
+    - resource
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    imdsEndpoint:
+      type: string
+      description: >
+        Overrides the Instance Metadata Service URL this policy calls. Deliberately
+        a system parameter, not a user parameter: it must never be settable through
+        the same API surface that configures clientId/resource, since accepting an
+        operator-uncontrolled endpoint here would let a malicious or careless API
+        definition redirect where the gateway sends its IMDS token requests (and
+        therefore where a freshly-minted, live access token ends up). The only
+        legitimate reason to override it is local/CI testing against a mock IMDS
+        server - real deployments should never set this.
+      default: "http://169.254.169.254/metadata/identity/oauth2/token"
+      "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.imds_endpoint}"
+
+    requestTimeout:
+      type: string
+      description: |
+        Timeout for the IMDS HTTP call, as a Go duration string. IMDS is a
+        link-local call that should respond in milliseconds if the identity is
+        actually attached and reachable - kept short so an environment where IMDS
+        genuinely isn't reachable (this policy misconfigured on non-Azure compute)
+        fails fast rather than hanging the request pipeline.
+      default: "2s"
+      "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.request_timeout}"
+
+    redis:
+      type: object
+      description: >
+        Configures the Redis instance used to cache access tokens across
+        gateway-runtime replicas - identical mechanism and identical parameter set
+        to the oauth2 policy's own token cache (see that policy's docs for the full
+        rationale). Operator/gateway-level settings, not something an individual
+        API publisher sets per API.
+      additionalProperties: false
+      properties:
+        host:
+          type: string
+          description: Specifies the Redis host name or IP address.
+          default: "localhost"
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.host}"
+
+        port:
+          type: integer
+          description: Specifies the Redis server port.
+          minimum: 1
+          maximum: 65535
+          default: 6379
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.port}"
+
+        password:
+          type: string
+          description: Specifies the optional Redis authentication password.
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.password}"
+
+        username:
+          type: string
+          description: Specifies the optional Redis ACL username.
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.username}"
+
+        db:
+          type: integer
+          description: Specifies the Redis database index.
+          minimum: 0
+          maximum: 15
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.db}"
+
+        keyPrefix:
+          type: string
+          description: Specifies the prefix used for all Redis keys this policy writes.
+          default: "azure-managed-identity:token:v1:"
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.key_prefix}"
+
+        failureMode:
+          type: string
+          description: |
+            Specifies behavior when Redis is unavailable. "open" falls back to
+            fetching a fresh token directly from IMDS on every request - a Redis
+            outage degrades caching, not authentication. "closed" treats a Redis
+            error as a token-acquisition failure (the same generic 502 as any
+            other token-acquisition failure).
+          enum: ["open", "closed"]
+          default: "open"
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.failure_mode}"
+
+        connectionTimeout:
+          type: string
+          description: Specifies the Redis connection timeout as a Go duration string.
+          default: "5s"
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.connection_timeout}"
+
+        readTimeout:
+          type: string
+          description: Specifies the Redis read timeout as a Go duration string.
+          default: "3s"
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.read_timeout}"
+
+        writeTimeout:
+          type: string
+          description: Specifies the Redis write timeout as a Go duration string.
+          default: "3s"
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.write_timeout}"
+
+        poolSize:
+          type: integer
+          description: |
+            Redis connection pool size for the shared client. 0 = go-redis default
+            (10 × GOMAXPROCS). One pool is shared per distinct Redis endpoint config.
+          minimum: 0
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.azure_managed_identity_v1.redis.pool_size}"

@@ -1,0 +1,11 @@
+{
+  "name": "azure-managed-identity",
+  "displayName": "Azure Managed Identity",
+  "version": "1.0",
+  "provider": "WSO2",
+  "categories": [
+    "Security",
+    "AI"
+  ],
+  "description": "Authenticates outbound requests to an Azure-hosted backend using a User-Assigned\nManaged Identity (UMI). No client secret is configured - the gateway asks the Azure\nplatform's Instance Metadata Service (IMDS) for a token on the identity's behalf.\nOnly works when gateway-runtime runs on Azure compute (VM, App Service, or an AKS\nnode) with the target identity attached. Tokens are cached in Redis so every\ngateway-runtime replica shares one token per API/route, with a local in-process\ncache in front for near-zero hot-path latency - same caching design as the oauth2\npolicy."
+}
