@@ -45,13 +45,6 @@ const (
 	// policy-definition.yaml's security note.
 	GrantTypePassword = "password"
 
-	// ClientAuthMethodBasic sends the client ID/secret as HTTP Basic auth on
-	// the token request.
-	ClientAuthMethodBasic = "client_secret_basic"
-	// ClientAuthMethodPost sends the client ID/secret as form fields in the
-	// token request body.
-	ClientAuthMethodPost = "client_secret_post"
-
 	// AuthType is the AuthContext.AuthType value recorded by this policy.
 	// Grant-agnostic by design: it identifies "authenticated via OAuth2",
 	// not which grant was used. The grant is available separately via
@@ -64,14 +57,13 @@ const (
 // with grantType-conditional fields (username/password) — positional args
 // for six-plus mostly-string fields invite mixed-up-order bugs.
 type oauth2Params struct {
-	grantType        string
-	tokenEndpoint    string
-	clientID         string
-	clientSecret     string
-	username         string
-	password         string
-	scope            string
-	clientAuthMethod string
+	grantType     string
+	tokenEndpoint string
+	clientID      string
+	clientSecret  string
+	username      string
+	password      string
+	scope         string
 }
 
 // Policy authenticates outbound requests to an upstream backend using
@@ -80,10 +72,9 @@ type oauth2Params struct {
 // (RFC 6749 Section 4.4) and password (RFC 6749 Section 4.3) are both
 // implemented.
 type Policy struct {
-	grantType        string
-	tokenEndpoint    string
-	clientID         string
-	clientAuthMethod string
+	grantType     string
+	tokenEndpoint string
+	clientID      string
 
 	// tokenSource supplies a cached, automatically-refreshed access token.
 	// Built once in GetPolicy and reused across requests. xoauth2.ReuseTokenSource
@@ -111,7 +102,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	slog.Debug("OAuth2: validated params",
-		"grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID, "clientAuthMethod", p.clientAuthMethod)
+		"grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID)
 
 	tokenSource, err := buildTokenSource(p)
 	if err != nil {
@@ -119,16 +110,15 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	}
 
 	pol := &Policy{
-		grantType:        p.grantType,
-		tokenEndpoint:    p.tokenEndpoint,
-		clientID:         p.clientID,
-		clientAuthMethod: p.clientAuthMethod,
-		tokenSource:      tokenSource,
+		grantType:     p.grantType,
+		tokenEndpoint: p.tokenEndpoint,
+		clientID:      p.clientID,
+		tokenSource:   tokenSource,
 	}
 	pol.tokenFunc = pol.tokenSource.Token
 
 	slog.Debug("OAuth2: policy initialized",
-		"grantType", pol.grantType, "tokenEndpoint", pol.tokenEndpoint, "clientId", pol.clientID, "clientAuthMethod", pol.clientAuthMethod)
+		"grantType", pol.grantType, "tokenEndpoint", pol.tokenEndpoint, "clientId", pol.clientID)
 
 	return pol, nil
 }
@@ -148,7 +138,7 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 			ClientID:     p.clientID,
 			ClientSecret: p.clientSecret,
 			TokenURL:     p.tokenEndpoint,
-			AuthStyle:    authStyleFor(p.clientAuthMethod),
+			AuthStyle:    xoauth2.AuthStyleInHeader,
 			Scopes:       scopes,
 		}
 		return cfg.TokenSource(context.Background()), nil
@@ -159,7 +149,7 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 			ClientSecret: p.clientSecret,
 			Endpoint: xoauth2.Endpoint{
 				TokenURL:  p.tokenEndpoint,
-				AuthStyle: authStyleFor(p.clientAuthMethod),
+				AuthStyle: xoauth2.AuthStyleInHeader,
 			},
 			Scopes: scopes,
 		}
@@ -203,21 +193,6 @@ type passwordTokenSource struct {
 
 func (s *passwordTokenSource) Token() (*xoauth2.Token, error) {
 	return s.cfg.PasswordCredentialsToken(s.ctx, s.username, s.password)
-}
-
-// authStyleFor maps the required, no-default clientAuthMethod param onto the
-// oauth2 package's AuthStyle constant. validateAndExtractParams already
-// rejects any value other than the two constants below, so the default case
-// here is unreachable in practice — it exists only to satisfy the compiler.
-func authStyleFor(clientAuthMethod string) xoauth2.AuthStyle {
-	switch clientAuthMethod {
-	case ClientAuthMethodPost:
-		return xoauth2.AuthStyleInParams
-	case ClientAuthMethodBasic:
-		return xoauth2.AuthStyleInHeader
-	default:
-		return xoauth2.AuthStyleAutoDetect
-	}
 }
 
 // Mode returns the processing mode for the OAuth2 policy. Injecting a
@@ -272,9 +247,8 @@ func getRequiredStringParam(params map[string]interface{}, key string) (string, 
 // static `required` array in policy-definition.yaml can't express
 // "required only when grantType is X" (the same limitation the
 // aws-authentication policy documents for its own conditional fields).
-// clientAuthMethod remains required with no default regardless of grant: a
-// wrong silent default there would fail at request time against the token
-// endpoint instead of failing loudly at configuration time.
+// Client authentication always uses HTTP Basic auth (RFC 6749's preferred
+// client_secret_basic convention) — there is no configurable auth style.
 func validateAndExtractParams(params map[string]interface{}) (oauth2Params, error) {
 	var p oauth2Params
 
@@ -298,13 +272,6 @@ func validateAndExtractParams(params map[string]interface{}) (oauth2Params, erro
 	p.clientSecret, err = getRequiredStringParam(params, "clientSecret")
 	if err != nil {
 		return oauth2Params{}, err
-	}
-	p.clientAuthMethod, err = getRequiredStringParam(params, "clientAuthMethod")
-	if err != nil {
-		return oauth2Params{}, err
-	}
-	if p.clientAuthMethod != ClientAuthMethodBasic && p.clientAuthMethod != ClientAuthMethodPost {
-		return oauth2Params{}, fmt.Errorf("'clientAuthMethod' must be one of %q, %q", ClientAuthMethodBasic, ClientAuthMethodPost)
 	}
 	p.scope = getStringParam(params, "scope")
 

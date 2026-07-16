@@ -35,10 +35,9 @@ import (
 
 func validParams() map[string]interface{} {
 	return map[string]interface{}{
-		"tokenEndpoint":    "https://idp.example.com/oauth2/token",
-		"clientId":         "gateway-client",
-		"clientSecret":     "s3cr3t",
-		"clientAuthMethod": ClientAuthMethodBasic,
+		"tokenEndpoint": "https://idp.example.com/oauth2/token",
+		"clientId":      "gateway-client",
+		"clientSecret":  "s3cr3t",
 	}
 }
 
@@ -55,9 +54,8 @@ func newRequestHeaderCtx() *policy.RequestHeaderContext {
 
 func newTestPolicy() *Policy {
 	return &Policy{
-		tokenEndpoint:    "https://idp.example.com/oauth2/token",
-		clientID:         "gateway-client",
-		clientAuthMethod: ClientAuthMethodBasic,
+		tokenEndpoint: "https://idp.example.com/oauth2/token",
+		clientID:      "gateway-client",
 	}
 }
 
@@ -116,13 +114,12 @@ func TestGetPolicy_UnsupportedGrantType(t *testing.T) {
 
 func passwordGrantParams() map[string]interface{} {
 	return map[string]interface{}{
-		"grantType":        GrantTypePassword,
-		"tokenEndpoint":    "https://idp.example.com/oauth2/token",
-		"clientId":         "gateway-client",
-		"clientSecret":     "s3cr3t",
-		"clientAuthMethod": ClientAuthMethodBasic,
-		"username":         "resource-owner",
-		"password":         "hunter2",
+		"grantType":     GrantTypePassword,
+		"tokenEndpoint": "https://idp.example.com/oauth2/token",
+		"clientId":      "gateway-client",
+		"clientSecret":  "s3cr3t",
+		"username":      "resource-owner",
+		"password":      "hunter2",
 	}
 }
 
@@ -253,11 +250,6 @@ func TestGetPolicy_MissingRequiredParams(t *testing.T) {
 			wantErr: "'clientSecret' parameter is required",
 		},
 		{
-			name:    "missing clientAuthMethod",
-			mutate:  func(p map[string]interface{}) { delete(p, "clientAuthMethod") },
-			wantErr: "'clientAuthMethod' parameter is required",
-		},
-		{
 			name:    "empty tokenEndpoint",
 			mutate:  func(p map[string]interface{}) { p["tokenEndpoint"] = "   " },
 			wantErr: "'tokenEndpoint' cannot be empty",
@@ -279,27 +271,6 @@ func TestGetPolicy_MissingRequiredParams(t *testing.T) {
 	}
 }
 
-func TestGetPolicy_InvalidClientAuthMethod(t *testing.T) {
-	params := validParams()
-	params["clientAuthMethod"] = "client_secret_jwt" // not a supported value — no silent fallback
-	_, err := GetPolicy(policy.PolicyMetadata{}, params)
-	if err == nil {
-		t.Fatal("expected error for invalid clientAuthMethod, got nil")
-	}
-}
-
-func TestGetPolicy_NoDefaultClientAuthMethod(t *testing.T) {
-	// clientAuthMethod has no default (see policy-definition.yaml): a silently
-	// wrong default would fail at request time against the token endpoint
-	// instead of failing loudly at configuration time. Omitting it must error.
-	params := validParams()
-	delete(params, "clientAuthMethod")
-	_, err := GetPolicy(policy.PolicyMetadata{}, params)
-	if err == nil {
-		t.Fatal("expected error when clientAuthMethod is omitted, got nil")
-	}
-}
-
 func TestGetPolicy_ScopeIsOptionalAndSplit(t *testing.T) {
 	params := validParams()
 	params["scope"] = "chat.completions embeddings"
@@ -308,15 +279,6 @@ func TestGetPolicy_ScopeIsOptionalAndSplit(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	_ = p // scope is passed straight into clientcredentials.Config; nothing further to assert here
-}
-
-func TestAuthStyleFor(t *testing.T) {
-	if got := authStyleFor(ClientAuthMethodBasic); got != xoauth2.AuthStyleInHeader {
-		t.Errorf("client_secret_basic: got %v, want AuthStyleInHeader", got)
-	}
-	if got := authStyleFor(ClientAuthMethodPost); got != xoauth2.AuthStyleInParams {
-		t.Errorf("client_secret_post: got %v, want AuthStyleInParams", got)
-	}
 }
 
 // ─── Mode ────────────────────────────────────────────────────────────────────
