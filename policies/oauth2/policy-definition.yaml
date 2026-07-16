@@ -1,5 +1,5 @@
 name: oauth2
-version: v0.3.0
+version: v0.4.0
 description: |
   Authenticates outbound requests to an upstream backend using OAuth2 before
   they are forwarded. The gateway acts as a confidential client, exchanging
@@ -11,6 +11,17 @@ description: |
   and secret are always presented to the token endpoint via HTTP Basic auth
   (client_secret_basic), the convention RFC 6749 recommends when the
   identity provider supports it.
+
+  Tokens are cached in Redis (see systemParameters.redis below) so every
+  gateway-runtime replica shares one token per configured API/route instead
+  of each independently calling the token endpoint, and a replica restart
+  doesn't force a fresh token fetch. A small in-process cache sits in front
+  of Redis so the hot path (token already known-good) never pays a network
+  round trip. Redis is an optimization, not a hard dependency: if it is
+  unreachable, the policy falls back to fetching directly from the token
+  endpoint on every request (or, if systemParameters.redis.failureMode is
+  set to closed, treats the outage as an authentication failure) - see
+  systemParameters below.
 
   Security note on the password grant: current OAuth2 security guidance
   (RFC 6749 Section 4.3 itself, and the OAuth 2.0 Security Best Current
@@ -80,3 +91,104 @@ parameters:
     - tokenEndpoint
     - clientId
     - clientSecret
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    redis:
+      type: object
+      description: >
+        Configures the Redis instance used to cache OAuth2 access tokens
+        across gateway-runtime replicas. These are operator/gateway-level
+        settings, not something an individual API publisher sets - resolve
+        them once via config.policy_configurations.oauth2_v1.redis.* in the
+        gateway's own configuration, same as ratelimit_v1.redis does for the
+        advanced-ratelimit policy.
+      additionalProperties: false
+      properties:
+        host:
+          type: string
+          description: Specifies the Redis host name or IP address.
+          default: "localhost"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.host}"
+
+        port:
+          type: integer
+          description: Specifies the Redis server port.
+          minimum: 1
+          maximum: 65535
+          default: 6379
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.port}"
+
+        password:
+          type: string
+          description: Specifies the optional Redis authentication password.
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.password}"
+
+        username:
+          type: string
+          description: Specifies the optional Redis ACL username.
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.username}"
+
+        db:
+          type: integer
+          description: Specifies the Redis database index.
+          minimum: 0
+          maximum: 15
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.db}"
+
+        keyPrefix:
+          type: string
+          description: Specifies the prefix used for all Redis keys this policy writes.
+          default: "oauth2:token:v1:"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.key_prefix}"
+
+        failureMode:
+          type: string
+          description: |
+            Specifies behavior when Redis is unavailable. "open" falls back to
+            fetching a fresh token directly from the token endpoint on every
+            request - a Redis outage degrades caching, not authentication.
+            "closed" treats a Redis error as a token-acquisition failure
+            (the same generic 502 as any other token-acquisition failure).
+          enum: ["open", "closed"]
+          default: "open"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.failure_mode}"
+
+        connectionTimeout:
+          type: string
+          description: Specifies the Redis connection timeout as a Go duration
+            string. Supports units ns, us, µs, ms, s, m, h, including
+            composite and fractional values (for example "500ms", "1.5s",
+            "1m30s").
+          default: "5s"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.connection_timeout}"
+
+        readTimeout:
+          type: string
+          description: Specifies the Redis read timeout as a Go duration
+            string. Supports units ns, us, µs, ms, s, m, h, including
+            composite and fractional values (for example "500ms", "1.5s",
+            "1m30s").
+          default: "3s"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.read_timeout}"
+
+        writeTimeout:
+          type: string
+          description: Specifies the Redis write timeout as a Go duration
+            string. Supports units ns, us, µs, ms, s, m, h, including
+            composite and fractional values (for example "500ms", "1.5s",
+            "1m30s").
+          default: "3s"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.write_timeout}"
+
+        poolSize:
+          type: integer
+          description: |
+            Redis connection pool size for the shared client. 0 = go-redis default
+            (10 × GOMAXPROCS). One pool is shared per distinct Redis endpoint config.
+          minimum: 0
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_v1.redis.pool_size}"

@@ -77,11 +77,10 @@ type Policy struct {
 	clientID      string
 
 	// tokenSource supplies a cached, automatically-refreshed access token.
-	// Built once in GetPolicy and reused across requests. xoauth2.ReuseTokenSource
-	// guards its cached token with its own internal mutex, so concurrent
-	// Token() calls are safe and a refresh in flight is not duplicated by a
-	// second concurrent caller (they block on the same lock and observe the
-	// freshly-refreshed token instead of firing a second request).
+	// Built once in GetPolicy and reused across requests. It is always a
+	// *redisCachingTokenSource (see token_cache.go) wrapping the real,
+	// grant-specific fetch logic from buildTokenSource - a two-tier cache
+	// (in-process, then Redis) sitting in front of the token endpoint.
 	tokenSource xoauth2.TokenSource
 
 	// Test seam — production code calls tokenSource.Token() directly; unit
@@ -104,10 +103,11 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	slog.Debug("OAuth2: validated params",
 		"grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID)
 
-	tokenSource, err := buildTokenSource(p)
+	innerSource, err := buildTokenSource(p)
 	if err != nil {
 		return nil, err
 	}
+	tokenSource := newRedisCachingTokenSource(innerSource, extractRedisParams(params), metadata, p.grantType)
 
 	pol := &Policy{
 		grantType:     p.grantType,
