@@ -81,15 +81,16 @@ type Policy struct {
 	// *redisCachingTokenSource (see token_cache.go) wrapping the real,
 	// grant-specific fetch logic from buildTokenSource - a two-tier cache
 	// (in-process, then Redis) sitting in front of the token endpoint.
-	tokenSource xoauth2.TokenSource
+	// Takes the request-header context (unlike a plain xoauth2.TokenSource)
+	// because the Redis cache key can only be resolved from request-time
+	// data - see resolveAPIIdentity in token_cache.go.
+	tokenSource tokenProvider
 
 	// Test seam — production code calls tokenSource.Token() directly; unit
 	// tests override this to avoid a real network call to a token endpoint,
 	// mirroring the retrieveCredentialsFunc pattern used in the
-	// aws-authentication policy. xoauth2.TokenSource.Token() takes no context —
-	// the context passed at token-source construction time is what an
-	// eventual HTTP call would use.
-	tokenFunc func() (*xoauth2.Token, error)
+	// aws-authentication policy.
+	tokenFunc func(reqCtx *policy.RequestHeaderContext) (*xoauth2.Token, error)
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
@@ -107,7 +108,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	if err != nil {
 		return nil, err
 	}
-	tokenSource := newRedisCachingTokenSource(innerSource, extractRedisParams(params), metadata, p.grantType)
+	tokenSource := newRedisCachingTokenSource(innerSource, extractRedisParams(params), metadata)
 
 	pol := &Policy{
 		grantType:     p.grantType,
@@ -296,7 +297,7 @@ func (p *Policy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHea
 	slog.Debug("OAuth2: authenticating outbound request", "method", reqCtx.Method, "path", reqCtx.Path,
 		"grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID)
 
-	tok, err := p.retrieveToken()
+	tok, err := p.retrieveToken(reqCtx)
 	if err != nil {
 		return p.authFailure(reqCtx.SharedContext, "failed to obtain OAuth2 access token", err)
 	}
@@ -312,12 +313,12 @@ func (p *Policy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHea
 
 // retrieveToken fetches the current (possibly cached/refreshed) access token
 // from the token source built once in GetPolicy.
-func (p *Policy) retrieveToken() (*xoauth2.Token, error) {
+func (p *Policy) retrieveToken(reqCtx *policy.RequestHeaderContext) (*xoauth2.Token, error) {
 	fetch := p.tokenFunc
 	if fetch == nil {
 		fetch = p.tokenSource.Token
 	}
-	return fetch()
+	return fetch(reqCtx)
 }
 
 // authFailure builds a 502 Bad Gateway ImmediateResponse for gateway-side

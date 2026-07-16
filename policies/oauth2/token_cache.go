@@ -148,13 +148,21 @@ func getNestedDurationParam(params map[string]interface{}, dottedKey string, def
 	return def
 }
 
-// buildRedisKey scopes the cached token to the specific API/route this
-// policy instance is attached to, so distinct LlmProviders/LlmProxies never
-// collide even if they happen to share a clientId/tokenEndpoint, and a
-// config reload of the *same* API reuses the same cache entry rather than
-// minting a new one on every reload.
-func buildRedisKey(prefix string, metadata policy.PolicyMetadata, grantType string) string {
-	candidates := []string{strings.TrimSuffix(prefix, ":"), metadata.APIId, metadata.RouteName, grantType}
+// buildRedisKey scopes the cached token to the API this policy instance is
+// attached to - deliberately the API, not the individual route/resource.
+// oauth2 config lives on upstream.auth, one value for the whole API, so
+// every resource an LlmProvider/LlmProxy exposes (/chat/completions,
+// /embeddings, ...) shares the exact same credentials and should share the
+// exact same cached token. Keying by route as well would mint one
+// redundant token (and one redundant token-endpoint call) per resource
+// instead of one per API. grantType is deliberately NOT part of the key
+// either: there is exactly one grantType per API's oauth2 config, so it can
+// never disambiguate two entries for the same API - and even in the edge
+// case of a live redeploy changing grantType, reusing a still-valid cached
+// token from the old grant is harmless (the token itself doesn't carry or
+// care which grant produced it).
+func buildRedisKey(prefix, apiIdentity string) string {
+	candidates := []string{strings.TrimSuffix(prefix, ":"), apiIdentity}
 	var parts []string
 	for _, s := range candidates {
 		if s != "" {
@@ -164,6 +172,35 @@ func buildRedisKey(prefix string, metadata policy.PolicyMetadata, grantType stri
 	return strings.Join(parts, ":")
 }
 
+// resolveAPIIdentity derives a stable per-API cache-key component,
+// mirroring the semantic-cache policy's own convention
+// ("<APIName>:<APIVersion>", sourced from SharedContext at request time).
+//
+// PolicyMetadata.APIId (passed into GetPolicy at construction time) is not
+// usable for this: gateway-controller's PolicyChainConfig xDS resource
+// never populates an api_id in its wire metadata (a pre-existing gap
+// affecting every policy attached this way, not something specific to
+// oauth2), so it is always empty by the time it reaches GetPolicy.
+// SharedContext.APIId/APIName/APIVersion, by contrast, ARE reliably
+// populated per-request - they come from a different xDS resource
+// (RouteConfig) that does carry the real API UUID - so they're read here,
+// lazily, on the first real request, rather than at construction time.
+//
+// metadata.RouteName is used only as a last-resort fallback if even those
+// are empty - correct-but-overly-narrow (see buildRedisKey), never
+// incorrect.
+func resolveAPIIdentity(reqCtx *policy.RequestHeaderContext, routeNameFallback string) string {
+	if reqCtx != nil && reqCtx.SharedContext != nil {
+		if reqCtx.APIId != "" {
+			return reqCtx.APIId
+		}
+		if reqCtx.APIName != "" || reqCtx.APIVersion != "" {
+			return reqCtx.APIName + ":" + reqCtx.APIVersion
+		}
+	}
+	return routeNameFallback
+}
+
 // cachedToken is the JSON shape stored in Redis - just the fields needed to
 // reconstruct an xoauth2.Token.
 type cachedToken struct {
@@ -171,6 +208,15 @@ type cachedToken struct {
 	TokenType    string    `json:"token_type"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	Expiry       time.Time `json:"expiry"`
+}
+
+// tokenProvider is satisfied by redisCachingTokenSource. Unlike
+// xoauth2.TokenSource, Token() takes the request-header context: the Redis
+// cache key can only be resolved correctly from data (SharedContext.APIId
+// et al.) that's only available at request time, not from anything passed
+// into GetPolicy at construction time - see resolveAPIIdentity.
+type tokenProvider interface {
+	Token(reqCtx *policy.RequestHeaderContext) (*xoauth2.Token, error)
 }
 
 // redisCachingTokenSource wraps a real, IDP-fetching xoauth2.TokenSource
@@ -187,21 +233,24 @@ type cachedToken struct {
 // surfaced as a token-acquisition failure (failOpen=false), per the
 // redis.failureMode param.
 type redisCachingTokenSource struct {
-	inner        xoauth2.TokenSource
-	redisClient  *redis.Client // nil disables the Redis tier entirely
-	redisKey     string
-	failOpen     bool
-	readTimeout  time.Duration
-	writeTimeout time.Duration
+	inner             xoauth2.TokenSource
+	redisClient       *redis.Client // nil disables the Redis tier entirely
+	keyPrefix         string
+	routeNameFallback string
+	failOpen          bool
+	readTimeout       time.Duration
+	writeTimeout      time.Duration
 
-	mu    sync.Mutex
-	local *xoauth2.Token
+	mu       sync.Mutex
+	local    *xoauth2.Token
+	redisKey string // resolved lazily from the first request - see resolveAPIIdentity
 }
 
 // newRedisCachingTokenSource builds the cache wrapper around inner. metadata
-// and grantType are used only to derive the Redis key (buildRedisKey) - the
-// wrapper otherwise knows nothing about how inner fetches tokens.
-func newRedisCachingTokenSource(inner xoauth2.TokenSource, rp redisParams, metadata policy.PolicyMetadata, grantType string) xoauth2.TokenSource {
+// is kept only for its RouteName, used as a last-resort fallback when
+// deriving the Redis key (see resolveAPIIdentity) - the wrapper otherwise
+// knows nothing about how inner fetches tokens.
+func newRedisCachingTokenSource(inner xoauth2.TokenSource, rp redisParams, metadata policy.PolicyMetadata) tokenProvider {
 	client := getOrCreateRedisClient(&redis.Options{
 		Addr:         fmt.Sprintf("%s:%d", rp.host, rp.port),
 		Username:     rp.username,
@@ -221,16 +270,19 @@ func newRedisCachingTokenSource(inner xoauth2.TokenSource, rp redisParams, metad
 	})
 
 	return &redisCachingTokenSource{
-		inner:        inner,
-		redisClient:  client,
-		redisKey:     buildRedisKey(rp.keyPrefix, metadata, grantType),
-		failOpen:     rp.failureMode != FailureModeClosed,
-		readTimeout:  rp.readTimeout,
-		writeTimeout: rp.writeTimeout,
+		inner:             inner,
+		redisClient:       client,
+		keyPrefix:         rp.keyPrefix,
+		routeNameFallback: metadata.RouteName,
+		failOpen:          rp.failureMode != FailureModeClosed,
+		readTimeout:       rp.readTimeout,
+		writeTimeout:      rp.writeTimeout,
 	}
 }
 
-func (s *redisCachingTokenSource) Token() (*xoauth2.Token, error) {
+func (s *redisCachingTokenSource) Token(reqCtx *policy.RequestHeaderContext) (*xoauth2.Token, error) {
+	s.ensureRedisKey(reqCtx)
+
 	if tok := s.localToken(); tok != nil {
 		return tok, nil
 	}
@@ -264,6 +316,20 @@ func (s *redisCachingTokenSource) Token() (*xoauth2.Token, error) {
 		}
 	}
 	return tok, nil
+}
+
+// ensureRedisKey resolves and fixes the Redis key on the first call only.
+// Safe to call unconditionally on every Token() invocation - a route (and
+// thus the API it belongs to) never changes over a policy instance's
+// lifetime, so resolving once and reusing thereafter is correct, not just
+// an optimization.
+func (s *redisCachingTokenSource) ensureRedisKey(reqCtx *policy.RequestHeaderContext) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.redisKey != "" {
+		return
+	}
+	s.redisKey = buildRedisKey(s.keyPrefix, resolveAPIIdentity(reqCtx, s.routeNameFallback))
 }
 
 func (s *redisCachingTokenSource) localToken() *xoauth2.Token {

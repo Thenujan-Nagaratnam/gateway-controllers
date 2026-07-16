@@ -51,8 +51,8 @@ the identity provider supports it.
 - Client authentication to the token endpoint always uses `client_secret_basic`
   (HTTP Basic auth) — the identity provider must accept this convention
 - **Redis-backed token cache** shared across every gateway-runtime replica,
-  with a per-process in-process cache in front of it for the hot path (see
-  Caching below)
+  cached per API (not per resource/route), with a per-process in-process
+  cache in front of it for the hot path (see Caching below)
 - Optional scope
 - Preserves any existing authentication context set by an earlier (inbound)
   auth policy
@@ -83,11 +83,32 @@ controls what happens:
   generic `502` as any other failure below) — for deployments that want to
   guarantee a Redis-down condition is surfaced rather than silently degraded.
 
-Cache entries are keyed per API/route (`<keyPrefix><apiId>:<routeName>:<grantType>`)
-so distinct `LlmProvider`/`LlmProxy` configurations never collide, even if
-they happen to share a `clientId`/`tokenEndpoint`. The Redis TTL on each
-entry is derived from the token's own `expires_in` — the cache never
-outlives the token it holds.
+### Cache key: scoped per API, not per resource/route
+
+Cache entries are keyed **per API** (`<keyPrefix><apiId>`), not per
+route/resource. This is deliberate: `oauth2` config lives on `upstream.auth`,
+one value for the whole API — every resource an `LlmProvider`/`LlmProxy`
+exposes (`/chat/completions`, `/embeddings`, ...) is configured with the
+exact same `tokenEndpoint`/`clientId`/`clientSecret`, so they should all
+share the exact same cached token rather than each independently fetching
+and caching its own. Keying by route as well would mint one redundant token
+(and one redundant token-endpoint call) per resource instead of one per API.
+
+`grantType` is intentionally **not** part of the key: there is exactly one
+`grantType` per API's `oauth2` config, so it can never disambiguate two
+entries for the same API. Even in the edge case of a live redeploy changing
+`grantType`, reusing a still-valid cached token from the old grant is
+harmless — the token itself doesn't carry or care which grant produced it.
+
+`apiId` is resolved at request time from `SharedContext.APIId` (falling back
+to `SharedContext.APIName:APIVersion`, and finally to the route's own name if
+even those are unavailable) — not from anything passed into the policy at
+construction time, since the control plane's `PolicyChainConfig` doesn't
+carry a stable API identifier at that point. The key is resolved once, from
+the first request a policy instance handles, and stays fixed after that.
+
+The Redis TTL on each entry is derived from the token's own `expires_in` —
+the cache never outlives the token it holds.
 
 ## Configuration
 
@@ -156,7 +177,8 @@ Inside the `gateway/build.yaml`, ensure the policy module is added under `polici
 2. The policy checks its in-process cache, then Redis, then (only on a
    double miss) calls the token endpoint using the configured `grantType`,
    presenting `clientId`/`clientSecret` as HTTP Basic auth — see Caching
-   above for the full fallback order and `failureMode` behavior.
+   above for the full fallback order, cache-key scope, and `failureMode`
+   behavior.
    - For `client_credentials`, a fresh fetch is a standard `client_credentials`
      token request.
    - For `password`, a fresh fetch re-presents `username`/`password` — this

@@ -70,23 +70,68 @@ func mustAtoi(s string) int {
 	return n
 }
 
+// testMetadata supplies only a RouteName - the last-resort fallback used
+// when a request-time API identity isn't available (see resolveAPIIdentity).
 func testMetadata() policy.PolicyMetadata {
-	return policy.PolicyMetadata{APIId: "test-api", RouteName: "test-route"}
+	return policy.PolicyMetadata{RouteName: "test-route"}
+}
+
+// testReqCtx builds a *policy.RequestHeaderContext carrying the given
+// SharedContext.APIId - the request-time source the Redis cache key is
+// actually resolved from.
+func testReqCtx(apiID string) *policy.RequestHeaderContext {
+	return &policy.RequestHeaderContext{SharedContext: &policy.SharedContext{APIId: apiID}}
+}
+
+const testAPIID = "test-api-id"
+
+// ─── resolveAPIIdentity ──────────────────────────────────────────────────────
+
+func TestResolveAPIIdentity_PrefersAPIId(t *testing.T) {
+	reqCtx := &policy.RequestHeaderContext{SharedContext: &policy.SharedContext{
+		APIId: "api-1", APIName: "ignored", APIVersion: "ignored",
+	}}
+	if got := resolveAPIIdentity(reqCtx, "route-fallback"); got != "api-1" {
+		t.Errorf("got %q, want %q", got, "api-1")
+	}
+}
+
+func TestResolveAPIIdentity_FallsBackToAPINameVersion(t *testing.T) {
+	reqCtx := &policy.RequestHeaderContext{SharedContext: &policy.SharedContext{
+		APIName: "PetStore", APIVersion: "v1.0.0",
+	}}
+	want := "PetStore:v1.0.0"
+	if got := resolveAPIIdentity(reqCtx, "route-fallback"); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestResolveAPIIdentity_FallsBackToRouteNameWhenSharedContextEmpty(t *testing.T) {
+	reqCtx := &policy.RequestHeaderContext{SharedContext: &policy.SharedContext{}}
+	if got := resolveAPIIdentity(reqCtx, "route-fallback"); got != "route-fallback" {
+		t.Errorf("got %q, want %q", got, "route-fallback")
+	}
+}
+
+func TestResolveAPIIdentity_FallsBackToRouteNameWhenReqCtxNil(t *testing.T) {
+	if got := resolveAPIIdentity(nil, "route-fallback"); got != "route-fallback" {
+		t.Errorf("got %q, want %q", got, "route-fallback")
+	}
 }
 
 // ─── buildRedisKey ───────────────────────────────────────────────────────────
 
 func TestBuildRedisKey(t *testing.T) {
-	key := buildRedisKey("oauth2:token:v1:", policy.PolicyMetadata{APIId: "api-1", RouteName: "route-1"}, "client_credentials")
-	want := "oauth2:token:v1:api-1:route-1:client_credentials"
+	key := buildRedisKey("oauth2:token:v1:", "api-1")
+	want := "oauth2:token:v1:api-1"
 	if key != want {
 		t.Errorf("got %q, want %q", key, want)
 	}
 }
 
-func TestBuildRedisKey_OmitsEmptyComponents(t *testing.T) {
-	key := buildRedisKey("oauth2:token:v1:", policy.PolicyMetadata{APIId: "", RouteName: "route-1"}, "password")
-	want := "oauth2:token:v1:route-1:password"
+func TestBuildRedisKey_OmitsEmptyIdentity(t *testing.T) {
+	key := buildRedisKey("oauth2:token:v1:", "")
+	want := "oauth2:token:v1"
 	if key != want {
 		t.Errorf("got %q, want %q", key, want)
 	}
@@ -98,9 +143,9 @@ func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.
 	mr := miniredis.RunT(t)
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
-	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata(), GrantTypeClientCredentials)
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata())
 
-	tok, err := src.Token()
+	tok, err := src.Token(testReqCtx(testAPIID))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -111,7 +156,7 @@ func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.
 		t.Errorf("expected exactly 1 inner fetch on cache miss, got %d", inner.calls)
 	}
 
-	key := buildRedisKey("oauth2:token:v1:", testMetadata(), GrantTypeClientCredentials)
+	key := buildRedisKey("oauth2:token:v1:", testAPIID)
 	if !mr.Exists(key) {
 		t.Errorf("expected token to be written to redis under key %q", key)
 	}
@@ -121,15 +166,15 @@ func TestRedisCachingTokenSource_RedisCacheHit_SkipsInnerFetch(t *testing.T) {
 	mr := miniredis.RunT(t)
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "should-not-be-used", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
-	key := buildRedisKey("oauth2:token:v1:", testMetadata(), GrantTypeClientCredentials)
+	key := buildRedisKey("oauth2:token:v1:", testAPIID)
 	cached, _ := json.Marshal(cachedToken{AccessToken: "cached-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)})
 	if err := mr.Set(key, string(cached)); err != nil {
 		t.Fatalf("failed to seed miniredis: %v", err)
 	}
 
-	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata(), GrantTypeClientCredentials)
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata())
 
-	tok, err := src.Token()
+	tok, err := src.Token(testReqCtx(testAPIID))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -145,15 +190,70 @@ func TestRedisCachingTokenSource_LocalCache_AvoidsRepeatRedisAndInnerCalls(t *te
 	mr := miniredis.RunT(t)
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
-	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata(), GrantTypeClientCredentials)
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata())
 
 	for i := 0; i < 5; i++ {
-		if _, err := src.Token(); err != nil {
+		if _, err := src.Token(testReqCtx(testAPIID)); err != nil {
 			t.Fatalf("call %d: unexpected error: %v", i, err)
 		}
 	}
 	if inner.calls != 1 {
 		t.Errorf("expected exactly 1 inner fetch across 5 calls (rest served from local cache), got %d", inner.calls)
+	}
+}
+
+func TestRedisCachingTokenSource_DifferentAPIs_GetIsolatedCacheEntries(t *testing.T) {
+	// Same policy instance (e.g. same clientId/tokenEndpoint reused across
+	// two LlmProviders would still be two separate GetPolicy calls in
+	// practice, but this proves the key itself is what isolates them, not
+	// incidental separation of instances).
+	mr := miniredis.RunT(t)
+	innerA := &stubTokenSource{token: &xoauth2.Token{AccessToken: "token-for-api-a", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+	innerB := &stubTokenSource{token: &xoauth2.Token{AccessToken: "token-for-api-b", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+
+	srcA := newRedisCachingTokenSource(innerA, testRedisParams(mr, FailureModeOpen), testMetadata())
+	srcB := newRedisCachingTokenSource(innerB, testRedisParams(mr, FailureModeOpen), testMetadata())
+
+	tokA, err := srcA.Token(testReqCtx("api-a"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tokB, err := srcB.Token(testReqCtx("api-b"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tokA.AccessToken == tokB.AccessToken {
+		t.Fatal("expected different APIs to get isolated tokens")
+	}
+
+	keyA := buildRedisKey("oauth2:token:v1:", "api-a")
+	keyB := buildRedisKey("oauth2:token:v1:", "api-b")
+	if keyA == keyB {
+		t.Fatal("expected different APIs to produce different redis keys")
+	}
+}
+
+func TestRedisCachingTokenSource_RedisKeyIsFixedAfterFirstResolution(t *testing.T) {
+	// The key is resolved from the FIRST request's context and then never
+	// re-resolved - a route (and the API it belongs to) doesn't change over
+	// a policy instance's lifetime, so this is correct, not a bug: passing
+	// a different apiId on a later call must not move the cache entry.
+	mr := miniredis.RunT(t)
+	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
+
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata()).(*redisCachingTokenSource)
+
+	if _, err := src.Token(testReqCtx("api-a")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := src.Token(testReqCtx("api-b")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inner.calls != 1 {
+		t.Errorf("expected the second call to reuse the local cache (key fixed from the first call), got %d inner fetches", inner.calls)
+	}
+	if src.redisKey != buildRedisKey("oauth2:token:v1:", "api-a") {
+		t.Errorf("expected the redis key to stay fixed to the first-resolved identity, got %q", src.redisKey)
 	}
 }
 
@@ -163,9 +263,9 @@ func TestRedisCachingTokenSource_RedisDown_FailOpen_FallsBackToInner(t *testing.
 	mr.Close() // simulate redis being unreachable
 
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fallback-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
-	src := newRedisCachingTokenSource(inner, rp, testMetadata(), GrantTypeClientCredentials)
+	src := newRedisCachingTokenSource(inner, rp, testMetadata())
 
-	tok, err := src.Token()
+	tok, err := src.Token(testReqCtx(testAPIID))
 	if err != nil {
 		t.Fatalf("expected failureMode=open to fall back to the inner source, got error: %v", err)
 	}
@@ -183,9 +283,9 @@ func TestRedisCachingTokenSource_RedisDown_FailClosed_ReturnsErrorWithoutFallbac
 	mr.Close() // simulate redis being unreachable
 
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "should-not-be-fetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
-	src := newRedisCachingTokenSource(inner, rp, testMetadata(), GrantTypeClientCredentials)
+	src := newRedisCachingTokenSource(inner, rp, testMetadata())
 
-	_, err := src.Token()
+	_, err := src.Token(testReqCtx(testAPIID))
 	if err == nil {
 		t.Fatal("expected an error when redis is down and failureMode is closed")
 	}
@@ -198,9 +298,9 @@ func TestRedisCachingTokenSource_InnerError_IsPropagated(t *testing.T) {
 	mr := miniredis.RunT(t)
 	inner := &stubTokenSource{err: errors.New("token endpoint returned invalid_client")}
 
-	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata(), GrantTypeClientCredentials)
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata())
 
-	_, err := src.Token()
+	_, err := src.Token(testReqCtx(testAPIID))
 	if err == nil {
 		t.Fatal("expected the inner source's error to propagate")
 	}
@@ -212,8 +312,8 @@ func TestGetOrCreateRedisClient_SharesClientForIdenticalConfig(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rp := testRedisParams(mr, FailureModeOpen)
 
-	src1 := newRedisCachingTokenSource(&stubTokenSource{}, rp, testMetadata(), GrantTypeClientCredentials).(*redisCachingTokenSource)
-	src2 := newRedisCachingTokenSource(&stubTokenSource{}, rp, testMetadata(), GrantTypePassword).(*redisCachingTokenSource)
+	src1 := newRedisCachingTokenSource(&stubTokenSource{}, rp, testMetadata()).(*redisCachingTokenSource)
+	src2 := newRedisCachingTokenSource(&stubTokenSource{}, rp, testMetadata()).(*redisCachingTokenSource)
 
 	if src1.redisClient != src2.redisClient {
 		t.Error("expected two policy instances with identical redis connection settings to share one *redis.Client")

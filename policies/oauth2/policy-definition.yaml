@@ -1,5 +1,5 @@
 name: oauth2
-version: v0.4.0
+version: v0.5.0
 description: |
   Authenticates outbound requests to an upstream backend using OAuth2 before
   they are forwarded. The gateway acts as a confidential client, exchanging
@@ -13,9 +13,12 @@ description: |
   identity provider supports it.
 
   Tokens are cached in Redis (see systemParameters.redis below) so every
-  gateway-runtime replica shares one token per configured API/route instead
-  of each independently calling the token endpoint, and a replica restart
-  doesn't force a fresh token fetch. A small in-process cache sits in front
+  gateway-runtime replica shares one token per API instead of each
+  independently calling the token endpoint, and a replica restart doesn't
+  force a fresh token fetch. Cached per API, not per route/resource: oauth2
+  config lives on upstream.auth, one value for the whole API, so every
+  resource an LlmProvider/LlmProxy exposes shares the same cached token
+  rather than each minting its own. A small in-process cache sits in front
   of Redis so the hot path (token already known-good) never pays a network
   round trip. Redis is an optimization, not a hard dependency: if it is
   unreachable, the policy falls back to fetching directly from the token

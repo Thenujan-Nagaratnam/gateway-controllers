@@ -200,6 +200,14 @@ func TestPasswordGrant_EndToEnd(t *testing.T) {
 	params["tokenEndpoint"] = server.URL
 	params["username"] = "resource-owner"
 	params["password"] = "hunter2"
+	// Point Redis at a guaranteed-unreachable address. Without this, GetPolicy
+	// defaults to localhost:6379 - if anything is actually listening there in
+	// whatever environment this test runs in (a stray local Redis, a container
+	// left running from manual testing), this test would silently read back a
+	// previously-cached token instead of exercising the real HTTP round trip
+	// it exists to verify, and gotGrantType/gotUsername/gotPassword below
+	// would stay at their zero value with no indication why.
+	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
 
 	p, err := GetPolicy(policy.PolicyMetadata{}, params)
 	if err != nil {
@@ -302,7 +310,7 @@ func TestMode(t *testing.T) {
 func TestOnRequestHeaders_Success(t *testing.T) {
 	p := newTestPolicy()
 	var calls int
-	p.tokenFunc = func() (*xoauth2.Token, error) {
+	p.tokenFunc = func(_ *policy.RequestHeaderContext) (*xoauth2.Token, error) {
 		calls++
 		return &xoauth2.Token{AccessToken: "abc123", TokenType: "Bearer"}, nil
 	}
@@ -342,7 +350,7 @@ func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
 	// bypassing it or calling it more than once.
 	p := newTestPolicy()
 	var calls int
-	p.tokenFunc = func() (*xoauth2.Token, error) {
+	p.tokenFunc = func(_ *policy.RequestHeaderContext) (*xoauth2.Token, error) {
 		calls++
 		return &xoauth2.Token{AccessToken: "reused-token"}, nil
 	}
@@ -361,7 +369,7 @@ func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
 
 func TestOnRequestHeaders_TokenFetchFailure(t *testing.T) {
 	p := newTestPolicy()
-	p.tokenFunc = func() (*xoauth2.Token, error) {
+	p.tokenFunc = func(_ *policy.RequestHeaderContext) (*xoauth2.Token, error) {
 		return nil, errors.New("token endpoint returned invalid_client")
 	}
 
@@ -389,7 +397,7 @@ func TestOnRequestHeaders_TokenFetchFailure(t *testing.T) {
 
 func TestOnRequestHeaders_PreservesPreviousAuthContext(t *testing.T) {
 	p := newTestPolicy()
-	p.tokenFunc = func() (*xoauth2.Token, error) {
+	p.tokenFunc = func(_ *policy.RequestHeaderContext) (*xoauth2.Token, error) {
 		return &xoauth2.Token{AccessToken: "abc123"}, nil
 	}
 
