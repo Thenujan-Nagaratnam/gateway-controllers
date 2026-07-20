@@ -21,15 +21,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	xoauth2 "golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
+
+// maxTokenResponseBytes bounds how much of a token-endpoint response this
+// policy will read for the hand-built password grant, regardless of what
+// the server claims or sends - a real token response is at most a few KB.
+const maxTokenResponseBytes = 64 * 1024
 
 const (
 	// GrantTypeClientCredentials (RFC 6749 Section 4.4) is the standard
@@ -63,7 +71,16 @@ type oauth2Params struct {
 	clientSecret  string
 	username      string
 	password      string
-	scope         string
+
+	// extraParams comes from the "params" policy parameter - an optional,
+	// flat map of extra fields appended to the token request body, the same
+	// "custom parameters" convention WSO2 API Manager's own endpoint
+	// security config uses. There is no first-class "scope" field: if the
+	// identity provider needs one, it goes in here, e.g.
+	// {"scope": "chat.completions embeddings"}. This is also how to pass any
+	// other IdP-specific field a token endpoint may require (for example
+	// Azure AD's v1 endpoint, which expects "resource" instead of "scope").
+	extraParams map[string]string
 }
 
 // Policy authenticates outbound requests to an upstream backend using

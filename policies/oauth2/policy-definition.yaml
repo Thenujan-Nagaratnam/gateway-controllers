@@ -1,5 +1,5 @@
 name: oauth2
-version: v0.5.0
+version: v0.6.0
 description: |
   Authenticates outbound requests to an upstream backend using OAuth2 before
   they are forwarded. The gateway acts as a confidential client, exchanging
@@ -84,12 +84,24 @@ parameters:
       description: |
         Resource owner password, paired with username. Required when
         grantType is password; unused for client_credentials.
-    scope:
-      type: string
+    params:
+      type: object
+      additionalProperties:
+        type: string
       x-wso2-policy-advanced-param: false
       description: |
-        Optional space-separated list of scopes requested from the token
-        endpoint.
+        Optional extra parameters appended to the token request body, as a
+        flat map of string key/value pairs - the same "custom parameters"
+        convention WSO2 API Manager's own endpoint security config uses.
+        There is no first-class "scope" field: if the identity provider
+        needs one, add it here, e.g. {"scope": "chat.completions
+        embeddings"}. Also how to pass any other IdP-specific parameter a
+        token endpoint may require (for example Azure AD's v1 endpoint,
+        which expects "resource" instead of "scope"). If any value here is
+        itself sensitive, reference a stored secret instead of a literal -
+        {"someParam": "{{ secret \"handle\" }}"} - gateway-controller's
+        config-rendering step resolves secret references recursively inside
+        any map value, the same as it does for clientSecret/password.
   required:
     - tokenEndpoint
     - clientId
