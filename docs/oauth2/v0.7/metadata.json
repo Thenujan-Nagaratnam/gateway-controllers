@@ -1,0 +1,11 @@
+{
+  "name": "oauth2",
+  "displayName": "OAuth2",
+  "version": "1.0",
+  "provider": "WSO2",
+  "categories": [
+    "Security",
+    "AI"
+  ],
+  "description": "Authenticates outbound requests to an upstream backend using OAuth2. The gateway\nexchanges credentials for a short-lived access token at a configured token endpoint\nand injects it as an Authorization: Bearer header. The grant used is selected via\ngrantType: client_credentials (RFC 6749 4.4, the standard machine-to-machine grant)\nor password (RFC 6749 4.3, Resource Owner Password Credentials, for legacy identity\nproviders). Client authentication uses clientAuthMethod - client_secret_basic\n(default) or client_secret_post. Tokens are cached in Redis so every gateway-runtime\nreplica shares one token per API (not per resource/route - the whole point being\nevery resource an API exposes shares the same credentials), with a local\nin-process cache in front for near-zero hot-path latency."
+}

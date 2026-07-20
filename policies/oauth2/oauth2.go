@@ -51,6 +51,18 @@ const (
 	// not which grant was used. The grant is available separately via
 	// AuthContext.Properties["grantType"] for anyone who needs it.
 	AuthType = "oauth2"
+
+	// ClientAuthMethodBasic (client_secret_basic) presents the client ID and
+	// secret via the HTTP Basic Authorization header. RFC 6749's preferred
+	// convention when the identity provider supports it, and this policy's
+	// default.
+	ClientAuthMethodBasic = "client_secret_basic"
+
+	// ClientAuthMethodPost (client_secret_post) presents the client ID and
+	// secret as client_id/client_secret fields in the token request's form
+	// body instead of the Basic header - some identity providers require
+	// this instead of (or as well as) client_secret_basic.
+	ClientAuthMethodPost = "client_secret_post"
 )
 
 // oauth2Params bundles all extracted, validated policy params. Passed as a
@@ -58,12 +70,13 @@ const (
 // with grantType-conditional fields (username/password) — positional args
 // for six-plus mostly-string fields invite mixed-up-order bugs.
 type oauth2Params struct {
-	grantType     string
-	tokenEndpoint string
-	clientID      string
-	clientSecret  string
-	username      string
-	password      string
+	grantType        string
+	tokenEndpoint    string
+	clientID         string
+	clientSecret     string
+	clientAuthMethod string
+	username         string
+	password         string
 
 	// customParams comes from the "params" policy parameter and only applies
 	// to the client_credentials grant - golang.org/x/oauth2/clientcredentials
@@ -79,9 +92,10 @@ type oauth2Params struct {
 // (RFC 6749 Section 4.4) and password (RFC 6749 Section 4.3) are both
 // implemented.
 type Policy struct {
-	grantType     string
-	tokenEndpoint string
-	clientID      string
+	grantType        string
+	tokenEndpoint    string
+	clientID         string
+	clientAuthMethod string
 
 	// tokenSource supplies a cached, automatically-refreshed access token.
 	// Built once in GetPolicy and reused across requests. It is always a
@@ -109,7 +123,8 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 	slog.Debug("OAuth2: validated params",
-		"grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID)
+		"grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID,
+		"clientAuthMethod", p.clientAuthMethod)
 
 	innerSource, err := buildTokenSource(p)
 	if err != nil {
@@ -118,15 +133,17 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	tokenSource := newRedisCachingTokenSource(innerSource, extractRedisParams(params), metadata)
 
 	pol := &Policy{
-		grantType:     p.grantType,
-		tokenEndpoint: p.tokenEndpoint,
-		clientID:      p.clientID,
-		tokenSource:   tokenSource,
+		grantType:        p.grantType,
+		tokenEndpoint:    p.tokenEndpoint,
+		clientID:         p.clientID,
+		clientAuthMethod: p.clientAuthMethod,
+		tokenSource:      tokenSource,
 	}
 	pol.tokenFunc = pol.tokenSource.Token
 
 	slog.Debug("OAuth2: policy initialized",
-		"grantType", pol.grantType, "tokenEndpoint", pol.tokenEndpoint, "clientId", pol.clientID)
+		"grantType", pol.grantType, "tokenEndpoint", pol.tokenEndpoint, "clientId", pol.clientID,
+		"clientAuthMethod", pol.clientAuthMethod)
 
 	return pol, nil
 }
@@ -135,13 +152,15 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 // This is the extension point for future grants: each grant gets its own
 // case here, building whatever xoauth2.TokenSource fits that grant's flow.
 func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
+	authStyle := authStyleFor(p.clientAuthMethod)
+
 	switch p.grantType {
 	case GrantTypeClientCredentials:
 		cfg := &clientcredentials.Config{
 			ClientID:     p.clientID,
 			ClientSecret: p.clientSecret,
 			TokenURL:     p.tokenEndpoint,
-			AuthStyle:    xoauth2.AuthStyleInHeader,
+			AuthStyle:    authStyle,
 			// EndpointParams carries customParams (e.g. scope) verbatim into
 			// the token request body - golang.org/x/oauth2/clientcredentials
 			// exposes this hook directly, so client_credentials keeps using
@@ -156,7 +175,7 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 			ClientSecret: p.clientSecret,
 			Endpoint: xoauth2.Endpoint{
 				TokenURL:  p.tokenEndpoint,
-				AuthStyle: xoauth2.AuthStyleInHeader,
+				AuthStyle: authStyle,
 			},
 		}
 		// oauth2.Config.PasswordCredentialsToken has no EndpointParams-style
@@ -187,6 +206,25 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 		// explicit guard for when a further grant is added and this switch
 		// needs a matching new case.
 		return nil, fmt.Errorf("unsupported grantType %q", p.grantType)
+	}
+}
+
+// authStyleFor maps clientAuthMethod to the xoauth2.AuthStyle both
+// clientcredentials.Config.AuthStyle and xoauth2.Config.Endpoint.AuthStyle
+// consume identically under the hood (see golang.org/x/oauth2/internal's
+// newTokenRequest): AuthStyleInHeader sends the client ID/secret via HTTP
+// Basic auth (client_secret_basic); AuthStyleInParams sends them as
+// client_id/client_secret fields in the token request's form body
+// (client_secret_post). Since both grants delegate to the same internal
+// function, this single mapping covers both without any hand-built HTTP
+// code. validateAndExtractParams already rejects any value other than the
+// two ClientAuthMethod* constants, so the default case is unreachable.
+func authStyleFor(method string) xoauth2.AuthStyle {
+	switch method {
+	case ClientAuthMethodPost:
+		return xoauth2.AuthStyleInParams
+	default:
+		return xoauth2.AuthStyleInHeader
 	}
 }
 
@@ -302,8 +340,8 @@ func getCustomParams(params map[string]interface{}) map[string]string {
 // static `required` array in policy-definition.yaml can't express
 // "required only when grantType is X" (the same limitation the
 // aws-authentication policy documents for its own conditional fields).
-// Client authentication always uses HTTP Basic auth (RFC 6749's preferred
-// client_secret_basic convention) — there is no configurable auth style.
+// clientAuthMethod defaults to client_secret_basic (RFC 6749's preferred
+// convention) and applies identically to both grants.
 func validateAndExtractParams(params map[string]interface{}) (oauth2Params, error) {
 	var p oauth2Params
 
@@ -313,6 +351,14 @@ func validateAndExtractParams(params map[string]interface{}) (oauth2Params, erro
 	}
 	if p.grantType != GrantTypeClientCredentials && p.grantType != GrantTypePassword {
 		return oauth2Params{}, fmt.Errorf("'grantType' must be one of %q, %q", GrantTypeClientCredentials, GrantTypePassword)
+	}
+
+	p.clientAuthMethod = getStringParam(params, "clientAuthMethod")
+	if p.clientAuthMethod == "" {
+		p.clientAuthMethod = ClientAuthMethodBasic
+	}
+	if p.clientAuthMethod != ClientAuthMethodBasic && p.clientAuthMethod != ClientAuthMethodPost {
+		return oauth2Params{}, fmt.Errorf("'clientAuthMethod' must be one of %q, %q", ClientAuthMethodBasic, ClientAuthMethodPost)
 	}
 
 	var err error

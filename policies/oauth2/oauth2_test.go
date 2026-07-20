@@ -110,6 +110,155 @@ func TestGetPolicy_UnsupportedGrantType(t *testing.T) {
 	}
 }
 
+// ─── clientAuthMethod ────────────────────────────────────────────────────────
+
+func TestGetPolicy_ClientAuthMethod_DefaultsToBasic(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, validParams())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	oa := p.(*Policy)
+	if oa.clientAuthMethod != ClientAuthMethodBasic {
+		t.Errorf("expected clientAuthMethod to default to %q when omitted, got %q", ClientAuthMethodBasic, oa.clientAuthMethod)
+	}
+}
+
+func TestGetPolicy_ClientAuthMethod_ExplicitPost(t *testing.T) {
+	params := validParams()
+	params["clientAuthMethod"] = ClientAuthMethodPost
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	oa := p.(*Policy)
+	if oa.clientAuthMethod != ClientAuthMethodPost {
+		t.Errorf("unexpected clientAuthMethod: %q", oa.clientAuthMethod)
+	}
+}
+
+func TestGetPolicy_ClientAuthMethod_InvalidValue(t *testing.T) {
+	params := validParams()
+	params["clientAuthMethod"] = "client_secret_jwt"
+	_, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err == nil {
+		t.Fatal("expected error for unsupported clientAuthMethod, got nil")
+	}
+	if !strings.Contains(err.Error(), "clientAuthMethod") {
+		t.Errorf("expected error to mention clientAuthMethod, got: %v", err)
+	}
+}
+
+// TestClientCredentials_ClientSecretPost_EndToEnd proves clientAuthMethod:
+// client_secret_post actually changes wire behavior for client_credentials -
+// client_id/client_secret arrive as form fields, not a Basic auth header.
+func TestClientCredentials_ClientSecretPost_EndToEnd(t *testing.T) {
+	var gotAuthHeader, gotClientID, gotClientSecret string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("failed to parse form: %v", err)
+		}
+		gotAuthHeader = r.Header.Get("Authorization")
+		gotClientID = r.PostForm.Get("client_id")
+		gotClientSecret = r.PostForm.Get("client_secret")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "cc-post-token-xyz",
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	params := validParams()
+	params["tokenEndpoint"] = server.URL
+	params["clientAuthMethod"] = ClientAuthMethodPost
+	// See TestPasswordGrant_EndToEnd for why Redis is pinned to an
+	// unreachable address here.
+	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pol := p.(*Policy)
+
+	reqCtx := newRequestHeaderCtx()
+	action := pol.OnRequestHeaders(context.Background(), reqCtx, nil)
+	mods, ok := action.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+	if mods.HeadersToSet["Authorization"] != "Bearer cc-post-token-xyz" {
+		t.Errorf("unexpected Authorization header: %q", mods.HeadersToSet["Authorization"])
+	}
+
+	if gotAuthHeader != "" {
+		t.Errorf("expected no Basic auth header with client_secret_post, got %q", gotAuthHeader)
+	}
+	if gotClientID != "gateway-client" {
+		t.Errorf("expected client_id=gateway-client in form body, got %q", gotClientID)
+	}
+	if gotClientSecret != "s3cr3t" {
+		t.Errorf("expected client_secret=s3cr3t in form body, got %q", gotClientSecret)
+	}
+}
+
+// TestPasswordGrant_ClientSecretPost_EndToEnd proves clientAuthMethod:
+// client_secret_post applies identically to the password grant, since both
+// grants route through the same golang.org/x/oauth2 internal AuthStyle
+// handling.
+func TestPasswordGrant_ClientSecretPost_EndToEnd(t *testing.T) {
+	var gotAuthHeader, gotClientID, gotClientSecret string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("failed to parse form: %v", err)
+		}
+		gotAuthHeader = r.Header.Get("Authorization")
+		gotClientID = r.PostForm.Get("client_id")
+		gotClientSecret = r.PostForm.Get("client_secret")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "password-post-token-xyz",
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	params := passwordGrantParams()
+	params["tokenEndpoint"] = server.URL
+	params["clientAuthMethod"] = ClientAuthMethodPost
+	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pol := p.(*Policy)
+
+	reqCtx := newRequestHeaderCtx()
+	action := pol.OnRequestHeaders(context.Background(), reqCtx, nil)
+	mods, ok := action.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+	if mods.HeadersToSet["Authorization"] != "Bearer password-post-token-xyz" {
+		t.Errorf("unexpected Authorization header: %q", mods.HeadersToSet["Authorization"])
+	}
+
+	if gotAuthHeader != "" {
+		t.Errorf("expected no Basic auth header with client_secret_post, got %q", gotAuthHeader)
+	}
+	if gotClientID != "gateway-client" {
+		t.Errorf("expected client_id=gateway-client in form body, got %q", gotClientID)
+	}
+	if gotClientSecret != "s3cr3t" {
+		t.Errorf("expected client_secret=s3cr3t in form body, got %q", gotClientSecret)
+	}
+}
+
 // ─── password grant (RFC 6749 Section 4.3) ──────────────────────────────────
 
 func passwordGrantParams() map[string]interface{} {
