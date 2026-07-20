@@ -733,7 +733,7 @@ func TestMode(t *testing.T) {
 func TestOnRequestHeaders_Success(t *testing.T) {
 	p := newTestPolicy()
 	var calls int
-	p.tokenFunc = func(_ *policy.RequestHeaderContext) (*xoauth2.Token, error) {
+	p.tokenFunc = func() (*xoauth2.Token, error) {
 		calls++
 		return &xoauth2.Token{AccessToken: "abc123", TokenType: "Bearer"}, nil
 	}
@@ -773,7 +773,7 @@ func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
 	// bypassing it or calling it more than once.
 	p := newTestPolicy()
 	var calls int
-	p.tokenFunc = func(_ *policy.RequestHeaderContext) (*xoauth2.Token, error) {
+	p.tokenFunc = func() (*xoauth2.Token, error) {
 		calls++
 		return &xoauth2.Token{AccessToken: "reused-token"}, nil
 	}
@@ -792,7 +792,7 @@ func TestOnRequestHeaders_ReusesCachedToken(t *testing.T) {
 
 func TestOnRequestHeaders_TokenFetchFailure(t *testing.T) {
 	p := newTestPolicy()
-	p.tokenFunc = func(_ *policy.RequestHeaderContext) (*xoauth2.Token, error) {
+	p.tokenFunc = func() (*xoauth2.Token, error) {
 		return nil, errors.New("token endpoint returned invalid_client")
 	}
 
@@ -820,7 +820,7 @@ func TestOnRequestHeaders_TokenFetchFailure(t *testing.T) {
 
 func TestOnRequestHeaders_PreservesPreviousAuthContext(t *testing.T) {
 	p := newTestPolicy()
-	p.tokenFunc = func(_ *policy.RequestHeaderContext) (*xoauth2.Token, error) {
+	p.tokenFunc = func() (*xoauth2.Token, error) {
 		return &xoauth2.Token{AccessToken: "abc123"}, nil
 	}
 
