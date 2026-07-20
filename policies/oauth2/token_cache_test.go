@@ -143,7 +143,7 @@ func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.
 	mr := miniredis.RunT(t)
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
-	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata())
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata(), defaultTokenTTLFallback)
 
 	tok, err := src.Token(testReqCtx(testAPIID))
 	if err != nil {
@@ -162,6 +162,51 @@ func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.
 	}
 }
 
+// TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback locks
+// in the fallback for IdPs that omit expires_in entirely: golang.org/x/oauth2
+// leaves Token.Expiry as the zero value in that case, which Token.Valid()
+// always treats as already-expired - without the fallback, this would mean
+// caching silently never engages (see the comment at its use site in
+// token_cache.go's Token()) and every request would refetch from the IdP.
+func TestRedisCachingTokenSource_MissingExpiry_AppliesDefaultTTLFallback(t *testing.T) {
+	mr := miniredis.RunT(t)
+	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "no-expiry-token", TokenType: "Bearer"}} // Expiry left zero-value
+
+	const fallbackTTL = 42 * time.Minute
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata(), fallbackTTL)
+
+	tok, err := src.Token(testReqCtx(testAPIID))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok.Expiry.IsZero() {
+		t.Fatal("expected the fallback TTL to give the token a non-zero Expiry")
+	}
+	wantExpiry := time.Now().Add(fallbackTTL)
+	if diff := wantExpiry.Sub(tok.Expiry); diff < -time.Second || diff > time.Second {
+		t.Errorf("expected Expiry within 1s of now+%s, got %s away", fallbackTTL, diff)
+	}
+
+	key := buildRedisKey("oauth2:token:v1:", testAPIID)
+	ttl := mr.TTL(key)
+	if ttl <= 0 {
+		t.Fatalf("expected a positive TTL on the redis key, got %s - the fallback should make this token cacheable", ttl)
+	}
+	if ttl > fallbackTTL || ttl < fallbackTTL-time.Second {
+		t.Errorf("expected redis TTL within 1s of %s, got %s", fallbackTTL, ttl)
+	}
+
+	// Second call should be served from the (now-valid) local cache, not
+	// trigger a second inner fetch - proving the fallback actually restored
+	// caching rather than just avoiding a crash.
+	if _, err := src.Token(testReqCtx(testAPIID)); err != nil {
+		t.Fatalf("unexpected error on second call: %v", err)
+	}
+	if inner.calls != 1 {
+		t.Errorf("expected exactly 1 inner fetch (second call served from cache), got %d", inner.calls)
+	}
+}
+
 func TestRedisCachingTokenSource_RedisCacheHit_SkipsInnerFetch(t *testing.T) {
 	mr := miniredis.RunT(t)
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "should-not-be-used", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
@@ -172,7 +217,7 @@ func TestRedisCachingTokenSource_RedisCacheHit_SkipsInnerFetch(t *testing.T) {
 		t.Fatalf("failed to seed miniredis: %v", err)
 	}
 
-	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata())
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata(), defaultTokenTTLFallback)
 
 	tok, err := src.Token(testReqCtx(testAPIID))
 	if err != nil {
@@ -190,7 +235,7 @@ func TestRedisCachingTokenSource_LocalCache_AvoidsRepeatRedisAndInnerCalls(t *te
 	mr := miniredis.RunT(t)
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
-	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata())
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata(), defaultTokenTTLFallback)
 
 	for i := 0; i < 5; i++ {
 		if _, err := src.Token(testReqCtx(testAPIID)); err != nil {
@@ -211,8 +256,8 @@ func TestRedisCachingTokenSource_DifferentAPIs_GetIsolatedCacheEntries(t *testin
 	innerA := &stubTokenSource{token: &xoauth2.Token{AccessToken: "token-for-api-a", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	innerB := &stubTokenSource{token: &xoauth2.Token{AccessToken: "token-for-api-b", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
-	srcA := newRedisCachingTokenSource(innerA, testRedisParams(mr, FailureModeOpen), testMetadata())
-	srcB := newRedisCachingTokenSource(innerB, testRedisParams(mr, FailureModeOpen), testMetadata())
+	srcA := newRedisCachingTokenSource(innerA, testRedisParams(mr, FailureModeOpen), testMetadata(), defaultTokenTTLFallback)
+	srcB := newRedisCachingTokenSource(innerB, testRedisParams(mr, FailureModeOpen), testMetadata(), defaultTokenTTLFallback)
 
 	tokA, err := srcA.Token(testReqCtx("api-a"))
 	if err != nil {
@@ -241,7 +286,7 @@ func TestRedisCachingTokenSource_RedisKeyIsFixedAfterFirstResolution(t *testing.
 	mr := miniredis.RunT(t)
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fresh-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 
-	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata()).(*redisCachingTokenSource)
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata(), defaultTokenTTLFallback).(*redisCachingTokenSource)
 
 	if _, err := src.Token(testReqCtx("api-a")); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -263,7 +308,7 @@ func TestRedisCachingTokenSource_RedisDown_FailOpen_FallsBackToInner(t *testing.
 	mr.Close() // simulate redis being unreachable
 
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "fallback-token", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
-	src := newRedisCachingTokenSource(inner, rp, testMetadata())
+	src := newRedisCachingTokenSource(inner, rp, testMetadata(), defaultTokenTTLFallback)
 
 	tok, err := src.Token(testReqCtx(testAPIID))
 	if err != nil {
@@ -283,7 +328,7 @@ func TestRedisCachingTokenSource_RedisDown_FailClosed_ReturnsErrorWithoutFallbac
 	mr.Close() // simulate redis being unreachable
 
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "should-not-be-fetched", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
-	src := newRedisCachingTokenSource(inner, rp, testMetadata())
+	src := newRedisCachingTokenSource(inner, rp, testMetadata(), defaultTokenTTLFallback)
 
 	_, err := src.Token(testReqCtx(testAPIID))
 	if err == nil {
@@ -298,7 +343,7 @@ func TestRedisCachingTokenSource_InnerError_IsPropagated(t *testing.T) {
 	mr := miniredis.RunT(t)
 	inner := &stubTokenSource{err: errors.New("token endpoint returned invalid_client")}
 
-	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata())
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), testMetadata(), defaultTokenTTLFallback)
 
 	_, err := src.Token(testReqCtx(testAPIID))
 	if err == nil {
@@ -312,8 +357,8 @@ func TestGetOrCreateRedisClient_SharesClientForIdenticalConfig(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rp := testRedisParams(mr, FailureModeOpen)
 
-	src1 := newRedisCachingTokenSource(&stubTokenSource{}, rp, testMetadata()).(*redisCachingTokenSource)
-	src2 := newRedisCachingTokenSource(&stubTokenSource{}, rp, testMetadata()).(*redisCachingTokenSource)
+	src1 := newRedisCachingTokenSource(&stubTokenSource{}, rp, testMetadata(), defaultTokenTTLFallback).(*redisCachingTokenSource)
+	src2 := newRedisCachingTokenSource(&stubTokenSource{}, rp, testMetadata(), defaultTokenTTLFallback).(*redisCachingTokenSource)
 
 	if src1.redisClient != src2.redisClient {
 		t.Error("expected two policy instances with identical redis connection settings to share one *redis.Client")

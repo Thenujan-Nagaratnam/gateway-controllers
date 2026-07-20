@@ -25,11 +25,32 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	xoauth2 "golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+)
+
+const (
+	// defaultTokenRequestTimeout bounds how long a single token-endpoint
+	// HTTP call is allowed to take. Without this, golang.org/x/oauth2 falls
+	// back to internal.ContextClient's default - http.DefaultClient, which
+	// has Timeout: 0 (no timeout at all) - so a hung IdP would block a
+	// token fetch indefinitely. 10s matches the default the equivalent Kong
+	// upstream-oauth plugin uses.
+	defaultTokenRequestTimeout = 10 * time.Second
+
+	// defaultTokenTTLFallback is applied when the token endpoint's response
+	// omits expires_in entirely. golang.org/x/oauth2 leaves Token.Expiry as
+	// the zero value in that case, which Token.Valid() always treats as
+	// already-expired - meaning both cache tiers (and the inner
+	// xoauth2.ReuseTokenSource's own reuse-until-expiry behavior) would
+	// otherwise silently never cache the token, refetching on every single
+	// request. 1h matches the default the equivalent Kong upstream-oauth
+	// plugin uses for this same fallback.
+	defaultTokenTTLFallback = time.Hour
 )
 
 const (
@@ -84,6 +105,14 @@ type oauth2Params struct {
 	// the password grant's library helper (PasswordCredentialsToken) has no
 	// equivalent hook, so params has no effect there - see buildTokenSource.
 	customParams map[string]string
+
+	// requestTimeout bounds the token-endpoint HTTP call - see
+	// defaultTokenRequestTimeout.
+	requestTimeout time.Duration
+
+	// tokenTTLFallback is applied by the caching layer when the token
+	// endpoint's response omits expires_in - see defaultTokenTTLFallback.
+	tokenTTLFallback time.Duration
 }
 
 // Policy authenticates outbound requests to an upstream backend using
@@ -130,7 +159,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	if err != nil {
 		return nil, err
 	}
-	tokenSource := newRedisCachingTokenSource(innerSource, extractRedisParams(params), metadata)
+	tokenSource := newRedisCachingTokenSource(innerSource, extractRedisParams(params), metadata, p.tokenTTLFallback)
 
 	pol := &Policy{
 		grantType:        p.grantType,
@@ -154,6 +183,14 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 	authStyle := authStyleFor(p.clientAuthMethod)
 
+	// Both clientcredentials.Config.TokenSource and
+	// xoauth2.Config.PasswordCredentialsToken forward their ctx down to
+	// internal.RetrieveToken, which resolves the *http.Client to use via
+	// internal.ContextClient(ctx) - falling back to http.DefaultClient (no
+	// timeout) if nothing is set on the context. Injecting a bounded client
+	// here, once, covers both grants identically.
+	ctx := context.WithValue(context.Background(), xoauth2.HTTPClient, &http.Client{Timeout: p.requestTimeout})
+
 	switch p.grantType {
 	case GrantTypeClientCredentials:
 		cfg := &clientcredentials.Config{
@@ -167,7 +204,7 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 			// the library's own request/response handling untouched.
 			EndpointParams: toURLValues(p.customParams),
 		}
-		return cfg.TokenSource(context.Background()), nil
+		return cfg.TokenSource(ctx), nil
 
 	case GrantTypePassword:
 		cfg := &xoauth2.Config{
@@ -185,7 +222,7 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 		// replacement HTTP client for this: params support is scoped to
 		// client_credentials only - see oauth2Params.customParams.
 		src := &passwordTokenSource{
-			ctx:      context.Background(),
+			ctx:      ctx,
 			cfg:      cfg,
 			username: p.username,
 			password: p.password,
@@ -305,6 +342,21 @@ func getRequiredStringParam(params map[string]interface{}, key string) (string, 
 	return str, nil
 }
 
+// getDurationParam extracts an optional Go-duration-formatted string
+// parameter (e.g. "10s", "1h"), falling back to def if the key is absent,
+// the wrong type, or unparsable - matching this policy's other optional
+// fields' permissive, best-effort extraction style.
+func getDurationParam(params map[string]interface{}, key string, def time.Duration) time.Duration {
+	if val, ok := params[key]; ok {
+		if str, ok := val.(string); ok {
+			if d, err := time.ParseDuration(strings.TrimSpace(str)); err == nil {
+				return d
+			}
+		}
+	}
+	return def
+}
+
 // getCustomParams extracts the "params" map - additional form fields (e.g.
 // scope) sent verbatim to the token endpoint alongside grant_type and the
 // grant's own fields. Absent or wrong-shaped input just yields no extra
@@ -375,6 +427,8 @@ func validateAndExtractParams(params map[string]interface{}) (oauth2Params, erro
 		return oauth2Params{}, err
 	}
 	p.customParams = getCustomParams(params)
+	p.requestTimeout = getDurationParam(params, "tokenRequestTimeout", defaultTokenRequestTimeout)
+	p.tokenTTLFallback = getDurationParam(params, "defaultTokenTTL", defaultTokenTTLFallback)
 
 	if p.grantType == GrantTypePassword {
 		p.username, err = getRequiredStringParam(params, "username")

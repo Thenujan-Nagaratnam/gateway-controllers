@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	xoauth2 "golang.org/x/oauth2"
 
@@ -145,6 +146,112 @@ func TestGetPolicy_ClientAuthMethod_InvalidValue(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "clientAuthMethod") {
 		t.Errorf("expected error to mention clientAuthMethod, got: %v", err)
+	}
+}
+
+// ─── tokenRequestTimeout / defaultTokenTTL ───────────────────────────────────
+
+func TestValidateAndExtractParams_TimeoutAndTTLDefaults(t *testing.T) {
+	p, err := validateAndExtractParams(validParams())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.requestTimeout != defaultTokenRequestTimeout {
+		t.Errorf("expected requestTimeout to default to %s, got %s", defaultTokenRequestTimeout, p.requestTimeout)
+	}
+	if p.tokenTTLFallback != defaultTokenTTLFallback {
+		t.Errorf("expected tokenTTLFallback to default to %s, got %s", defaultTokenTTLFallback, p.tokenTTLFallback)
+	}
+}
+
+func TestValidateAndExtractParams_TimeoutAndTTLExplicitOverride(t *testing.T) {
+	params := validParams()
+	params["tokenRequestTimeout"] = "2500ms"
+	params["defaultTokenTTL"] = "30m"
+
+	p, err := validateAndExtractParams(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.requestTimeout != 2500*time.Millisecond {
+		t.Errorf("unexpected requestTimeout: %s", p.requestTimeout)
+	}
+	if p.tokenTTLFallback != 30*time.Minute {
+		t.Errorf("unexpected tokenTTLFallback: %s", p.tokenTTLFallback)
+	}
+}
+
+func TestValidateAndExtractParams_TimeoutAndTTLUnparsable_FallsBackToDefault(t *testing.T) {
+	params := validParams()
+	params["tokenRequestTimeout"] = "not-a-duration"
+	params["defaultTokenTTL"] = "also-not-a-duration"
+
+	p, err := validateAndExtractParams(params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.requestTimeout != defaultTokenRequestTimeout {
+		t.Errorf("expected unparsable tokenRequestTimeout to fall back to default %s, got %s", defaultTokenRequestTimeout, p.requestTimeout)
+	}
+	if p.tokenTTLFallback != defaultTokenTTLFallback {
+		t.Errorf("expected unparsable defaultTokenTTL to fall back to default %s, got %s", defaultTokenTTLFallback, p.tokenTTLFallback)
+	}
+}
+
+// TestClientCredentials_TokenRequestTimeout_BoundsHungIdP proves
+// tokenRequestTimeout actually bounds the token-endpoint HTTP call - without
+// it, golang.org/x/oauth2 falls back to http.DefaultClient (Timeout: 0, no
+// bound at all), so a hung IdP would block a token fetch indefinitely.
+func TestClientCredentials_TokenRequestTimeout_BoundsHungIdP(t *testing.T) {
+	const idpDelay = 2 * time.Second
+	const configuredTimeout = 100 * time.Millisecond
+	// Generous upper bound: comfortably covers the ~0.5-1s of connection-retry
+	// overhead the "point redis at 127.0.0.1:1" pattern adds on top of
+	// configuredTimeout (see TestPasswordGrant_EndToEnd, which shows the same
+	// overhead), while still being well under idpDelay - so this only passes
+	// if the timeout actually aborted the request rather than waiting out
+	// the full delay.
+	const maxAcceptableElapsed = 1500 * time.Millisecond
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(idpDelay)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "should-never-be-returned",
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	params := validParams()
+	params["tokenEndpoint"] = server.URL
+	params["tokenRequestTimeout"] = configuredTimeout.String()
+	// See TestPasswordGrant_EndToEnd for why Redis is pinned to an
+	// unreachable address here.
+	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pol := p.(*Policy)
+
+	reqCtx := newRequestHeaderCtx()
+	start := time.Now()
+	action := pol.OnRequestHeaders(context.Background(), reqCtx, nil)
+	elapsed := time.Since(start)
+
+	if elapsed >= maxAcceptableElapsed {
+		t.Errorf("expected the %s timeout to abort the request well before the IdP's %s delay, took %s", configuredTimeout, idpDelay, elapsed)
+	}
+
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected ImmediateResponse (timeout should fail the request), got %T", action)
+	}
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502 Bad Gateway, got %d", resp.StatusCode)
 	}
 }
 

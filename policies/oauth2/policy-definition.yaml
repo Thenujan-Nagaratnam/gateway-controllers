@@ -1,5 +1,5 @@
 name: oauth2
-version: v0.7.0
+version: v0.8.0
 description: |
   Authenticates outbound requests to an upstream backend using OAuth2 before
   they are forwarded. The gateway acts as a confidential client, exchanging
@@ -119,6 +119,30 @@ parameters:
         gateway-controller's config-rendering step resolves secret
         references recursively inside any map value, the same as it does
         for clientSecret/password.
+    tokenRequestTimeout:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        Maximum time to wait for a single token-endpoint HTTP call, as a Go
+        duration string (e.g. "10s", "2500ms"). Without this bound, an
+        unresponsive identity provider would block a token fetch
+        indefinitely - this policy always applies one, never relying on the
+        underlying HTTP client's own (nonexistent) default. Applies to both
+        grantType values.
+      default: "10s"
+    defaultTokenTTL:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        Fallback token lifetime, as a Go duration string (e.g. "1h",
+        "30m"), used only when the token endpoint's response omits
+        expires_in entirely. Without this fallback, an omitted expires_in
+        would mean neither the in-process nor the Redis cache tier could
+        ever consider the token cacheable, silently forcing a fresh token
+        fetch on every single request. Has no effect when the identity
+        provider does return expires_in - that value is always used
+        instead. Applies to both grantType values.
+      default: "1h"
   required:
     - tokenEndpoint
     - clientId

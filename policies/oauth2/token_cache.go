@@ -241,6 +241,10 @@ type redisCachingTokenSource struct {
 	readTimeout       time.Duration
 	writeTimeout      time.Duration
 
+	// defaultTTL is applied to a freshly-fetched token whose Expiry is the
+	// zero value - see the comment at its use site in Token() for why.
+	defaultTTL time.Duration
+
 	mu       sync.Mutex
 	local    *xoauth2.Token
 	redisKey string // resolved lazily from the first request - see resolveAPIIdentity
@@ -250,7 +254,7 @@ type redisCachingTokenSource struct {
 // is kept only for its RouteName, used as a last-resort fallback when
 // deriving the Redis key (see resolveAPIIdentity) - the wrapper otherwise
 // knows nothing about how inner fetches tokens.
-func newRedisCachingTokenSource(inner xoauth2.TokenSource, rp redisParams, metadata policy.PolicyMetadata) tokenProvider {
+func newRedisCachingTokenSource(inner xoauth2.TokenSource, rp redisParams, metadata policy.PolicyMetadata, defaultTTL time.Duration) tokenProvider {
 	client := getOrCreateRedisClient(&redis.Options{
 		Addr:         fmt.Sprintf("%s:%d", rp.host, rp.port),
 		Username:     rp.username,
@@ -277,6 +281,7 @@ func newRedisCachingTokenSource(inner xoauth2.TokenSource, rp redisParams, metad
 		failOpen:          rp.failureMode != FailureModeClosed,
 		readTimeout:       rp.readTimeout,
 		writeTimeout:      rp.writeTimeout,
+		defaultTTL:        defaultTTL,
 	}
 }
 
@@ -303,6 +308,17 @@ func (s *redisCachingTokenSource) Token(reqCtx *policy.RequestHeaderContext) (*x
 	tok, err := s.inner.Token()
 	if err != nil {
 		return nil, err
+	}
+	if tok.Expiry.IsZero() {
+		// Some IdPs omit expires_in entirely; golang.org/x/oauth2 leaves
+		// Expiry as the zero value in that case, and Token.Valid() always
+		// treats a zero-value Expiry as already-expired. Left unfixed, that
+		// would mean this cache tier AND the inner xoauth2.ReuseTokenSource's
+		// own reuse-until-expiry behavior would both silently never cache
+		// the token, refetching on every single request. Mutate tok in
+		// place (not a copy): s.inner's own cached copy is the same
+		// underlying pointer, so this fixes the expiry for both.
+		tok.Expiry = time.Now().Add(s.defaultTTL)
 	}
 	s.setLocal(tok)
 
