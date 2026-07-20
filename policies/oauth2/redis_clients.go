@@ -51,11 +51,19 @@ var redisClients = struct {
 	m  map[redisConnKey]*redis.Client
 }{m: make(map[redisConnKey]*redis.Client)}
 
-func hashRedisPassword(p string) string {
-	if p == "" {
+// hashSensitiveValue returns a SHA-256 hex digest of a secret value, for
+// contexts where the value needs to be part of a lookup key (an in-process
+// map key here; the Redis cache-key discriminator in
+// oauth2ConfigDiscriminator, token_cache.go) without the raw secret ever
+// appearing in that key. Empty stays empty rather than hashing the empty
+// string, so an absent value doesn't collide with some future config that
+// has an empty-but-present one, and so omitempty-tagged JSON fields that use
+// this stay omitted.
+func hashSensitiveValue(s string) string {
+	if s == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(p))
+	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -76,7 +84,7 @@ func getOrCreateRedisClient(opts *redis.Options) *redis.Client {
 	key := redisConnKey{
 		addr:         opts.Addr,
 		username:     opts.Username,
-		passwordHash: hashRedisPassword(opts.Password),
+		passwordHash: hashSensitiveValue(opts.Password),
 		db:           opts.DB,
 		dialTimeout:  opts.DialTimeout,
 		readTimeout:  opts.ReadTimeout,

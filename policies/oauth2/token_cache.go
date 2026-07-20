@@ -218,9 +218,9 @@ type oauth2CacheKeyFields struct {
 //
 // clientSecret and password ARE included, as a SHA-256 hash rather than the
 // raw value (never put raw secret material into a Redis key - key names
-// appear in Redis MONITOR/slowlog output; redis_clients.go's
-// hashRedisPassword follows the same principle for the Redis connection
-// password). An earlier version of this function left both out entirely, on
+// appear in Redis MONITOR/slowlog output; hashSensitiveValue in
+// redis_clients.go applies the same principle to the Redis connection
+// password itself). An earlier version of this function left both out entirely, on
 // the reasoning that a cached token represents "this client, with this
 // scope" rather than "whichever secret proved it this time", so rotating a
 // secret for the same clientId/tokenEndpoint shouldn't invalidate a
@@ -245,8 +245,8 @@ func oauth2ConfigDiscriminator(p oauth2Params) string {
 		ClientAuthMethod: p.clientAuthMethod,
 		Username:         p.username,
 		Params:           p.customParams,
-		ClientSecretHash: hashSecret(p.clientSecret),
-		PasswordHash:     hashSecret(p.password),
+		ClientSecretHash: hashSensitiveValue(p.clientSecret),
+		PasswordHash:     hashSensitiveValue(p.password),
 	}
 	// Marshaling a struct of plain strings and a map[string]string cannot
 	// fail; the error is only checked to satisfy static analysis.
@@ -255,21 +255,6 @@ func oauth2ConfigDiscriminator(p oauth2Params) string {
 		data = []byte(fmt.Sprintf("%+v", fields))
 	}
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-// hashSecret returns a SHA-256 hex digest of a secret value for inclusion in
-// the cache-key discriminator - never the raw value, per
-// oauth2ConfigDiscriminator's doc comment. Empty stays empty (rather than
-// hashing the empty string) purely to keep the JSON field omitted via
-// omitempty - password is unset entirely for client_credentials, and this
-// keeps that case's serialized bytes identical to before password support
-// existed rather than embedding sha256("")'s digest for every such config.
-func hashSecret(s string) string {
-	if s == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
 
