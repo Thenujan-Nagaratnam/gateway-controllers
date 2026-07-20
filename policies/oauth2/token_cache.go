@@ -282,11 +282,10 @@ type cachedToken struct {
 	Expiry       time.Time `json:"expiry"`
 }
 
-// tokenProvider is satisfied by redisCachingTokenSource. Unlike
-// xoauth2.TokenSource, Token() takes the request-header context: the Redis
-// cache key can only be resolved correctly from data (SharedContext.APIId
-// et al.) that's only available at request time, not from anything passed
-// into GetPolicy at construction time - see resolveAPIIdentity.
+// tokenProvider is satisfied by redisCachingTokenSource. Same shape as
+// xoauth2.TokenSource - no request-time context is needed to look up the
+// cache entry, since the Redis key is derived entirely from the oauth2
+// config at construction time (see oauth2ConfigDiscriminator).
 type tokenProvider interface {
 	Token() (*xoauth2.Token, error)
 }

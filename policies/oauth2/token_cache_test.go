@@ -131,6 +131,36 @@ func TestOauth2ConfigDiscriminator_DifferentUsername_ProducesDifferentKey(t *tes
 	}
 }
 
+// TestOauth2ConfigDiscriminator_DifferentClientAuthMethod_ProducesDifferentKey
+// locks in that clientAuthMethod (client_secret_basic vs client_secret_post)
+// is part of the discriminator: it's plausible for two configs to share
+// every other field yet differ only in how credentials are presented to the
+// token endpoint (e.g. one IdP integration migrating from Basic auth to
+// POST body auth) - those requests aren't necessarily equivalent from the
+// IdP's perspective, so treating them as separate cache entries is the safe
+// default.
+func TestOauth2ConfigDiscriminator_DifferentClientAuthMethod_ProducesDifferentKey(t *testing.T) {
+	a := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.clientAuthMethod = ClientAuthMethodBasic }))
+	b := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.clientAuthMethod = ClientAuthMethodPost }))
+	if a == b {
+		t.Error("expected a different clientAuthMethod to produce a different discriminator")
+	}
+}
+
+// TestOauth2ConfigDiscriminator_NilVsEmptyCustomParams_ProducesSameKey locks
+// in that a config with no "params" set at all (customParams == nil, the
+// client_credentials/no-scope common case) and one with an explicitly empty
+// "params": {} are indistinguishable - both mean "no extra token-request
+// fields" and must land on the same cache entry, not two different ones for
+// what is operationally the same configuration.
+func TestOauth2ConfigDiscriminator_NilVsEmptyCustomParams_ProducesSameKey(t *testing.T) {
+	a := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.customParams = nil }))
+	b := oauth2ConfigDiscriminator(testParams(func(p *oauth2Params) { p.customParams = map[string]string{} }))
+	if a != b {
+		t.Error("expected nil and empty customParams to produce the same discriminator")
+	}
+}
+
 // TestOauth2ConfigDiscriminator_DifferentScope_ProducesDifferentKey locks in
 // the exact bug this discriminator fixes: a proxy's primary provider and an
 // additionalProviders entry can share clientId/tokenEndpoint but request
