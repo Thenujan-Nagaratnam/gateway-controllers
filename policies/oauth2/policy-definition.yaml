@@ -86,22 +86,22 @@ parameters:
         grantType is password; unused for client_credentials.
     params:
       type: object
+      x-wso2-policy-advanced-param: false
       additionalProperties:
         type: string
-      x-wso2-policy-advanced-param: false
       description: |
-        Optional extra parameters appended to the token request body, as a
-        flat map of string key/value pairs - the same "custom parameters"
-        convention WSO2 API Manager's own endpoint security config uses.
-        There is no first-class "scope" field: if the identity provider
-        needs one, add it here, e.g. {"scope": "chat.completions
-        embeddings"}. Also how to pass any other IdP-specific parameter a
-        token endpoint may require (for example Azure AD's v1 endpoint,
-        which expects "resource" instead of "scope"). If any value here is
-        itself sensitive, reference a stored secret instead of a literal -
-        {"someParam": "{{ secret \"handle\" }}"} - gateway-controller's
-        config-rendering step resolves secret references recursively inside
-        any map value, the same as it does for clientSecret/password.
+        Optional extra form fields sent verbatim to the token endpoint,
+        merged into the request body alongside grant_type and the grant's
+        own fields. The primary use is scope (e.g. params: {scope: "read
+        write"}), but this also covers IdP-specific parameters such as
+        resource, audience, or tenant. Only applies when grantType is
+        client_credentials - the password grant's request body is fixed
+        (grant_type/username/password) and does not forward this field. If
+        any value here is itself sensitive, reference a stored secret
+        instead of a literal - {"someParam": "{{ secret \"handle\" }}"} -
+        gateway-controller's config-rendering step resolves secret
+        references recursively inside any map value, the same as it does
+        for clientSecret/password.
   required:
     - tokenEndpoint
     - clientId

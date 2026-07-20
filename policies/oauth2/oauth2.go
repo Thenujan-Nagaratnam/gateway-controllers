@@ -21,23 +21,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	xoauth2 "golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
-
-// maxTokenResponseBytes bounds how much of a token-endpoint response this
-// policy will read for the hand-built password grant, regardless of what
-// the server claims or sends - a real token response is at most a few KB.
-const maxTokenResponseBytes = 64 * 1024
 
 const (
 	// GrantTypeClientCredentials (RFC 6749 Section 4.4) is the standard
@@ -72,15 +65,12 @@ type oauth2Params struct {
 	username      string
 	password      string
 
-	// extraParams comes from the "params" policy parameter - an optional,
-	// flat map of extra fields appended to the token request body, the same
-	// "custom parameters" convention WSO2 API Manager's own endpoint
-	// security config uses. There is no first-class "scope" field: if the
-	// identity provider needs one, it goes in here, e.g.
-	// {"scope": "chat.completions embeddings"}. This is also how to pass any
-	// other IdP-specific field a token endpoint may require (for example
-	// Azure AD's v1 endpoint, which expects "resource" instead of "scope").
-	extraParams map[string]string
+	// customParams comes from the "params" policy parameter and only applies
+	// to the client_credentials grant - golang.org/x/oauth2/clientcredentials
+	// exposes an EndpointParams hook to carry it into the token request body;
+	// the password grant's library helper (PasswordCredentialsToken) has no
+	// equivalent hook, so params has no effect there - see buildTokenSource.
+	customParams map[string]string
 }
 
 // Policy authenticates outbound requests to an upstream backend using
@@ -145,11 +135,6 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 // This is the extension point for future grants: each grant gets its own
 // case here, building whatever xoauth2.TokenSource fits that grant's flow.
 func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
-	var scopes []string
-	if p.scope != "" {
-		scopes = strings.Fields(p.scope)
-	}
-
 	switch p.grantType {
 	case GrantTypeClientCredentials:
 		cfg := &clientcredentials.Config{
@@ -157,7 +142,11 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 			ClientSecret: p.clientSecret,
 			TokenURL:     p.tokenEndpoint,
 			AuthStyle:    xoauth2.AuthStyleInHeader,
-			Scopes:       scopes,
+			// EndpointParams carries customParams (e.g. scope) verbatim into
+			// the token request body - golang.org/x/oauth2/clientcredentials
+			// exposes this hook directly, so client_credentials keeps using
+			// the library's own request/response handling untouched.
+			EndpointParams: toURLValues(p.customParams),
 		}
 		return cfg.TokenSource(context.Background()), nil
 
@@ -169,7 +158,18 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 				TokenURL:  p.tokenEndpoint,
 				AuthStyle: xoauth2.AuthStyleInHeader,
 			},
-			Scopes: scopes,
+		}
+		// oauth2.Config.PasswordCredentialsToken has no EndpointParams-style
+		// hook - its form body is hardcoded to grant_type/username/password
+		// (plus Scopes, which this policy doesn't set here) - so customParams
+		// has no effect on this grant. Deliberately not hand-building a
+		// replacement HTTP client for this: params support is scoped to
+		// client_credentials only - see oauth2Params.customParams.
+		src := &passwordTokenSource{
+			ctx:      context.Background(),
+			cfg:      cfg,
+			username: p.username,
+			password: p.password,
 		}
 		// oauth2.Config.TokenSource(ctx, initialToken) only knows how to
 		// refresh via a refresh_token grant, which the password grant's
@@ -179,12 +179,6 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 		// issued. Wrapping it in xoauth2.ReuseTokenSource gives it the same
 		// caching/mutex-safety property clientcredentials.Config.TokenSource
 		// gets for free internally.
-		src := &passwordTokenSource{
-			ctx:      context.Background(),
-			cfg:      cfg,
-			username: p.username,
-			password: p.password,
-		}
 		return xoauth2.ReuseTokenSource(nil, src), nil
 
 	default:
@@ -194,6 +188,21 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 		// needs a matching new case.
 		return nil, fmt.Errorf("unsupported grantType %q", p.grantType)
 	}
+}
+
+// toURLValues converts a flat string map into url.Values, the shape
+// golang.org/x/oauth2/clientcredentials.Config.EndpointParams expects.
+// Returns nil (not an empty, non-nil map) when there's nothing to add, so
+// EndpointParams stays unset rather than an empty-but-present value.
+func toURLValues(m map[string]string) url.Values {
+	if len(m) == 0 {
+		return nil
+	}
+	v := make(url.Values, len(m))
+	for key, val := range m {
+		v.Set(key, val)
+	}
+	return v
 }
 
 // passwordTokenSource implements the Resource Owner Password Credentials
@@ -258,6 +267,34 @@ func getRequiredStringParam(params map[string]interface{}, key string) (string, 
 	return str, nil
 }
 
+// getCustomParams extracts the "params" map - additional form fields (e.g.
+// scope) sent verbatim to the token endpoint alongside grant_type and the
+// grant's own fields. Absent or wrong-shaped input just yields no extra
+// params rather than an error, matching how the other optional fields in
+// this policy behave.
+func getCustomParams(params map[string]interface{}) map[string]string {
+	raw, ok := params["params"]
+	if !ok {
+		return nil
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if s, ok := v.(string); ok {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				out[k] = trimmed
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // validateAndExtractParams validates and extracts all policy params.
 // grantType defaults to GrantTypeClientCredentials when omitted. Fields that
 // only apply to one grant (username/password for the password grant) are
@@ -291,7 +328,7 @@ func validateAndExtractParams(params map[string]interface{}) (oauth2Params, erro
 	if err != nil {
 		return oauth2Params{}, err
 	}
-	p.scope = getStringParam(params, "scope")
+	p.customParams = getCustomParams(params)
 
 	if p.grantType == GrantTypePassword {
 		p.username, err = getRequiredStringParam(params, "username")

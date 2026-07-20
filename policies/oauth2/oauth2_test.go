@@ -279,14 +279,181 @@ func TestGetPolicy_MissingRequiredParams(t *testing.T) {
 	}
 }
 
-func TestGetPolicy_ScopeIsOptionalAndSplit(t *testing.T) {
+func TestGetCustomParams(t *testing.T) {
+	tests := []struct {
+		name   string
+		params map[string]interface{}
+		want   map[string]string
+	}{
+		{
+			name:   "absent",
+			params: map[string]interface{}{},
+			want:   nil,
+		},
+		{
+			name:   "wrong type",
+			params: map[string]interface{}{"params": "scope=read"},
+			want:   nil,
+		},
+		{
+			name:   "single string value",
+			params: map[string]interface{}{"params": map[string]interface{}{"scope": "read write"}},
+			want:   map[string]string{"scope": "read write"},
+		},
+		{
+			name: "multiple values, trimmed",
+			params: map[string]interface{}{"params": map[string]interface{}{
+				"scope":    "  read write  ",
+				"resource": "https://api.example.com",
+			}},
+			want: map[string]string{
+				"scope":    "read write",
+				"resource": "https://api.example.com",
+			},
+		},
+		{
+			name:   "non-string value dropped",
+			params: map[string]interface{}{"params": map[string]interface{}{"scope": 123}},
+			want:   nil,
+		},
+		{
+			name:   "blank value dropped",
+			params: map[string]interface{}{"params": map[string]interface{}{"scope": "   "}},
+			want:   nil,
+		},
+		{
+			name:   "empty map",
+			params: map[string]interface{}{"params": map[string]interface{}{}},
+			want:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getCustomParams(tt.params)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %#v, want %#v", got, tt.want)
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("key %q: got %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestGetPolicy_ParamsIsOptional(t *testing.T) {
 	params := validParams()
-	params["scope"] = "chat.completions embeddings"
+	params["params"] = map[string]interface{}{"scope": "chat.completions embeddings"}
 	p, err := GetPolicy(policy.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	_ = p // scope is passed straight into clientcredentials.Config; nothing further to assert here
+	_ = p
+}
+
+func TestClientCredentials_EndToEnd_ParamsReachTokenEndpoint(t *testing.T) {
+	var gotScope, gotResource string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("failed to parse form: %v", err)
+		}
+		gotScope = r.PostForm.Get("scope")
+		gotResource = r.PostForm.Get("resource")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "cc-grant-token-xyz",
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	params := validParams()
+	params["tokenEndpoint"] = server.URL
+	params["params"] = map[string]interface{}{
+		"scope":    "read write",
+		"resource": "https://api.example.com",
+	}
+	// See TestPasswordGrant_EndToEnd for why Redis is pinned to an
+	// unreachable address here.
+	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pol := p.(*Policy)
+
+	reqCtx := newRequestHeaderCtx()
+	action := pol.OnRequestHeaders(context.Background(), reqCtx, nil)
+	mods, ok := action.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+	if mods.HeadersToSet["Authorization"] != "Bearer cc-grant-token-xyz" {
+		t.Errorf("unexpected Authorization header: %q", mods.HeadersToSet["Authorization"])
+	}
+
+	if gotScope != "read write" {
+		t.Errorf("expected token endpoint to receive scope=%q, got %q", "read write", gotScope)
+	}
+	if gotResource != "https://api.example.com" {
+		t.Errorf("expected token endpoint to receive resource=%q, got %q", "https://api.example.com", gotResource)
+	}
+}
+
+// TestPasswordGrant_ParamsHaveNoEffect locks in that "params" is scoped to
+// client_credentials only (see oauth2Params.customParams) - setting it
+// alongside grantType: password must not error, but must also not reach the
+// token endpoint, since the password grant delegates to
+// xoauth2.Config.PasswordCredentialsToken, which has no hook to forward it.
+func TestPasswordGrant_ParamsHaveNoEffect(t *testing.T) {
+	var gotScope string
+	var sawScopeKey bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("failed to parse form: %v", err)
+		}
+		_, sawScopeKey = r.PostForm["scope"]
+		gotScope = r.PostForm.Get("scope")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "password-grant-token-no-params",
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	params := passwordGrantParams()
+	params["tokenEndpoint"] = server.URL
+	params["username"] = "resource-owner"
+	params["password"] = "hunter2"
+	params["params"] = map[string]interface{}{"scope": "profile email"}
+	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pol := p.(*Policy)
+
+	reqCtx := newRequestHeaderCtx()
+	action := pol.OnRequestHeaders(context.Background(), reqCtx, nil)
+	mods, ok := action.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+	if mods.HeadersToSet["Authorization"] != "Bearer password-grant-token-no-params" {
+		t.Errorf("unexpected Authorization header: %q", mods.HeadersToSet["Authorization"])
+	}
+	if sawScopeKey {
+		t.Errorf("expected no scope field to reach the token endpoint for the password grant, got %q", gotScope)
+	}
 }
 
 // ─── Mode ────────────────────────────────────────────────────────────────────
