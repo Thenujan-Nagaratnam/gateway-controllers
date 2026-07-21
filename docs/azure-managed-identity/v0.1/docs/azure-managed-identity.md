@@ -7,7 +7,7 @@ title: "Overview"
 
 The **azure-managed-identity** policy authenticates outbound requests to an
 Azure-hosted backend using a **User-Assigned Managed Identity (UMI)** before
-they are forwarded. Unlike the [`oauth2`](../../oauth2/v0.4/docs/oauth2.md)
+they are forwarded. Unlike the [`oauth2-upstream-authentication`](../../../oauth2-upstream-authentication/v0.4/docs/oauth2-upstream-authentication.md)
 policy, there is no `clientSecret` to configure at all: the gateway asks the
 Azure platform's **Instance Metadata Service (IMDS)**,
 `http://169.254.169.254/metadata/identity/oauth2/token`, for a token on the
@@ -26,7 +26,9 @@ there isn't one to present.
 > way to make this policy work from any other environment (on-prem, another
 > cloud, or local development) against the real endpoint. Use
 > `systemParameters.imdsEndpoint` to point at a mock IMDS server for local
-> testing - see `gateway/dev-policies/azure-managed-identity/TESTING.md`.
+> testing - see `gateway/dev-policies/azure-managed-identity/TESTING.md`,
+> a path relative to the root of the `api-platform` repository (the local
+> dev/test harness for this policy lives there, not in this repository).
 
 This policy covers the **classic IMDS mechanism only** (node/VM-level
 managed identity). [Azure AD Workload Identity](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation)
@@ -44,8 +46,11 @@ not implemented here.
 - Cache keyed by API/route **and** by `clientId`/`resource`, so a config
   change that swaps identity or target resource can never keep serving a
   stale token minted under the old configuration
-- Fails closed (generic `502`, no detail leaked) on any IMDS or Redis
-  failure, consistent with every other outbound-auth policy in this catalog
+- Fails closed (generic `502`, no detail leaked) on any IMDS failure, and on
+  a Redis failure when `redis.failureMode` is `closed`; the default `open`
+  mode instead falls back to fetching directly from IMDS on a Redis failure
+  (see `redis.failureMode` below) - consistent with every other
+  outbound-auth policy in this catalog
 
 ## Configuration
 
