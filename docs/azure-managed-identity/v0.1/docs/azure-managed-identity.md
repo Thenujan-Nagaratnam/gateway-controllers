@@ -7,7 +7,7 @@ title: "Overview"
 
 The **azure-managed-identity** policy authenticates outbound requests to an
 Azure-hosted backend using a **User-Assigned Managed Identity (UMI)** before
-they are forwarded. Unlike the [`oauth2-upstream-authentication`](../../../oauth2-upstream-authentication/v0.4/docs/oauth2-upstream-authentication.md)
+they are forwarded. Unlike the [`upstream-oauth2-authentication`](../../../upstream-oauth2-authentication/v0.4/docs/upstream-oauth2-authentication.md)
 policy, there is no `clientSecret` to configure at all: the gateway asks the
 Azure platform's **Instance Metadata Service (IMDS)**,
 `http://169.254.169.254/metadata/identity/oauth2/token`, for a token on the

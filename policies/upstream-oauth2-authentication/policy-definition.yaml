@@ -1,0 +1,268 @@
+name: upstream-oauth2-authentication
+version: v0.8.0
+description: |
+  Authenticates outbound requests to an upstream backend using OAuth2 before
+  they are forwarded. The gateway acts as a confidential client, exchanging
+  credentials for a short-lived access token and injecting it as an
+  Authorization: Bearer header. Tokens are cached and refreshed automatically
+  ahead of expiry. The grant used is selected via grantType: client_credentials
+  (RFC 6749 Section 4.4, the standard machine-to-machine grant) or password
+  (RFC 6749 Section 4.3, Resource Owner Password Credentials). The client ID
+  and secret are presented to the token endpoint per clientAuthMethod -
+  client_secret_basic (HTTP Basic auth, the default and RFC 6749's preferred
+  convention) or client_secret_post (client_id/client_secret as form fields
+  in the request body) - same choice, same effect, for both grants.
+
+  Tokens are cached in Redis (see systemParameters.redis below) so every
+  gateway-runtime replica shares one token per API instead of each
+  independently calling the token endpoint, and a replica restart doesn't
+  force a fresh token fetch. Cached per API, not per route/resource: oauth2
+  config lives on upstream.auth, one value for the whole API, so every
+  resource an LlmProvider/LlmProxy exposes shares the same cached token
+  rather than each minting its own. A small in-process cache sits in front
+  of Redis so the hot path (token already known-good) never pays a network
+  round trip. Redis is an optimization, not a hard dependency: if it is
+  unreachable, the policy falls back to fetching directly from the token
+  endpoint on every request (or, if systemParameters.redis.failureMode is
+  set to closed, treats the outage as an authentication failure) - see
+  systemParameters below.
+
+  If the upstream backend rejects a cached token (see
+  tokenPurgeStatusCodes, default [401]) - e.g. it was revoked
+  out-of-band at the identity provider - the policy purges it from both
+  cache tiers so the next request fetches a fresh one instead of reusing the
+  same rejected token.
+
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    grantType:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        OAuth2 grant type. "client_credentials" (RFC 6749 4.4) is the
+        standard machine-to-machine grant and should be preferred. "password"
+        (RFC 6749 4.3, Resource Owner Password Credentials) is supported for
+        legacy identity providers only - see the security note above.
+        Defaults to client_credentials when omitted.
+      enum:
+        - client_credentials
+        - password
+      default: client_credentials
+    tokenEndpoint:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        URL of the OAuth2 token endpoint this policy calls to obtain an
+        access token via the configured grantType.
+    clientId:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        OAuth2 client ID used to authenticate to the token endpoint.
+    clientSecret:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        OAuth2 client secret paired with clientId.
+    clientAuthMethod:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        How clientId/clientSecret are presented to the token endpoint.
+        "client_secret_basic" (RFC 6749's preferred convention, sent as an
+        HTTP Basic Authorization header) should be preferred whenever the
+        identity provider supports it. "client_secret_post" sends them as
+        client_id/client_secret fields in the token request's form body
+        instead - some identity providers require this. Applies identically
+        to both grantType values. Defaults to client_secret_basic when
+        omitted.
+      enum:
+        - client_secret_basic
+        - client_secret_post
+      default: client_secret_basic
+    username:
+      type: string
+      x-wso2-policy-advanced-param: false
+      minLength: 1
+      description: |
+        Resource owner username. Required when grantType is password;
+        unused for client_credentials.
+    password:
+      type: string
+      x-wso2-policy-advanced-param: true
+      minLength: 1
+      description: |
+        Resource owner password, paired with username. Required when
+        grantType is password; unused for client_credentials.
+    params:
+      type: object
+      x-wso2-policy-advanced-param: false
+      additionalProperties:
+        type: string
+      description: |
+        Optional extra form fields sent verbatim to the token endpoint,
+        merged into the request body alongside grant_type and the grant's
+        own fields. The primary use is scope (e.g. params: {scope: "read
+        write"}), but this also covers IdP-specific parameters such as
+        resource, audience, or tenant. Only applies when grantType is
+        client_credentials - the password grant's request body is fixed
+        (grant_type/username/password) and does not forward this field. If
+        any value here is itself sensitive, reference a stored secret
+        instead of a literal - {"someParam": "{{ secret \"handle\" }}"} -
+        gateway-controller's config-rendering step resolves secret
+        references recursively inside any map value, the same as it does
+        for clientSecret/password.
+    tokenRequestTimeout:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        Maximum time to wait for a single token-endpoint HTTP call, as a Go
+        duration string (e.g. "10s", "2500ms"). Without this bound, an
+        unresponsive identity provider would block a token fetch
+        indefinitely - this policy always applies one, never relying on the
+        underlying HTTP client's own (nonexistent) default. Applies to both
+        grantType values.
+      default: "10s"
+    defaultTokenTTL:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        Fallback token lifetime, as a Go duration string (e.g. "1h",
+        "30m"), used only when the token endpoint's response omits
+        expires_in entirely. Without this fallback, an omitted expires_in
+        would mean neither the in-process nor the Redis cache tier could
+        ever consider the token cacheable, silently forcing a fresh token
+        fetch on every single request. Has no effect when the identity
+        provider does return expires_in - that value is always used
+        instead. Applies to both grantType values.
+      default: "1h"
+    tokenPurgeStatusCodes:
+      type: array
+      x-wso2-policy-advanced-param: true
+      items:
+        type: integer
+        minimum: 100
+        maximum: 599
+      description: |
+        Upstream response status codes that purge the cached token from both
+        cache tiers, so the next request fetches a fresh one instead of
+        reusing the same rejected token - e.g. the identity provider revoked
+        it out-of-band since it was cached. Does not retry the request that
+        triggered the purge; that request still completes with whatever the
+        upstream returned. Defaults to [401], the standard signal (RFC 6750
+        Section 3) that a bearer token was rejected as invalid - 403 is
+        deliberately not included by default, since it usually means
+        insufficient scope for an otherwise-valid token, and purging would
+        just cost an identical refetch for no benefit. Set to an empty list
+        to disable response-phase processing entirely.
+      default: [401]
+  required:
+    - tokenEndpoint
+    - clientId
+    - clientSecret
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    redis:
+      type: object
+      description: >
+        Configures the Redis instance used to cache OAuth2 access tokens
+        across gateway-runtime replicas. These are operator/gateway-level
+        settings, not something an individual API publisher sets - resolve
+        them once via config.policy_configurations.upstream_oauth2_v1.redis.* in the
+        gateway's own configuration, same as ratelimit_v1.redis does for the
+        advanced-ratelimit policy.
+      additionalProperties: false
+      properties:
+        host:
+          type: string
+          description: Specifies the Redis host name or IP address.
+          default: "localhost"
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.host}"
+
+        port:
+          type: integer
+          description: Specifies the Redis server port.
+          minimum: 1
+          maximum: 65535
+          default: 6379
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.port}"
+
+        password:
+          type: string
+          description: Specifies the optional Redis authentication password.
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.password}"
+
+        username:
+          type: string
+          description: Specifies the optional Redis ACL username.
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.username}"
+
+        db:
+          type: integer
+          description: Specifies the Redis database index.
+          minimum: 0
+          maximum: 15
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.db}"
+
+        keyPrefix:
+          type: string
+          description: Specifies the prefix used for all Redis keys this policy writes.
+          default: "upstream-oauth2:token:v1:"
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.key_prefix}"
+
+        failureMode:
+          type: string
+          description: |
+            Specifies behavior when Redis is unavailable. "open" falls back to
+            fetching a fresh token directly from the token endpoint on every
+            request - a Redis outage degrades caching, not authentication.
+            "closed" treats a Redis error as a token-acquisition failure
+            (the same generic 502 as any other token-acquisition failure).
+          enum: ["open", "closed"]
+          default: "open"
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.failure_mode}"
+
+        connectionTimeout:
+          type: string
+          description: Specifies the Redis connection timeout as a Go duration
+            string. Supports units ns, us, µs, ms, s, m, h, including
+            composite and fractional values (for example "500ms", "1.5s",
+            "1m30s").
+          default: "5s"
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.connection_timeout}"
+
+        readTimeout:
+          type: string
+          description: Specifies the Redis read timeout as a Go duration
+            string. Supports units ns, us, µs, ms, s, m, h, including
+            composite and fractional values (for example "500ms", "1.5s",
+            "1m30s").
+          default: "3s"
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.read_timeout}"
+
+        writeTimeout:
+          type: string
+          description: Specifies the Redis write timeout as a Go duration
+            string. Supports units ns, us, µs, ms, s, m, h, including
+            composite and fractional values (for example "500ms", "1.5s",
+            "1m30s").
+          default: "3s"
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.write_timeout}"
+
+        poolSize:
+          type: integer
+          description: |
+            Redis connection pool size for the shared client. 0 = go-redis default
+            (10 × GOMAXPROCS). One pool is shared per distinct Redis endpoint config.
+          minimum: 0
+          default: 0
+          "wso2/defaultValue": "${config.policy_configurations.upstream_oauth2_v1.redis.pool_size}"

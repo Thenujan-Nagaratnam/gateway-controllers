@@ -1,0 +1,11 @@
+{
+  "name": "upstream-oauth2-authentication",
+  "displayName": "Upstream OAuth2 Authentication",
+  "version": "1.0",
+  "provider": "WSO2",
+  "categories": [
+    "Security",
+    "AI"
+  ],
+  "description": "Authenticates outbound requests to an upstream backend using OAuth2. The gateway\nexchanges credentials for a short-lived access token at a configured token endpoint\nand injects it as an Authorization: Bearer header. Tokens are cached and refreshed\nautomatically ahead of expiry. The grant used is selected via grantType:\nclient_credentials (RFC 6749 4.4, the standard machine-to-machine grant) or\npassword (RFC 6749 4.3, Resource Owner Password Credentials, for legacy identity\nproviders)."
+}
