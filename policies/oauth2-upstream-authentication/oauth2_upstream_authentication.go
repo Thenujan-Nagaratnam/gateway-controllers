@@ -94,11 +94,13 @@ type oauth2Params struct {
 	username         string
 	password         string
 
-	// customParams comes from the "params" policy parameter and only applies
-	// to the client_credentials grant - golang.org/x/oauth2/clientcredentials
-	// exposes an EndpointParams hook to carry it into the token request body;
-	// the password grant's library helper (PasswordCredentialsToken) has no
-	// equivalent hook, so params has no effect there - see buildTokenSource.
+	// customParams comes from the "params" policy parameter. For
+	// client_credentials, golang.org/x/oauth2/clientcredentials exposes an
+	// EndpointParams hook that carries the whole map into the token request
+	// body. For password, only a "scope" entry has any effect - mapped to
+	// xoauth2.Config.Scopes, the one extensibility point
+	// PasswordCredentialsToken actually has; every other key is ignored for
+	// this grant - see buildTokenSource.
 	customParams map[string]string
 
 	// requestTimeout bounds the token-endpoint HTTP call - see
@@ -211,11 +213,15 @@ func buildTokenSource(p oauth2Params) (xoauth2.TokenSource, error) {
 			},
 		}
 		// oauth2.Config.PasswordCredentialsToken has no EndpointParams-style
-		// hook - its form body is hardcoded to grant_type/username/password
-		// (plus Scopes, which this policy doesn't set here) - so customParams
-		// has no effect on this grant. Deliberately not hand-building a
-		// replacement HTTP client for this: params support is scoped to
-		// client_credentials only - see oauth2Params.customParams.
+		// hook for arbitrary extra fields - its form body is hardcoded to
+		// grant_type/username/password, plus scope if Config.Scopes is set.
+		// scope is therefore the one customParams entry this grant can
+		// honor; anything else in customParams (audience, resource, tenant,
+		// ...) has no effect here - see oauth2Params.customParams. Space-
+		// delimited per RFC 6749 Section 3.3.
+		if scope := p.customParams["scope"]; scope != "" {
+			cfg.Scopes = strings.Fields(scope)
+		}
 		src := &passwordTokenSource{
 			ctx:      ctx,
 			cfg:      cfg,

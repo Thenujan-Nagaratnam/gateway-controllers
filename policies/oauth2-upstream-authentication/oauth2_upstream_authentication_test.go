@@ -661,24 +661,21 @@ func TestClientCredentials_EndToEnd_ParamsReachTokenEndpoint(t *testing.T) {
 	}
 }
 
-// TestPasswordGrant_ParamsHaveNoEffect locks in that "params" is scoped to
-// client_credentials only (see oauth2Params.customParams) - setting it
-// alongside grantType: password must not error, but must also not reach the
-// token endpoint, since the password grant delegates to
-// xoauth2.Config.PasswordCredentialsToken, which has no hook to forward it.
-func TestPasswordGrant_ParamsHaveNoEffect(t *testing.T) {
+// TestPasswordGrant_ScopeReachesTokenEndpoint locks in that "params.scope"
+// is honored for the password grant - mapped to xoauth2.Config.Scopes, the
+// one extensibility point xoauth2.Config.PasswordCredentialsToken actually
+// has (see buildTokenSource).
+func TestPasswordGrant_ScopeReachesTokenEndpoint(t *testing.T) {
 	var gotScope string
-	var sawScopeKey bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("failed to parse form: %v", err)
 		}
-		_, sawScopeKey = r.PostForm["scope"]
 		gotScope = r.PostForm.Get("scope")
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"access_token": "password-grant-token-no-params",
+			"access_token": "password-grant-token-with-scope",
 			"token_type":   "Bearer",
 			"expires_in":   300,
 		})
@@ -704,11 +701,63 @@ func TestPasswordGrant_ParamsHaveNoEffect(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
 	}
-	if mods.HeadersToSet["Authorization"] != "Bearer password-grant-token-no-params" {
+	if mods.HeadersToSet["Authorization"] != "Bearer password-grant-token-with-scope" {
 		t.Errorf("unexpected Authorization header: %q", mods.HeadersToSet["Authorization"])
 	}
-	if sawScopeKey {
-		t.Errorf("expected no scope field to reach the token endpoint for the password grant, got %q", gotScope)
+	if gotScope != "profile email" {
+		t.Errorf("expected token endpoint to receive scope=%q, got %q", "profile email", gotScope)
+	}
+}
+
+// TestPasswordGrant_NonScopeParamsHaveNoEffect locks in that every
+// "params" entry other than "scope" stays scoped to client_credentials
+// (see oauth2Params.customParams) - setting one alongside grantType:
+// password must not error, but must also not reach the token endpoint,
+// since xoauth2.Config.PasswordCredentialsToken has no hook to forward
+// anything but scope.
+func TestPasswordGrant_NonScopeParamsHaveNoEffect(t *testing.T) {
+	var gotResource string
+	var sawResourceKey bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("failed to parse form: %v", err)
+		}
+		_, sawResourceKey = r.PostForm["resource"]
+		gotResource = r.PostForm.Get("resource")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "password-grant-token-no-resource",
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	params := passwordGrantParams()
+	params["tokenEndpoint"] = server.URL
+	params["username"] = "resource-owner"
+	params["password"] = "hunter2"
+	params["params"] = map[string]interface{}{"resource": "https://api.example.com"}
+	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pol := p.(*Policy)
+
+	reqCtx := newRequestHeaderCtx()
+	action := pol.OnRequestHeaders(context.Background(), reqCtx, nil)
+	mods, ok := action.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", action)
+	}
+	if mods.HeadersToSet["Authorization"] != "Bearer password-grant-token-no-resource" {
+		t.Errorf("unexpected Authorization header: %q", mods.HeadersToSet["Authorization"])
+	}
+	if sawResourceKey {
+		t.Errorf("expected no resource field to reach the token endpoint for the password grant, got %q", gotResource)
 	}
 }
 
