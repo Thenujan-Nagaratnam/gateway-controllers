@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +48,13 @@ const (
 	// cached and every request would refetch it.
 	defaultTokenTTLFallback = time.Hour
 )
+
+// defaultPurgeStatusCodes is applied when purgeTokenOnUpstreamStatusCodes is
+// omitted. 401 is the standard signal (RFC 6750 Section 3) that a bearer
+// token was rejected as invalid - as opposed to e.g. 403, which usually
+// means insufficient scope for an otherwise-valid token and would gain
+// nothing from a purge.
+var defaultPurgeStatusCodes = []int{http.StatusUnauthorized}
 
 const (
 	// GrantTypeClientCredentials (RFC 6749 Section 4.4) is the standard
@@ -110,6 +118,10 @@ type oauth2Params struct {
 	// tokenTTLFallback is applied by the caching layer when the token
 	// endpoint's response omits expires_in - see defaultTokenTTLFallback.
 	tokenTTLFallback time.Duration
+
+	// purgeStatusCodes are the upstream response status codes that purge the
+	// cached token - see OnResponseHeaders and defaultPurgeStatusCodes.
+	purgeStatusCodes map[int]struct{}
 }
 
 // Policy authenticates outbound requests to an upstream backend using
@@ -135,6 +147,12 @@ type Policy struct {
 	// mirroring the retrieveCredentialsFunc pattern used in the
 	// aws-authentication policy.
 	tokenFunc func() (*xoauth2.Token, error)
+
+	// purgeStatusCodes are the upstream response status codes that purge the
+	// cached token via tokenSource.Purge() - see OnResponseHeaders. Empty
+	// (explicitly set to []) disables response-phase processing entirely -
+	// see Mode().
+	purgeStatusCodes map[int]struct{}
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
@@ -164,6 +182,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		clientID:         p.clientID,
 		clientAuthMethod: p.clientAuthMethod,
 		tokenSource:      tokenSource,
+		purgeStatusCodes: p.purgeStatusCodes,
 	}
 	pol.tokenFunc = pol.tokenSource.Token
 
@@ -299,12 +318,20 @@ func (s *passwordTokenSource) Token() (*xoauth2.Token, error) {
 // Mode returns the processing mode for the OAuth2 policy. Injecting a
 // bearer token needs no request body inspection, so this implements the
 // lighter header-phase hook rather than buffering the body the way
-// aws-authentication must for SigV4 payload hashing.
+// aws-authentication must for SigV4 payload hashing. Response headers are
+// processed only when purgeStatusCodes is non-empty (see OnResponseHeaders)
+// - the status code is available at the response-header phase, so neither
+// case needs the response body, keeping this safe for streamed upstream
+// responses.
 func (p *Policy) Mode() policy.ProcessingMode {
+	responseHeaderMode := policy.HeaderModeSkip
+	if len(p.purgeStatusCodes) > 0 {
+		responseHeaderMode = policy.HeaderModeProcess
+	}
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeProcess,
 		RequestBodyMode:    policy.BodyModeSkip,
-		ResponseHeaderMode: policy.HeaderModeSkip,
+		ResponseHeaderMode: responseHeaderMode,
 		ResponseBodyMode:   policy.BodyModeSkip,
 	}
 }
@@ -384,6 +411,42 @@ func getCustomParams(params map[string]interface{}) map[string]string {
 	return out
 }
 
+// getPurgeStatusCodesParam extracts "purgeTokenOnUpstreamStatusCodes" - the
+// upstream response status codes that purge the cached token (see
+// OnResponseHeaders). Absent or wrong-shaped input falls back to def
+// (defaultPurgeStatusCodes), matching this policy's other optional fields.
+// An explicit empty list ([]), unlike an absent key, is honored as-is - it
+// disables response-phase purging entirely rather than falling back to the
+// default, since that's the only way to opt out.
+func getPurgeStatusCodesParam(params map[string]interface{}, key string, def []int) map[int]struct{} {
+	codes := def
+	if raw, ok := params[key]; ok {
+		if arr, ok := raw.([]interface{}); ok {
+			parsed := make([]int, 0, len(arr))
+			for _, v := range arr {
+				switch n := v.(type) {
+				case int:
+					parsed = append(parsed, n)
+				case int64:
+					parsed = append(parsed, int(n))
+				case float64:
+					parsed = append(parsed, int(n))
+				case string:
+					if code, err := strconv.Atoi(strings.TrimSpace(n)); err == nil {
+						parsed = append(parsed, code)
+					}
+				}
+			}
+			codes = parsed
+		}
+	}
+	set := make(map[int]struct{}, len(codes))
+	for _, c := range codes {
+		set[c] = struct{}{}
+	}
+	return set
+}
+
 // validateAndExtractParams validates and extracts all policy params.
 // grantType defaults to GrantTypeClientCredentials when omitted. Fields that
 // only apply to one grant (username/password for the password grant) are
@@ -428,6 +491,7 @@ func validateAndExtractParams(params map[string]interface{}) (oauth2Params, erro
 	p.customParams = getCustomParams(params)
 	p.requestTimeout = getDurationParam(params, "tokenRequestTimeout", defaultTokenRequestTimeout)
 	p.tokenTTLFallback = getDurationParam(params, "defaultTokenTTL", defaultTokenTTLFallback)
+	p.purgeStatusCodes = getPurgeStatusCodesParam(params, "purgeTokenOnUpstreamStatusCodes", defaultPurgeStatusCodes)
 
 	if p.grantType == GrantTypePassword {
 		p.username, err = getRequiredStringParam(params, "username")
@@ -462,6 +526,23 @@ func (p *Policy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHea
 			"Authorization": "Bearer " + tok.AccessToken,
 		},
 	}
+}
+
+// OnResponseHeaders purges the cached token when the upstream backend
+// responds with one of purgeStatusCodes (default: 401) - a signal that the
+// token this policy just injected was rejected, e.g. revoked out-of-band at
+// the identity provider. This does not retry the current request, which
+// still completes with whatever the upstream returned; purging only
+// guarantees the next request fetches a fresh token instead of reusing the
+// same one that just failed. Only reached when Mode() enables response
+// header processing, i.e. purgeStatusCodes is non-empty.
+func (p *Policy) OnResponseHeaders(ctx context.Context, respCtx *policy.ResponseHeaderContext, _ map[string]interface{}) policy.ResponseHeaderAction {
+	if _, purge := p.purgeStatusCodes[respCtx.ResponseStatus]; purge {
+		slog.Warn("OAuth2: upstream rejected the cached token, purging it for the next request",
+			"status", respCtx.ResponseStatus, "grantType", p.grantType, "tokenEndpoint", p.tokenEndpoint, "clientId", p.clientID)
+		p.tokenSource.Purge()
+	}
+	return policy.DownstreamResponseHeaderModifications{}
 }
 
 // retrieveToken fetches the current (possibly cached/refreshed) access token

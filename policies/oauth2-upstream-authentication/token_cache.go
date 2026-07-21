@@ -235,12 +235,15 @@ type cachedToken struct {
 	Expiry       time.Time `json:"expiry"`
 }
 
-// tokenProvider is satisfied by redisCachingTokenSource. Same shape as
-// xoauth2.TokenSource - no request-time context is needed to look up the
-// cache entry, since the Redis key is derived entirely from the oauth2
-// config at construction time (see oauth2ConfigDiscriminator).
+// tokenProvider is satisfied by redisCachingTokenSource. Token() has the
+// same shape as xoauth2.TokenSource - no request-time context is needed to
+// look up the cache entry, since the Redis key is derived entirely from the
+// oauth2 config at construction time (see oauth2ConfigDiscriminator). Purge
+// clears both cache tiers, for the response-phase purge-on-upstream-status
+// case (see OnResponseHeaders).
 type tokenProvider interface {
 	Token() (*xoauth2.Token, error)
+	Purge()
 }
 
 // redisCachingTokenSource wraps a real, IDP-fetching xoauth2.TokenSource
@@ -254,7 +257,14 @@ type tokenProvider interface {
 // (failOpen=true, the default) or is surfaced as a token-acquisition
 // failure (failOpen=false), per the redis.failureMode param.
 type redisCachingTokenSource struct {
-	inner        xoauth2.TokenSource
+	// inner is read/written under mu, not just at construction - Purge()
+	// replaces it with a freshly-built one (see Purge() for why).
+	inner xoauth2.TokenSource
+
+	// params is the same validated oauth2Params inner was built from,
+	// retained so Purge() can rebuild inner via buildTokenSource(params).
+	params oauth2Params
+
 	redisClient  *redis.Client // nil disables the Redis tier entirely
 	failOpen     bool
 	readTimeout  time.Duration
@@ -275,9 +285,8 @@ type redisCachingTokenSource struct {
 
 // newRedisCachingTokenSource builds the cache wrapper around inner. p is the
 // same validated oauth2Params inner was built from - newRedisCachingTokenSource
-// only reads it to derive the Redis key (see oauth2ConfigDiscriminator) and
-// the cache TTL fallback; it otherwise knows nothing about how inner
-// actually fetches tokens.
+// reads it to derive the Redis key (see oauth2ConfigDiscriminator) and the
+// cache TTL fallback, and retains it so Purge() can rebuild inner later.
 func newRedisCachingTokenSource(inner xoauth2.TokenSource, rp redisParams, p oauth2Params) tokenProvider {
 	client := getOrCreateRedisClient(&redis.Options{
 		Addr:         fmt.Sprintf("%s:%d", rp.host, rp.port),
@@ -296,6 +305,7 @@ func newRedisCachingTokenSource(inner xoauth2.TokenSource, rp redisParams, p oau
 
 	return &redisCachingTokenSource{
 		inner:        inner,
+		params:       p,
 		redisClient:  client,
 		redisKey:     buildRedisKey(rp.keyPrefix, oauth2ConfigDiscriminator(p)),
 		failOpen:     rp.failureMode != FailureModeClosed,
@@ -323,7 +333,7 @@ func (s *redisCachingTokenSource) Token() (*xoauth2.Token, error) {
 		}
 	}
 
-	tok, err := s.inner.Token()
+	tok, err := s.getInner().Token()
 	if err != nil {
 		return nil, err
 	}
@@ -365,6 +375,49 @@ func (s *redisCachingTokenSource) setLocal(tok *xoauth2.Token) {
 	s.mu.Lock()
 	s.local = tok
 	s.mu.Unlock()
+}
+
+func (s *redisCachingTokenSource) getInner() xoauth2.TokenSource {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inner
+}
+
+// Purge clears both cache tiers, so the next Token() call fetches a fresh
+// token instead of reusing whatever is currently cached. Used when the
+// upstream backend rejects the token this policy just injected (see
+// OnResponseHeaders) - clearing only Redis would leave this same replica
+// still serving the same rejected token from its own local tier.
+//
+// Clearing local and Redis alone is not enough: inner itself is typically an
+// xoauth2.ReuseTokenSource (see buildTokenSource) that keeps reusing its own
+// cached token until that token's own Expiry, regardless of what this cache
+// does - a Purge() that only cleared local/Redis would still see the same
+// stale token on the very next call, right up until it happened to expire
+// naturally. Replacing inner with a freshly-built one (which starts with no
+// cached token of its own) is what actually forces a real fetch. Rebuilding
+// via buildTokenSource(s.params) can only fail on an unsupported grantType,
+// which validateAndExtractParams already rejected before this token source
+// was ever constructed - so if it does fail here, something more
+// fundamental broke; keep the existing inner rather than leave it nil.
+func (s *redisCachingTokenSource) Purge() {
+	s.mu.Lock()
+	s.local = nil
+	if fresh, err := buildTokenSource(s.params); err == nil {
+		s.inner = fresh
+	} else {
+		slog.Error("OAuth2: failed to rebuild token source while purging, keeping the existing one", "error", err)
+	}
+	s.mu.Unlock()
+
+	if s.redisClient == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.writeTimeout)
+	defer cancel()
+	if err := s.redisClient.Del(ctx, s.redisKey).Err(); err != nil {
+		slog.Warn("OAuth2: failed to purge redis token cache entry", "error", err)
+	}
 }
 
 func (s *redisCachingTokenSource) getFromRedis() (*xoauth2.Token, error) {

@@ -27,6 +27,12 @@ description: |
   set to closed, treats the outage as an authentication failure) - see
   systemParameters below.
 
+  If the upstream backend rejects a cached token (see
+  purgeTokenOnUpstreamStatusCodes, default [401]) - e.g. it was revoked
+  out-of-band at the identity provider - the policy purges it from both
+  cache tiers so the next request fetches a fresh one instead of reusing the
+  same rejected token.
+
 parameters:
   type: object
   additionalProperties: false
@@ -135,6 +141,26 @@ parameters:
         provider does return expires_in - that value is always used
         instead. Applies to both grantType values.
       default: "1h"
+    purgeTokenOnUpstreamStatusCodes:
+      type: array
+      x-wso2-policy-advanced-param: true
+      items:
+        type: integer
+        minimum: 100
+        maximum: 599
+      description: |
+        Upstream response status codes that purge the cached token from both
+        cache tiers, so the next request fetches a fresh one instead of
+        reusing the same rejected token - e.g. the identity provider revoked
+        it out-of-band since it was cached. Does not retry the request that
+        triggered the purge; that request still completes with whatever the
+        upstream returned. Defaults to [401], the standard signal (RFC 6750
+        Section 3) that a bearer token was rejected as invalid - 403 is
+        deliberately not included by default, since it usually means
+        insufficient scope for an otherwise-valid token, and purging would
+        just cost an identical refetch for no benefit. Set to an empty list
+        to disable response-phase processing entirely.
+      default: [401]
   required:
     - tokenEndpoint
     - clientId

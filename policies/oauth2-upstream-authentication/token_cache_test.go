@@ -20,6 +20,8 @@ package oauth2upstreamauthentication
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
 	"time"
@@ -257,6 +259,73 @@ func TestRedisCachingTokenSource_CacheMiss_FetchesFromInnerAndStores(t *testing.
 	key := buildRedisKey("oauth2:token:v1:", oauth2ConfigDiscriminator(testParams()))
 	if !mr.Exists(key) {
 		t.Errorf("expected token to be written to redis under key %q", key)
+	}
+}
+
+// TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis locks in that Purge
+// clears both cache tiers AND rebuilds inner via buildTokenSource, not just
+// local/Redis: inner is typically an xoauth2.ReuseTokenSource that keeps
+// reusing its own cached token until that token's own Expiry regardless of
+// local/Redis, so a stub inner (which has no such internal cache) would
+// pass even if Purge() only cleared local/Redis and left the real
+// buildTokenSource-shaped bug in place - this uses a real httptest server
+// through the real buildTokenSource path specifically to catch that.
+func TestRedisCachingTokenSource_Purge_ClearsLocalAndRedis(t *testing.T) {
+	mr := miniredis.RunT(t)
+
+	var idpCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idpCalls++
+		accessToken := "token-1"
+		if idpCalls > 1 {
+			accessToken = "token-2"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": accessToken,
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	params := testParams(func(p *oauth2Params) { p.tokenEndpoint = server.URL })
+	inner, err := buildTokenSource(params)
+	if err != nil {
+		t.Fatalf("unexpected error building token source: %v", err)
+	}
+	src := newRedisCachingTokenSource(inner, testRedisParams(mr, FailureModeOpen), params)
+
+	tok, err := src.Token()
+	if err != nil {
+		t.Fatalf("unexpected error priming the cache: %v", err)
+	}
+	if tok.AccessToken != "token-1" {
+		t.Fatalf("unexpected primed access token: %q", tok.AccessToken)
+	}
+	if idpCalls != 1 {
+		t.Fatalf("expected exactly 1 token-endpoint call to prime the cache, got %d", idpCalls)
+	}
+	key := buildRedisKey("oauth2:token:v1:", oauth2ConfigDiscriminator(params))
+	if !mr.Exists(key) {
+		t.Fatal("expected the primed token to be present in redis")
+	}
+
+	src.Purge()
+
+	if mr.Exists(key) {
+		t.Error("expected Purge to delete the redis cache entry")
+	}
+
+	tok, err = src.Token()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok.AccessToken != "token-2" {
+		t.Errorf("expected Purge to force a fresh token-endpoint call, got access token %q", tok.AccessToken)
+	}
+	if idpCalls != 2 {
+		t.Errorf("expected exactly 2 token-endpoint calls total (primed + post-purge), got %d", idpCalls)
 	}
 }
 

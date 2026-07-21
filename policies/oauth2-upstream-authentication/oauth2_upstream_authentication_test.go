@@ -60,6 +60,29 @@ func newTestPolicy() *Policy {
 	}
 }
 
+// fakeTokenSource is a tokenProvider test double that counts Purge() calls,
+// for OnResponseHeaders tests that only care whether a purge happened, not
+// the real cache mechanics (see token_cache_test.go for those).
+type fakeTokenSource struct {
+	purgeCalls int
+}
+
+func (f *fakeTokenSource) Token() (*xoauth2.Token, error) {
+	return &xoauth2.Token{AccessToken: "unused"}, nil
+}
+
+func (f *fakeTokenSource) Purge() {
+	f.purgeCalls++
+}
+
+func newResponseHeaderCtx(status int) *policy.ResponseHeaderContext {
+	return &policy.ResponseHeaderContext{
+		SharedContext:   &policy.SharedContext{},
+		ResponseHeaders: policy.NewHeaders(map[string][]string{}),
+		ResponseStatus:  status,
+	}
+}
+
 // ─── GetPolicy / param validation ────────────────────────────────────────────
 
 func TestGetPolicy_ValidParams(t *testing.T) {
@@ -599,6 +622,62 @@ func TestGetCustomParams(t *testing.T) {
 	}
 }
 
+func TestGetPurgeStatusCodesParam(t *testing.T) {
+	def := []int{401}
+	tests := []struct {
+		name   string
+		params map[string]interface{}
+		want   map[int]struct{}
+	}{
+		{
+			name:   "absent falls back to default",
+			params: map[string]interface{}{},
+			want:   map[int]struct{}{401: {}},
+		},
+		{
+			name:   "wrong type falls back to default",
+			params: map[string]interface{}{"purgeTokenOnUpstreamStatusCodes": "401"},
+			want:   map[int]struct{}{401: {}},
+		},
+		{
+			name:   "custom list",
+			params: map[string]interface{}{"purgeTokenOnUpstreamStatusCodes": []interface{}{401, 403}},
+			want:   map[int]struct{}{401: {}, 403: {}},
+		},
+		{
+			// An explicit empty list is honored as-is (disabling purging),
+			// unlike an absent key - it must NOT fall back to the default.
+			name:   "explicit empty list disables rather than falling back",
+			params: map[string]interface{}{"purgeTokenOnUpstreamStatusCodes": []interface{}{}},
+			want:   map[int]struct{}{},
+		},
+		{
+			name:   "float64 and numeric-string entries coerced",
+			params: map[string]interface{}{"purgeTokenOnUpstreamStatusCodes": []interface{}{float64(401), "403"}},
+			want:   map[int]struct{}{401: {}, 403: {}},
+		},
+		{
+			name:   "non-numeric string entries dropped",
+			params: map[string]interface{}{"purgeTokenOnUpstreamStatusCodes": []interface{}{401, "not-a-code"}},
+			want:   map[int]struct{}{401: {}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getPurgeStatusCodesParam(tt.params, "purgeTokenOnUpstreamStatusCodes", def)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %#v, want %#v", got, tt.want)
+			}
+			for k := range tt.want {
+				if _, ok := got[k]; !ok {
+					t.Errorf("missing expected code %d in %#v", k, got)
+				}
+			}
+		})
+	}
+}
+
 func TestGetPolicy_ParamsIsOptional(t *testing.T) {
 	params := validParams()
 	params["params"] = map[string]interface{}{"scope": "chat.completions embeddings"}
@@ -763,6 +842,9 @@ func TestPasswordGrant_NonScopeParamsHaveNoEffect(t *testing.T) {
 
 // ─── Mode ────────────────────────────────────────────────────────────────────
 
+// TestMode covers newTestPolicy()'s zero-value purgeStatusCodes (nil, same
+// as an explicit empty list) - response-phase processing must be skipped
+// entirely when there is nothing to purge on.
 func TestMode(t *testing.T) {
 	p := newTestPolicy()
 	mode := p.Mode()
@@ -774,6 +856,149 @@ func TestMode(t *testing.T) {
 	}
 	if mode.ResponseHeaderMode != policy.HeaderModeSkip || mode.ResponseBodyMode != policy.BodyModeSkip {
 		t.Errorf("expected response phase to be skipped entirely")
+	}
+}
+
+// TestMode_PurgeEnabled_ProcessesResponseHeadersOnly locks in that a
+// non-empty purgeStatusCodes turns on response-header processing (needed to
+// read ResponseStatus in OnResponseHeaders) but never the response body -
+// the status code is enough, so this stays safe for streamed responses.
+func TestMode_PurgeEnabled_ProcessesResponseHeadersOnly(t *testing.T) {
+	p := newTestPolicy()
+	p.purgeStatusCodes = map[int]struct{}{http.StatusUnauthorized: {}}
+	mode := p.Mode()
+	if mode.ResponseHeaderMode != policy.HeaderModeProcess {
+		t.Errorf("expected ResponseHeaderMode PROCESS when purgeStatusCodes is non-empty, got %v", mode.ResponseHeaderMode)
+	}
+	if mode.ResponseBodyMode != policy.BodyModeSkip {
+		t.Errorf("expected ResponseBodyMode SKIP - purging only needs the status code, got %v", mode.ResponseBodyMode)
+	}
+}
+
+// ─── OnResponseHeaders ───────────────────────────────────────────────────────
+
+func TestOnResponseHeaders_PurgesOnConfiguredStatus(t *testing.T) {
+	fake := &fakeTokenSource{}
+	p := newTestPolicy()
+	p.tokenSource = fake
+	p.purgeStatusCodes = map[int]struct{}{http.StatusUnauthorized: {}}
+
+	action := p.OnResponseHeaders(context.Background(), newResponseHeaderCtx(http.StatusUnauthorized), nil)
+
+	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
+		t.Fatalf("expected DownstreamResponseHeaderModifications (pass-through), got %T", action)
+	}
+	if fake.purgeCalls != 1 {
+		t.Errorf("expected exactly one Purge() call, got %d", fake.purgeCalls)
+	}
+}
+
+func TestOnResponseHeaders_NoPurgeOnUnconfiguredStatus(t *testing.T) {
+	fake := &fakeTokenSource{}
+	p := newTestPolicy()
+	p.tokenSource = fake
+	p.purgeStatusCodes = map[int]struct{}{http.StatusUnauthorized: {}}
+
+	// 403 (insufficient scope) is deliberately not purged by default - see
+	// defaultPurgeStatusCodes.
+	p.OnResponseHeaders(context.Background(), newResponseHeaderCtx(http.StatusForbidden), nil)
+
+	if fake.purgeCalls != 0 {
+		t.Errorf("expected no Purge() call for a status not in purgeStatusCodes, got %d", fake.purgeCalls)
+	}
+}
+
+func TestOnResponseHeaders_NoPurgeOnSuccess(t *testing.T) {
+	fake := &fakeTokenSource{}
+	p := newTestPolicy()
+	p.tokenSource = fake
+	p.purgeStatusCodes = map[int]struct{}{http.StatusUnauthorized: {}}
+
+	p.OnResponseHeaders(context.Background(), newResponseHeaderCtx(http.StatusOK), nil)
+
+	if fake.purgeCalls != 0 {
+		t.Errorf("expected no Purge() call on a successful response, got %d", fake.purgeCalls)
+	}
+}
+
+func TestOnResponseHeaders_DisabledWhenPurgeStatusCodesEmpty(t *testing.T) {
+	fake := &fakeTokenSource{}
+	p := newTestPolicy()
+	p.tokenSource = fake
+	p.purgeStatusCodes = map[int]struct{}{} // explicitly disabled
+
+	p.OnResponseHeaders(context.Background(), newResponseHeaderCtx(http.StatusUnauthorized), nil)
+
+	if fake.purgeCalls != 0 {
+		t.Errorf("expected no Purge() call when purgeStatusCodes is empty, got %d", fake.purgeCalls)
+	}
+}
+
+// TestGetPolicy_PurgeOnUpstreamStatus_EndToEnd wires the real
+// redisCachingTokenSource (via GetPolicy, not a fake) through a full
+// prime -> reuse -> upstream-401 -> purge -> refetch cycle, proving
+// OnResponseHeaders actually reaches and clears the same cache
+// OnRequestHeaders reads from - the fake-based tests above only prove
+// OnResponseHeaders calls Purge(), not that the wiring is correct end to end.
+func TestGetPolicy_PurgeOnUpstreamStatus_EndToEnd(t *testing.T) {
+	var tokenCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls++
+		accessToken := "token-1"
+		if tokenCalls > 1 {
+			accessToken = "token-2"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": accessToken,
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	params := validParams()
+	params["tokenEndpoint"] = server.URL
+	// See TestPasswordGrant_EndToEnd for why Redis is pinned to an
+	// unreachable address here.
+	params["redis"] = map[string]interface{}{"host": "127.0.0.1", "port": 1}
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pol := p.(*Policy)
+
+	firstAction := pol.OnRequestHeaders(context.Background(), newRequestHeaderCtx(), nil)
+	firstMods, ok := firstAction.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestHeaderModifications, got %T", firstAction)
+	}
+	if firstMods.HeadersToSet["Authorization"] != "Bearer token-1" {
+		t.Fatalf("unexpected first Authorization header: %q", firstMods.HeadersToSet["Authorization"])
+	}
+
+	secondAction := pol.OnRequestHeaders(context.Background(), newRequestHeaderCtx(), nil)
+	secondMods := secondAction.(policy.UpstreamRequestHeaderModifications)
+	if secondMods.HeadersToSet["Authorization"] != "Bearer token-1" {
+		t.Fatalf("expected the second request to reuse the cached token, got %q", secondMods.HeadersToSet["Authorization"])
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("expected exactly 1 token-endpoint call before the purge, got %d", tokenCalls)
+	}
+
+	respAction := pol.OnResponseHeaders(context.Background(), newResponseHeaderCtx(http.StatusUnauthorized), nil)
+	if _, ok := respAction.(policy.DownstreamResponseHeaderModifications); !ok {
+		t.Fatalf("expected DownstreamResponseHeaderModifications, got %T", respAction)
+	}
+
+	thirdAction := pol.OnRequestHeaders(context.Background(), newRequestHeaderCtx(), nil)
+	thirdMods := thirdAction.(policy.UpstreamRequestHeaderModifications)
+	if thirdMods.HeadersToSet["Authorization"] != "Bearer token-2" {
+		t.Errorf("expected a fresh token after the purge, got %q", thirdMods.HeadersToSet["Authorization"])
+	}
+	if tokenCalls != 2 {
+		t.Errorf("expected exactly 2 token-endpoint calls total (initial + post-purge), got %d", tokenCalls)
 	}
 }
 
