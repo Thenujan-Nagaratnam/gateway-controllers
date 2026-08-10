@@ -2066,21 +2066,43 @@ func TestParseQuotasAndHelpers(t *testing.T) {
 			"onRateLimitExceeded": map[string]interface{}{"statusCode": float64(429), "body": "a"},
 			"memory":              map[string]interface{}{"cleanupInterval": "1m"},
 		}
-		k1 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", params1)
-		k2 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", params2)
+		k1 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", "", params1)
+		k2 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", "", params2)
 		if k1 != k2 {
 			t.Fatalf("expected deterministic key regardless of map order, got %q vs %q", k1, k2)
 		}
 		params2["headers"].(map[string]interface{})["includeIETF"] = false
-		k3 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", params2)
+		k3 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", "", params2)
 		if k3 == k1 {
 			t.Fatalf("expected cache key change when significant params change")
 		}
 		// Backend is part of the key: same route/algo/params under a different backend
 		// must not collide (memory vs redis-local-async share the cache path).
-		if getBaseCacheKey("route1", "api1", "fixed-window", "memory", params1) ==
-			getBaseCacheKey("route1", "api1", "fixed-window", "redis-local-async", params1) {
+		if getBaseCacheKey("route1", "api1", "fixed-window", "memory", "", params1) ==
+			getBaseCacheKey("route1", "api1", "fixed-window", "redis-local-async", "", params1) {
 			t.Fatalf("expected distinct cache keys for different backends")
+		}
+	})
+
+	// TestBugHunt-style regression lock: getBaseCacheKey used to independently
+	// re-read only redis.host/redis.db from params (defaulting host to
+	// "localhost"), missing port/username/password/poolSize/timeouts entirely -
+	// a config reload changing e.g. just the port would NOT have invalidated a
+	// redis-local-async limiter's cache entry. redisConnFingerprint is now the
+	// single source of truth for "did the connection change", computed once
+	// where the actual *redis.Options is built (see GetPolicy) rather than
+	// re-derived here - this locks in that the base cache key is actually
+	// sensitive to it.
+	t.Run("base cache key changes when redis connection fingerprint changes", func(t *testing.T) {
+		params := map[string]interface{}{}
+		k1 := getBaseCacheKey("route1", "api1", "fixed-window", "redis-local-async", "override|host-a|6379|||0|0|5s|3s|3s", params)
+		k2 := getBaseCacheKey("route1", "api1", "fixed-window", "redis-local-async", "override|host-a|6380|||0|0|5s|3s|3s", params) // port differs only
+		k3 := getBaseCacheKey("route1", "api1", "fixed-window", "redis-local-async", "gateway-default", params)
+		if k1 == k2 {
+			t.Fatal("expected the cache key to change when only the port differs")
+		}
+		if k1 == k3 || k2 == k3 {
+			t.Fatal("expected the gateway-default sentinel to differ from any override fingerprint")
 		}
 	})
 

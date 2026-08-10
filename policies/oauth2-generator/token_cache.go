@@ -31,6 +31,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/wso2/api-platform/sdk/core/utils/cache"
+	"github.com/wso2/api-platform/sdk/core/utils/redisclient"
 	xoauth2 "golang.org/x/oauth2"
 )
 
@@ -52,11 +53,10 @@ const (
 	// unless CacheStrategyRedis is selected.
 	CacheStrategyMemory = "memory"
 	// CacheStrategyRedis adds a shared Redis tier in front of the token
-	// endpoint - see redisParams. Mirrors Kong's upstream-oauth plugin's
+	// endpoint - see cacheParams. Mirrors Kong's upstream-oauth plugin's
 	// cache_strategy setting.
 	CacheStrategyRedis = "redis"
 
-	defaultRedisHost              = "localhost"
 	defaultRedisPort              = 6379
 	defaultRedisKeyPrefix         = "oauth2-generator:token:v1:"
 	defaultRedisConnectionTimeout = 5 * time.Second
@@ -64,31 +64,36 @@ const (
 	defaultRedisWriteTimeout      = 3 * time.Second
 )
 
-// redisParams bundles the extracted, validated systemParameters.redis
-// values. All fields have sane defaults (see policy-definition.yaml), so
-// omitting the whole "redis" block is always valid. Only read/used at all
-// when cacheParams.strategy is CacheStrategyRedis - see newRedisCachingTokenSource.
-type redisParams struct {
-	host              string
-	port              int
-	username          string
-	password          string
-	db                int
-	keyPrefix         string
-	failureMode       string
-	connectionTimeout time.Duration
-	readTimeout       time.Duration
-	writeTimeout      time.Duration
-	poolSize          int
-}
-
 // cacheParams bundles the extracted, validated params that control caching:
-// which tier(s) to use (cacheStrategy, a regular per-config param) and, when
-// it's CacheStrategyRedis, the operator-level systemParameters.redis
-// connection settings.
+// which tier(s) to use (cacheStrategy), the policy-level connection override
+// (if any - see redisOverride), and keyPrefix/failureMode, which apply
+// regardless of which client ends up backing the Redis tier. Only read/used
+// at all when strategy is CacheStrategyRedis - see newRedisCachingTokenSource.
 type cacheParams struct {
 	strategy string
-	redis    redisParams
+
+	// redisOverride is this policy instance's own connection settings
+	// (host/port/username/password/db/poolSize AND its own connectionTimeout/
+	// readTimeout/writeTimeout - all of it, together), built only when
+	// systemParameters.redis.host is explicitly configured - see
+	// extractRedisOverride. nil means: no policy-level override, fall back to
+	// the gateway-wide default client (the top-level "redis" config section)
+	// via redisclient.Resolve - which also means inheriting THAT client's own
+	// timeout tuning wholesale, not this policy's, exactly like host/port/
+	// username/password/db/poolSize: there's no partial mixing of "my timeout
+	// preference against the gateway's connection." See
+	// newRedisCachingTokenSource for how readTimeout/writeTimeout are pulled
+	// from redisOverride (or left at zero, meaning "no extra deadline beyond
+	// whatever the client in use already enforces") rather than living here
+	// as their own always-applies fields.
+	redisOverride *redis.Options
+
+	// keyPrefix/failureMode apply regardless of whether redisOverride is set:
+	// keyPrefix scopes this policy's own keys within whichever Redis is in
+	// use; failureMode is this policy's own risk-tolerance decision (open vs
+	// closed on a Redis error), independent of which connection it's using.
+	keyPrefix   string
+	failureMode string
 }
 
 // extractCacheParams reads cacheStrategy and systemParameters.redis.* from params,
@@ -96,20 +101,41 @@ type cacheParams struct {
 // Nothing here is required - Redis is opt-in via cacheStrategy, not mandatory.
 func extractCacheParams(params map[string]interface{}) cacheParams {
 	return cacheParams{
-		strategy: getNestedStringParam(params, "cacheStrategy", CacheStrategyMemory),
-		redis: redisParams{
-			host:              getNestedStringParam(params, "redis.host", defaultRedisHost),
-			port:              getNestedIntParam(params, "redis.port", defaultRedisPort),
-			username:          getNestedStringParam(params, "redis.username", ""),
-			password:          getNestedStringParam(params, "redis.password", ""),
-			db:                getNestedIntParam(params, "redis.db", 0),
-			keyPrefix:         getNestedStringParam(params, "redis.keyPrefix", defaultRedisKeyPrefix),
-			failureMode:       getNestedStringParam(params, "redis.failureMode", FailureModeOpen),
-			connectionTimeout: getNestedDurationParam(params, "redis.connectionTimeout", defaultRedisConnectionTimeout),
-			readTimeout:       getNestedDurationParam(params, "redis.readTimeout", defaultRedisReadTimeout),
-			writeTimeout:      getNestedDurationParam(params, "redis.writeTimeout", defaultRedisWriteTimeout),
-			poolSize:          getNestedIntParam(params, "redis.poolSize", 0),
-		},
+		strategy:      getNestedStringParam(params, "cacheStrategy", CacheStrategyMemory),
+		redisOverride: extractRedisOverride(params),
+		keyPrefix:     getNestedStringParam(params, "redis.keyPrefix", defaultRedisKeyPrefix),
+		failureMode:   getNestedStringParam(params, "redis.failureMode", FailureModeOpen),
+	}
+}
+
+// extractRedisOverride reads systemParameters.redis.host/port/username/
+// password/db/poolSize/connectionTimeout/readTimeout/writeTimeout from
+// params - ALL of it together, since it describes one connection this policy
+// instance builds and owns for itself. Returns nil when host is absent -
+// unlike every other field here, host has no default: a schema-defaulted
+// zero value would always look "configured," and the gateway-wide fallback
+// in newRedisCachingTokenSource (via redisclient.Resolve) would never
+// trigger. connectionTimeout/readTimeout/writeTimeout are read here, not
+// independently at the top level, for the same reason as host itself: they
+// configure THIS connection specifically and have no bearing on the
+// gateway-wide default client - falling back to that default means
+// inheriting its own timeout tuning (config.toml's top-level "redis"
+// section) in full, not a mix of this policy's preference on top of a
+// connection it doesn't own.
+func extractRedisOverride(params map[string]interface{}) *redis.Options {
+	host := getNestedStringParam(params, "redis.host", "")
+	if host == "" {
+		return nil
+	}
+	return &redis.Options{
+		Addr:         fmt.Sprintf("%s:%d", host, getNestedIntParam(params, "redis.port", defaultRedisPort)),
+		Username:     getNestedStringParam(params, "redis.username", ""),
+		Password:     getNestedStringParam(params, "redis.password", ""),
+		DB:           getNestedIntParam(params, "redis.db", 0),
+		DialTimeout:  getNestedDurationParam(params, "redis.connectionTimeout", defaultRedisConnectionTimeout),
+		ReadTimeout:  getNestedDurationParam(params, "redis.readTimeout", defaultRedisReadTimeout),
+		WriteTimeout: getNestedDurationParam(params, "redis.writeTimeout", defaultRedisWriteTimeout),
+		PoolSize:     getNestedIntParam(params, "redis.poolSize", 0),
 	}
 }
 
@@ -285,8 +311,23 @@ type redisCachingTokenSource struct {
 	// params is what inner was built from, retained so Purge() can rebuild it.
 	params oauth2Params
 
-	redisClient  *redis.Client // nil disables the Redis tier entirely
-	failOpen     bool
+	redisClient *redis.Client // nil disables the Redis tier entirely
+	failOpen    bool
+
+	// readTimeout/writeTimeout bound each Redis operation via an EXPLICIT
+	// context deadline, on top of whatever redisClient's own Options already
+	// enforce. Non-zero only when this instance built its own override
+	// client (redisOverride was set) - pulled straight from that same
+	// *redis.Options, never re-resolved. Zero when using the gateway-wide
+	// default client: contextWithOptionalTimeout then adds no extra
+	// deadline, and go-redis's own per-command deadline (from the shared
+	// client's Options.ReadTimeout/WriteTimeout, config.toml's top-level
+	// "redis" section) is what actually bounds the call - confirmed via
+	// go-redis's internal/pool/conn.go, which applies that Options-level
+	// timeout as the connection deadline whether or not the passed context
+	// carries one of its own. This is what makes "no override configured"
+	// mean inheriting the gateway default's timeout tuning in full, not a
+	// mix of this policy's own preference against a connection it doesn't own.
 	readTimeout  time.Duration
 	writeTimeout time.Duration
 
@@ -318,43 +359,54 @@ type redisCachingTokenSource struct {
 
 // newRedisCachingTokenSource builds the cache wrapper around inner (built from the
 // same p), deriving the Redis key and TTL fallback and retaining p so Purge() can
-// rebuild inner later. The Redis client is only constructed when cp.strategy is
+// rebuild inner later. The Redis client is only resolved when cp.strategy is
 // CacheStrategyRedis - under the default memory strategy, every Redis-tier path is
-// skipped.
-func newRedisCachingTokenSource(inner xoauth2.TokenSource, cp cacheParams, p oauth2Params) tokenProvider {
+// skipped (redisclient.Resolve is never called).
+//
+// redisclient.Resolve uses cp.redisOverride when this policy instance configured
+// its own connection settings, otherwise falls back to the gateway-wide default
+// client (the top-level "redis" config section). It only errors when neither
+// exists - a real configuration gap, not a connectivity problem, so it's the
+// one Redis-related failure this constructor surfaces immediately rather than
+// deferring. A down-but-configured Redis (override or shared) is NOT an error
+// here: this policy's own failOpen/failClosed handling covers that at the
+// point of first real use (getFromRedis/saveToRedis), not at policy-chain-build
+// time - both Resolve and the ping it may perform along the way swallow
+// connectivity errors for exactly this reason.
+//
+// readTimeout/writeTimeout on the returned source are pulled from
+// cp.redisOverride's own ReadTimeout/WriteTimeout when it's set, and left at
+// zero otherwise - see redisCachingTokenSource's own field comment for why
+// zero (not some fallback constant) is the correct value when falling back to
+// the gateway default.
+func newRedisCachingTokenSource(inner xoauth2.TokenSource, cp cacheParams, p oauth2Params) (tokenProvider, error) {
 	var client *redis.Client
+	var readTimeout, writeTimeout time.Duration
 	if cp.strategy == CacheStrategyRedis {
-		// created/pingErr deliberately ignored: this policy's own failOpen/
-		// failClosed handling already covers a down Redis at the point of
-		// first real use (getFromRedis/saveToRedis) - adopting
-		// getOrCreateRedisClient's create-time ping-and-fail-fast behavior
-		// too would change *when* a failClosed+Redis-down error surfaces
-		// (at policy-chain-build time instead of first request), a real
-		// behavior change this call site isn't opting into.
-		client, _, _ = getOrCreateRedisClient(&redis.Options{
-			Addr:         fmt.Sprintf("%s:%d", cp.redis.host, cp.redis.port),
-			Username:     cp.redis.username,
-			Password:     cp.redis.password,
-			DB:           cp.redis.db,
-			DialTimeout:  cp.redis.connectionTimeout,
-			ReadTimeout:  cp.redis.readTimeout,
-			WriteTimeout: cp.redis.writeTimeout,
-			PoolSize:     cp.redis.poolSize,
-		}, cp.redis.connectionTimeout)
+		pingTimeout := defaultRedisConnectionTimeout // ignored by Resolve when cp.redisOverride is nil
+		if cp.redisOverride != nil {
+			pingTimeout = cp.redisOverride.DialTimeout
+			readTimeout, writeTimeout = cp.redisOverride.ReadTimeout, cp.redisOverride.WriteTimeout
+		}
+		var err error
+		client, err = redisclient.Resolve(cp.redisOverride, pingTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("cacheStrategy %q requires either a policy-level redis.host override or a gateway-level \"redis\" config section: %w", CacheStrategyRedis, err)
+		}
 	}
 
 	return &redisCachingTokenSource{
 		inner:        newResilientInner(inner, p),
 		params:       p,
 		redisClient:  client,
-		redisKey:     buildRedisKey(cp.redis.keyPrefix, oauth2ConfigDiscriminator(p)),
-		failOpen:     cp.redis.failureMode != FailureModeClosed,
-		readTimeout:  cp.redis.readTimeout,
-		writeTimeout: cp.redis.writeTimeout,
+		redisKey:     buildRedisKey(cp.keyPrefix, oauth2ConfigDiscriminator(p)),
+		failOpen:     cp.failureMode != FailureModeClosed,
+		readTimeout:  readTimeout,
+		writeTimeout: writeTimeout,
 		defaultTTL:   p.tokenTTLFallback,
 		expiryBuffer: p.expiryBuffer,
 		localCache:   cache.NewInMemoryCache[xoauth2.Token]("oauth2-generator-local-token", 1, 0, cache.LRUEvictionPolicy, slog.Default()),
-	}
+	}, nil
 }
 
 // tokenFreshEnough reports whether tok is both present and far enough from
@@ -445,6 +497,19 @@ func (s *redisCachingTokenSource) getInner() xoauth2.TokenSource {
 	return s.inner
 }
 
+// contextWithOptionalTimeout returns a context bounded by d, unless d is zero
+// (no policy-level redisOverride configured - see redisCachingTokenSource's
+// own readTimeout/writeTimeout field comment for why the gateway-wide default
+// client's own Options-level timeout already bounds the call in that case,
+// with no extra deadline needed here), in which case parent is returned
+// unchanged.
+func contextWithOptionalTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, d)
+}
+
 // Purge clears both cache tiers so the next Token() call fetches fresh - used when
 // the upstream rejects the token this policy just injected (see OnResponseHeaders).
 // Clearing local/Redis alone isn't enough: inner is typically an
@@ -467,7 +532,7 @@ func (s *redisCachingTokenSource) Purge() {
 	if s.redisClient == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), s.writeTimeout)
+	ctx, cancel := contextWithOptionalTimeout(context.Background(), s.writeTimeout)
 	defer cancel()
 	if err := s.redisClient.Del(ctx, s.redisKey).Err(); err != nil {
 		slog.Warn("OAuth2Generator: failed to purge redis token cache entry", "error", err)
@@ -475,7 +540,7 @@ func (s *redisCachingTokenSource) Purge() {
 }
 
 func (s *redisCachingTokenSource) getFromRedis() (*xoauth2.Token, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.readTimeout)
+	ctx, cancel := contextWithOptionalTimeout(context.Background(), s.readTimeout)
 	defer cancel()
 
 	val, err := s.redisClient.Get(ctx, s.redisKey).Result()
@@ -526,7 +591,7 @@ func (s *redisCachingTokenSource) saveToRedis(tok *xoauth2.Token) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.writeTimeout)
+	ctx, cancel := contextWithOptionalTimeout(context.Background(), s.writeTimeout)
 	defer cancel()
 	return s.redisClient.Set(ctx, s.redisKey, data, ttl).Err()
 }

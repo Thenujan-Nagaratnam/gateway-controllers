@@ -299,7 +299,10 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		if err != nil {
 			return nil, err
 		}
-		tokenSource = newRedisCachingTokenSource(innerSource, extractCacheParams(params), p)
+		tokenSource, err = newRedisCachingTokenSource(innerSource, extractCacheParams(params), p)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	pol := &Policy{
@@ -430,8 +433,9 @@ type tokenEndpointTransportKey struct {
 
 // tokenEndpointTransports is the process-wide registry of shared *http.Transport
 // values for the token-endpoint HTTP client, keyed by proxy/TLS configuration -
-// mirrors redisClients (redis_clients.go), for the same connection-pool-fragmentation
-// reason.
+// same connection-pool-fragmentation reason as sdk/core/utils/redisclient's own
+// registry, which this policy's own Redis tier now delegates to instead of
+// keeping a local copy (see token_cache.go's use of redisclient.Resolve).
 var tokenEndpointTransports = struct {
 	mu sync.Mutex
 	m  map[tokenEndpointTransportKey]*http.Transport

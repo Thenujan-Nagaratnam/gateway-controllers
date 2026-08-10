@@ -31,6 +31,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	"github.com/wso2/api-platform/sdk/core/utils/redisclient"
 	_ "github.com/wso2/gateway-controllers/policies/advanced-ratelimit/algorithms/fixedwindow" // Register Fixed Window algorithm
 	_ "github.com/wso2/gateway-controllers/policies/advanced-ratelimit/algorithms/gcra"        // Register GCRA algorithm
 	"github.com/wso2/gateway-controllers/policies/advanced-ratelimit/limiter"
@@ -213,6 +214,18 @@ func GetPolicy(
 	localMaxLocalEntries := getIntParam(params, "local.maxLocalEntries", 0)
 	var baseCacheKey string // Set for cache-backed backends (memory, redis-local-async)
 
+	// redisConnFingerprint identifies WHICH connection redis-local-async's
+	// flusher goroutine is actually using - set once, together with
+	// redisClient itself below, from the exact same grouped set of fields
+	// (never independently re-derived from params elsewhere - see
+	// getBaseCacheKey, which takes this as a parameter rather than reading
+	// redis.host/redis.port/etc a second time). "gateway-default" is a
+	// stable sentinel, not a re-fingerprint of the shared client's own
+	// config: redisclient.Shared() is a process-wide singleton that never
+	// changes for the life of this process, so distinguishing it from any
+	// override is all a cache-invalidation key needs here.
+	var redisConnFingerprint string
+
 	usesRedis := backend == "redis" || backend == "redis-local-async"
 
 	slog.Debug("Initializing rate limiter backend",
@@ -221,42 +234,71 @@ func GetPolicy(
 		"quotaCount", len(quotas))
 
 	if usesRedis {
-		// Parse Redis configuration
-		redisHost := getStringParam(params, "redis.host", "localhost")
-		redisPort := getIntParam(params, "redis.port", 6379)
-		redisPassword := getStringParam(params, "redis.password", "")
-		redisUsername := getStringParam(params, "redis.username", "")
-		redisDB := getIntParam(params, "redis.db", 0)
+		// redis.host has no default (see policy-definition.yaml) - its absence
+		// is the deliberate signal that no policy-level connection override was
+		// configured, so this instance falls back to the gateway-wide default
+		// Redis client (redisclient.Shared(), top-level "redis" config section)
+		// instead of connecting separately.
+		redisHost := getStringParam(params, "redis.host", "")
 		failureMode := getStringParam(params, "redis.failureMode", "open")
 		redisFailOpen = (failureMode == "open")
 
-		connTimeout := getDurationParam(params, "redis.connectionTimeout", 5*time.Second)
-		readTimeout := getDurationParam(params, "redis.readTimeout", 3*time.Second)
-		writeTimeout := getDurationParam(params, "redis.writeTimeout", 3*time.Second)
-		poolSize := getIntParam(params, "redis.poolSize", 0)
+		if redisHost != "" {
+			redisPort := getIntParam(params, "redis.port", 6379)
+			redisPassword := getStringParam(params, "redis.password", "")
+			redisUsername := getStringParam(params, "redis.username", "")
+			redisDB := getIntParam(params, "redis.db", 0)
+			poolSize := getIntParam(params, "redis.poolSize", 0)
+			// connectionTimeout/readTimeout/writeTimeout are read here, not
+			// unconditionally above, for the same reason as host itself: they
+			// configure THIS policy's own connection, and have no bearing on
+			// the gateway-wide default client's behavior below - falling back
+			// to that default means inheriting its own timeout tuning
+			// (config.toml's top-level [redis] section) in full, not a mix.
+			connTimeout := getDurationParam(params, "redis.connectionTimeout", 5*time.Second)
+			readTimeout := getDurationParam(params, "redis.readTimeout", 3*time.Second)
+			writeTimeout := getDurationParam(params, "redis.writeTimeout", 3*time.Second)
 
-		// Get-or-create the process-wide shared client for this connection config.
-		// Sharing one pool across all policy instances (and reloads) avoids the
-		// per-instance client/connection explosion. Ping happens once, on creation.
-		var created bool
-		var pingErr error
-		redisClient, created, pingErr = getOrCreateRedisClient(&redis.Options{
-			Addr:         fmt.Sprintf("%s:%d", redisHost, redisPort),
-			Username:     redisUsername,
-			Password:     redisPassword,
-			DB:           redisDB,
-			DialTimeout:  connTimeout,
-			ReadTimeout:  readTimeout,
-			WriteTimeout: writeTimeout,
-			PoolSize:     poolSize,
-		}, connTimeout)
-		// Fail-fast only when we created the client and it failed to connect; a reused
-		// client is assumed healthy (go-redis reconnects lazily).
-		if created && pingErr != nil {
-			if !redisFailOpen {
-				return nil, fmt.Errorf("redis connection failed and failureMode=closed: %w", pingErr)
+			// Get-or-create the process-wide shared client for this connection config.
+			// Sharing one pool across all policy instances (and reloads) avoids the
+			// per-instance client/connection explosion. Ping happens once, on creation.
+			var created bool
+			var pingErr error
+			redisClient, created, pingErr = redisclient.GetOrCreateRedisClient(&redis.Options{
+				Addr:         fmt.Sprintf("%s:%d", redisHost, redisPort),
+				Username:     redisUsername,
+				Password:     redisPassword,
+				DB:           redisDB,
+				DialTimeout:  connTimeout,
+				ReadTimeout:  readTimeout,
+				WriteTimeout: writeTimeout,
+				PoolSize:     poolSize,
+			}, connTimeout)
+			// Fail-fast only when we created the client and it failed to connect; a reused
+			// client is assumed healthy (go-redis reconnects lazily).
+			if created && pingErr != nil {
+				if !redisFailOpen {
+					return nil, fmt.Errorf("redis connection failed and failureMode=closed: %w", pingErr)
+				}
+				slog.Warn("Redis connection failed but failureMode=open", "error", pingErr)
 			}
-			slog.Warn("Redis connection failed but failureMode=open", "error", pingErr)
+			// Every field that went into the *redis.Options above, together,
+			// as one group - not just host/db (see the bug this replaced:
+			// getBaseCacheKey used to independently re-read only redis.host/
+			// redis.db from params, missing port/username/password/poolSize/
+			// timeouts entirely, so changing e.g. just the port across a
+			// config reload would NOT invalidate a redis-local-async
+			// limiter's cache entry).
+			redisConnFingerprint = fmt.Sprintf("override|%s|%d|%s|%s|%d|%d|%s|%s|%s",
+				redisHost, redisPort, redisUsername, hashRedisSecret(redisPassword), redisDB, poolSize,
+				connTimeout, readTimeout, writeTimeout)
+		} else {
+			redisConnFingerprint = "gateway-default"
+			var err error
+			redisClient, err = redisclient.Shared()
+			if err != nil {
+				return nil, fmt.Errorf("backend %q requires either a policy-level redis.host override or a gateway-level \"redis\" config section: %w", backend, err)
+			}
 		}
 	}
 
@@ -296,7 +338,7 @@ func GetPolicy(
 		// limiter per quota. redis-local-async holds a per-replica counter + flusher
 		// goroutine, so it MUST be a shared singleton (cached) and Close()d on reload.
 		cleanupInterval := getDurationParam(params, "memory.cleanupInterval", 5*time.Minute)
-		baseCacheKey = getBaseCacheKey(routeName, apiName, algorithm, backend, params)
+		baseCacheKey = getBaseCacheKey(routeName, apiName, algorithm, backend, redisConnFingerprint, params)
 
 		// Compute desired quota keys before acquiring lock
 		type quotaInfo struct {
@@ -955,11 +997,22 @@ func getIntParam(params map[string]interface{}, key string, defaultVal int) int 
 
 	for i, k := range keys {
 		if i == len(keys)-1 {
-			if val, ok := current[k].(float64); ok {
+			switch val := current[k].(type) {
+			case float64:
 				return int(val)
-			}
-			if val, ok := current[k].(int); ok {
+			case int:
 				return val
+			case int64:
+				return int(val)
+			case string:
+				// A TOML value written as {{ env "VAR" "default" }} must be a
+				// quoted string literal (TOML has no unquoted template
+				// syntax) - config interpolation resolves the token in
+				// place but never changes the field's type, so a numeric
+				// config.toml value can arrive here as a numeric string.
+				if parsed, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+					return parsed
+				}
 			}
 			return defaultVal
 		}
@@ -1114,9 +1167,28 @@ func getDurationFromQuota(q *QuotaRuntime) time.Duration {
 	return 0
 }
 
-// getBaseCacheKey computes a stable hash key base for caching memory-backed limiters.
-// This includes shared aspects like algorithm, headers config, etc.
-func getBaseCacheKey(routeName, apiName, algorithm, backend string, params map[string]interface{}) string {
+// hashRedisSecret returns a SHA-256 hex digest of a Redis credential, so it
+// can be folded into getBaseCacheKey's fingerprint without the raw secret
+// appearing there - this hash never leaves the process (it's a Go-side
+// in-process cache key, never a Redis key name or a logged value), but
+// hashing costs nothing and matches this codebase's standing convention
+// (see oauth2-generator's hashSensitiveValue) of never carrying a raw
+// credential into a derived identifier, even one that looks low-risk today.
+func hashRedisSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// getBaseCacheKey computes a stable hash key base for caching memory-backed
+// limiters. This includes shared aspects like algorithm, headers config,
+// etc. redisConnFingerprint identifies which Redis connection redis-local-
+// async is using (see its own call site in GetPolicy) - computed once,
+// there, from the exact same grouped set of fields used to build the actual
+// *redis.Options, never independently re-derived here.
+func getBaseCacheKey(routeName, apiName, algorithm, backend, redisConnFingerprint string, params map[string]interface{}) string {
 	h := sha256.New()
 
 	h.Write([]byte("route:"))
@@ -1137,14 +1209,15 @@ func getBaseCacheKey(routeName, apiName, algorithm, backend string, params map[s
 	h.Write([]byte(backend))
 	h.Write([]byte("|"))
 
-	// For redis-local-async, fold the Redis endpoint and local tuning into the key so a
-	// config reload that changes them rebuilds the cached limiter instead of silently
-	// reusing the old one. (Counts survive in Redis; the coordinator's global settings
-	// are first-registrant-wins regardless.)
+	// For redis-local-async, fold the Redis connection fingerprint and local
+	// tuning into the key so a config reload that changes them rebuilds the
+	// cached limiter instead of silently reusing the old one. (Counts survive
+	// in Redis; the coordinator's global settings are first-registrant-wins
+	// regardless.) redisConnFingerprint already covers every field that went
+	// into the actual *redis.Options - see its own comment at the call site.
 	if backend == "redis-local-async" {
-		h.Write([]byte(fmt.Sprintf("redis:%s/%d|local:%s,w=%d,pipe=%d,max=%d|",
-			getStringParam(params, "redis.host", "localhost"),
-			getIntParam(params, "redis.db", 0),
+		h.Write([]byte(fmt.Sprintf("redis:%s|local:%s,w=%d,pipe=%d,max=%d|",
+			redisConnFingerprint,
 			getDurationParam(params, "local.syncInterval", 50*time.Millisecond),
 			getIntParam(params, "local.flushWorkers", 0),
 			getIntParam(params, "local.maxPipelineCommands", 0),

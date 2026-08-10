@@ -326,25 +326,43 @@ systemParameters:
         Specifies the storage backend: memory for single-instance limits, redis for
         exact distributed limits (one Redis call per request), or redis-local-async for
         distributed limits with a local-first hot path that reconciles with Redis
-        asynchronously (lower latency and Redis load, with bounded overshoot).
+        asynchronously (lower latency and Redis load, with bounded overshoot). For
+        either Redis backend, uses the gateway-wide default Redis client (the
+        top-level config.redis section) by default, or this policy's own
+        connection when systemParameters.redis.host is explicitly set.
       enum: ["memory", "redis", "redis-local-async"]
       default: "memory"
       "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.backend}"
 
     redis:
       type: object
-      description: Configures Redis settings when backend is redis.
+      description: >
+        Configures Redis settings when backend is redis or redis-local-async.
+        host/port/username/password/db/poolSize are an OPTIONAL per-policy
+        connection override: left unset (the default), this policy instance
+        uses the gateway-wide default Redis client instead (the top-level
+        config.redis section - see redisclient.Shared() in
+        sdk/core/utils/redisclient). Configure an override only when this
+        policy genuinely needs a distinct Redis instance/database from that
+        gateway default. keyPrefix/failureMode/the timeouts apply regardless
+        of which client backs the tier.
       additionalProperties: false
       properties:
         host:
           type: string
-          description: Specifies the Redis host name or IP address.
-          default: "localhost"
+          description: >
+            Optional per-policy Redis host override. Unset (the default)
+            means: use the gateway-wide default Redis client instead of
+            connecting separately. Deliberately has no schema default - see
+            this object's own description.
           "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.host}"
 
         port:
           type: integer
-          description: Specifies the Redis server port.
+          description: >
+            Redis server port for the per-policy override above. Only
+            meaningful when host is set; has no effect on the gateway-wide
+            default client.
           minimum: 1
           maximum: 65535
           default: 6379
@@ -362,7 +380,9 @@ systemParameters:
 
         db:
           type: integer
-          description: Specifies the Redis database index.
+          description: >
+            Redis database index for the per-policy override above. Only
+            meaningful when host is set.
           minimum: 0
           maximum: 15
           default: 0
@@ -385,36 +405,47 @@ systemParameters:
 
         connectionTimeout:
           type: string
-          description: Specifies the Redis connection timeout as a Go duration
-            string. Supports units ns, us, µs, ms, s, m, h, including
-            composite and fractional values (for example "500ms", "1.5s",
-            "1m30s").
+          description: Connection timeout for the per-policy override above, as
+            a Go duration string. Supports units ns, us, µs, ms, s, m, h,
+            including composite and fractional values (for example "500ms",
+            "1.5s", "1m30s"). Only meaningful when host is set - has no
+            effect on the gateway-wide default client, which is bound by its
+            own connection_timeout under config.toml's top-level [redis]
+            section instead.
           default: "5s"
           "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.connection_timeout}"
 
         readTimeout:
           type: string
-          description: Specifies the Redis read timeout as a Go duration
-            string. Supports units ns, us, µs, ms, s, m, h, including
+          description: Read timeout for the per-policy override above, as a Go
+            duration string. Supports units ns, us, µs, ms, s, m, h, including
             composite and fractional values (for example "500ms", "1.5s",
-            "1m30s").
+            "1m30s"). Only meaningful when host is set - has no effect on the
+            gateway-wide default client, which is bound by its own
+            read_timeout under config.toml's top-level [redis] section
+            instead.
           default: "3s"
           "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.read_timeout}"
 
         writeTimeout:
           type: string
-          description: Specifies the Redis write timeout as a Go duration
-            string. Supports units ns, us, µs, ms, s, m, h, including
+          description: Write timeout for the per-policy override above, as a Go
+            duration string. Supports units ns, us, µs, ms, s, m, h, including
             composite and fractional values (for example "500ms", "1.5s",
-            "1m30s").
+            "1m30s"). Only meaningful when host is set - has no effect on the
+            gateway-wide default client, which is bound by its own
+            write_timeout under config.toml's top-level [redis] section
+            instead.
           default: "3s"
           "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.write_timeout}"
 
         poolSize:
           type: integer
-          description: |
-            Redis connection pool size for the shared client. 0 = go-redis default
-            (10 × GOMAXPROCS). One pool is shared per distinct Redis endpoint config.
+          description: >
+            Connection pool size for the per-policy override above. Only
+            meaningful when host is set - has no effect on the gateway-wide
+            default client's own pool size. 0 = go-redis default (10 x
+            GOMAXPROCS).
           minimum: 0
           default: 0
           "wso2/defaultValue": "${config.policy_configurations.ratelimit_v1.redis.pool_size}"

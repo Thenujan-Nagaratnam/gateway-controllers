@@ -22,11 +22,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+	"github.com/wso2/api-platform/sdk/core/utils/redisclient"
 	xoauth2 "golang.org/x/oauth2"
 )
 
@@ -50,37 +51,35 @@ func (s *stubTokenSource) Token() (*xoauth2.Token, error) {
 	return s.token, nil
 }
 
-// mustNewRedisCachingTokenSource wraps newRedisCachingTokenSource for tests.
+// mustNewRedisCachingTokenSource wraps newRedisCachingTokenSource for tests
+// that expect construction to succeed - the vast majority, since a cacheParams
+// fixture normally sets either redisOverride or nothing at all (memory
+// strategy, which never calls redisclient.Resolve in the first place).
 func mustNewRedisCachingTokenSource(t *testing.T, inner xoauth2.TokenSource, cp cacheParams, p oauth2Params) tokenProvider {
 	t.Helper()
-	return newRedisCachingTokenSource(inner, cp, p)
+	src, err := newRedisCachingTokenSource(inner, cp, p)
+	if err != nil {
+		t.Fatalf("unexpected error constructing token source: %v", err)
+	}
+	return src
 }
 
-// testRedisParams returns a cacheParams fixture with strategy: redis pointed
-// at mr - for tests that specifically exercise the Redis tier. Tests that
-// only care about the in-process tier (the default) use testParams() alone
-// and never call this.
+// testRedisParams returns a cacheParams fixture with strategy: redis,
+// policy-level-overridden to point at mr - for tests that specifically
+// exercise the Redis tier. Tests that only care about the in-process tier
+// (the default) use testParams() alone and never call this.
 func testRedisParams(mr *miniredis.Miniredis, failureMode string) cacheParams {
 	return cacheParams{
 		strategy: CacheStrategyRedis,
-		redis: redisParams{
-			host:              mr.Host(),
-			port:              mustAtoi(mr.Port()),
-			keyPrefix:         "oauth2-generator:token:v1:",
-			failureMode:       failureMode,
-			connectionTimeout: time.Second,
-			readTimeout:       time.Second,
-			writeTimeout:      time.Second,
+		redisOverride: &redis.Options{
+			Addr:         mr.Addr(),
+			DialTimeout:  time.Second,
+			ReadTimeout:  time.Second,
+			WriteTimeout: time.Second,
 		},
+		keyPrefix:   "oauth2-generator:token:v1:",
+		failureMode: failureMode,
 	}
-}
-
-func mustAtoi(s string) int {
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		panic(err)
-	}
-	return n
 }
 
 // testParams returns a baseline, valid oauth2Params fixture for tests that
@@ -712,9 +711,9 @@ func TestBuildTokenSource_ClientCredentials_ExpiryBuffer_ForcesRealRefetch(t *te
 	}
 }
 
-// ─── getOrCreateRedisClient ──────────────────────────────────────────────────
+// ─── redisclient.Resolve integration ─────────────────────────────────────────
 
-func TestGetOrCreateRedisClient_SharesClientForIdenticalConfig(t *testing.T) {
+func TestRedisCachingTokenSource_SharesClientForIdenticalOverrideConfig(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rp := testRedisParams(mr, FailureModeOpen)
 
@@ -722,30 +721,29 @@ func TestGetOrCreateRedisClient_SharesClientForIdenticalConfig(t *testing.T) {
 	src2 := mustNewRedisCachingTokenSource(t, &stubTokenSource{}, rp, testParams()).(*redisCachingTokenSource)
 
 	if src1.redisClient != src2.redisClient {
-		t.Error("expected two policy instances with identical redis connection settings to share one *redis.Client")
+		t.Error("expected two policy instances with identical policy-level redis override settings to share one *redis.Client")
 	}
 }
 
 func TestNewRedisCachingTokenSource_MemoryStrategy_NeverTouchesRedis(t *testing.T) {
 	cp := cacheParams{
 		strategy: CacheStrategyMemory,
-		redis: redisParams{
-			// Deliberately unreachable - if cacheStrategy: memory ever
-			// dialed Redis despite the strategy, using this host would
-			// surface as an error or a fallback rather than silently
-			// succeeding via the in-process tier alone.
-			host:              "unreachable.invalid",
-			port:              1,
-			connectionTimeout: 50 * time.Millisecond,
-			readTimeout:       50 * time.Millisecond,
-			writeTimeout:      50 * time.Millisecond,
+		// Deliberately unreachable - if cacheStrategy: memory ever dialed
+		// Redis despite the strategy, using this host would surface as an
+		// error or a fallback rather than silently succeeding via the
+		// in-process tier alone.
+		redisOverride: &redis.Options{
+			Addr:         "unreachable.invalid:1",
+			DialTimeout:  50 * time.Millisecond,
+			ReadTimeout:  50 * time.Millisecond,
+			WriteTimeout: 50 * time.Millisecond,
 		},
 	}
 	inner := &stubTokenSource{token: &xoauth2.Token{AccessToken: "tok", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}}
 	src := mustNewRedisCachingTokenSource(t, inner, cp, testParams()).(*redisCachingTokenSource)
 
 	if src.redisClient != nil {
-		t.Fatal("expected cacheStrategy: memory to never construct a redis client")
+		t.Fatal("expected cacheStrategy: memory to never resolve a redis client, even with a redisOverride configured")
 	}
 
 	tok, err := src.Token()
@@ -769,6 +767,45 @@ func TestNewRedisCachingTokenSource_MemoryStrategy_NeverTouchesRedis(t *testing.
 	}
 }
 
+// TestNewRedisCachingTokenSource_NoOverrideFallsBackToGatewayShared proves the
+// precedence decision itself: with no policy-level redis.host configured,
+// cacheStrategy: redis must resolve to whatever redisclient.Shared() returns,
+// not silently disable the Redis tier.
+func TestNewRedisCachingTokenSource_NoOverrideFallsBackToGatewayShared(t *testing.T) {
+	mr := miniredis.RunT(t)
+	sharedClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	redisclient.SetSharedForTesting(t, sharedClient)
+
+	cp := cacheParams{strategy: CacheStrategyRedis, keyPrefix: "p:", failureMode: FailureModeOpen}
+	src := mustNewRedisCachingTokenSource(t, &stubTokenSource{}, cp, testParams()).(*redisCachingTokenSource)
+
+	if src.redisClient != sharedClient {
+		t.Error("expected cacheStrategy: redis with no policy-level override to use the gateway-level shared client")
+	}
+	// readTimeout/writeTimeout must be zero here, not some fallback constant -
+	// see redisCachingTokenSource's own field comment for why: falling back
+	// to the gateway default means inheriting ITS timeout tuning via
+	// go-redis's own Options-level deadline, not layering this policy's
+	// preference on top of a connection it doesn't own.
+	if src.readTimeout != 0 || src.writeTimeout != 0 {
+		t.Errorf("expected readTimeout/writeTimeout to be zero when falling back to the gateway default, got %v/%v", src.readTimeout, src.writeTimeout)
+	}
+}
+
+// TestNewRedisCachingTokenSource_NeitherOverrideNorSharedConfigured_Errors is
+// the fail-fast contract: cacheStrategy: redis with genuinely nothing to
+// connect to (no policy-level override, no gateway-level shared redis) is a
+// real configuration gap and must error at construction, not silently
+// degrade to memory-only caching.
+func TestNewRedisCachingTokenSource_NeitherOverrideNorSharedConfigured_Errors(t *testing.T) {
+	redisclient.SetSharedForTesting(t, nil) // simulates InitFromConfig having found no "redis" section
+
+	cp := cacheParams{strategy: CacheStrategyRedis}
+	if _, err := newRedisCachingTokenSource(&stubTokenSource{}, cp, testParams()); err == nil {
+		t.Error("expected an error when cacheStrategy is redis but neither a policy-level override nor a gateway-level shared redis is configured")
+	}
+}
+
 // ─── extractCacheParams ──────────────────────────────────────────────────────
 
 func TestExtractCacheParams_DefaultsWhenAbsent(t *testing.T) {
@@ -776,9 +813,11 @@ func TestExtractCacheParams_DefaultsWhenAbsent(t *testing.T) {
 	if cp.strategy != CacheStrategyMemory {
 		t.Errorf("expected cacheStrategy to default to %q, got %q", CacheStrategyMemory, cp.strategy)
 	}
-	rp := cp.redis
-	if rp.host != defaultRedisHost || rp.port != defaultRedisPort || rp.keyPrefix != defaultRedisKeyPrefix || rp.failureMode != FailureModeOpen {
-		t.Errorf("unexpected redis defaults: %+v", rp)
+	if cp.redisOverride != nil {
+		t.Errorf("expected no policy-level redis override when redis.host is absent, got %+v", cp.redisOverride)
+	}
+	if cp.keyPrefix != defaultRedisKeyPrefix || cp.failureMode != FailureModeOpen {
+		t.Errorf("unexpected redis defaults: keyPrefix=%q failureMode=%q", cp.keyPrefix, cp.failureMode)
 	}
 }
 
@@ -803,9 +842,11 @@ func TestExtractCacheParams_NestedMapShape(t *testing.T) {
 		},
 	}
 	cp := extractCacheParams(params)
-	rp := cp.redis
-	if rp.host != "redis.internal" || rp.port != 6380 || rp.keyPrefix != "custom:" || rp.failureMode != "closed" {
-		t.Errorf("unexpected params from nested map shape: %+v", rp)
+	if cp.redisOverride == nil || cp.redisOverride.Addr != "redis.internal:6380" {
+		t.Errorf("unexpected redisOverride from nested map shape: %+v", cp.redisOverride)
+	}
+	if cp.keyPrefix != "custom:" || cp.failureMode != "closed" {
+		t.Errorf("unexpected params from nested map shape: keyPrefix=%q failureMode=%q", cp.keyPrefix, cp.failureMode)
 	}
 }
 
@@ -819,19 +860,45 @@ func TestExtractCacheParams_FlattenedDottedKeyShape(t *testing.T) {
 	if cp.strategy != CacheStrategyRedis {
 		t.Errorf("expected cacheStrategy %q, got %q", CacheStrategyRedis, cp.strategy)
 	}
-	if cp.redis.host != "redis.internal" || cp.redis.port != 6380 {
-		t.Errorf("unexpected params from flattened dotted-key shape: %+v", cp.redis)
+	if cp.redisOverride == nil || cp.redisOverride.Addr != "redis.internal:6380" {
+		t.Errorf("unexpected redisOverride from flattened dotted-key shape: %+v", cp.redisOverride)
 	}
 }
 
-func TestExtractCacheParams_DurationParsing(t *testing.T) {
+// TestExtractCacheParams_DurationParsing_NoHostIgnored proves
+// connectionTimeout/readTimeout/writeTimeout are gated on host exactly like
+// port/username/password/db/poolSize: with no host configured, they're not
+// read into anything at all - there's no top-level cacheParams field left to
+// check them against, only redisOverride, which must be nil.
+func TestExtractCacheParams_DurationParsing_NoHostIgnored(t *testing.T) {
 	params := map[string]interface{}{
 		"redis": map[string]interface{}{
 			"connectionTimeout": "250ms",
 		},
 	}
 	cp := extractCacheParams(params)
-	if cp.redis.connectionTimeout != 250*time.Millisecond {
-		t.Errorf("expected 250ms connectionTimeout, got %v", cp.redis.connectionTimeout)
+	if cp.redisOverride != nil {
+		t.Errorf("expected no override since redis.host was never set, got %+v", cp.redisOverride)
+	}
+}
+
+// TestExtractCacheParams_DurationParsing_WithHostAppliesToOverride is the
+// positive case: once host is set, connectionTimeout/readTimeout/writeTimeout
+// apply to that override's own *redis.Options, same as any other override field.
+func TestExtractCacheParams_DurationParsing_WithHostAppliesToOverride(t *testing.T) {
+	params := map[string]interface{}{
+		"redis": map[string]interface{}{
+			"host":              "redis.internal",
+			"connectionTimeout": "250ms",
+			"readTimeout":       "111ms",
+			"writeTimeout":      "222ms",
+		},
+	}
+	cp := extractCacheParams(params)
+	if cp.redisOverride == nil {
+		t.Fatal("expected a redisOverride since host was set")
+	}
+	if cp.redisOverride.DialTimeout != 250*time.Millisecond || cp.redisOverride.ReadTimeout != 111*time.Millisecond || cp.redisOverride.WriteTimeout != 222*time.Millisecond {
+		t.Errorf("unexpected override timeouts: %+v", cp.redisOverride)
 	}
 }

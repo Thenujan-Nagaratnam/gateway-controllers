@@ -214,8 +214,12 @@ parameters:
       description: |
         "memory" (default) caches the token in-process only, per
         gateway-runtime replica. "redis" adds a shared tier in front of
-        the token endpoint (see systemParameters.redis) across replicas.
-        Has no effect when bearerToken is set.
+        the token endpoint across replicas - by default the gateway-wide
+        default Redis client (config.redis, a top-level gateway
+        infrastructure setting, one per gateway-runtime process - see
+        redisclient.Shared() in sdk/core/utils/redisclient), or this
+        policy's own connection when systemParameters.redis.host is
+        explicitly set. Has no effect when bearerToken is set.
       enum: ["memory", "redis"]
       default: "memory"
 
@@ -223,14 +227,18 @@ systemParameters:
   type: object
   additionalProperties: false
   description: >
-    Operator/gateway-level Redis connection settings, not something an
-    individual API publisher sets - resolve via
-    config.policy_configurations.redis.* in the gateway's own
-    configuration, shared with any other policy pointed at the same
-    section (e.g. advanced-ratelimit). keyPrefix stays under this
-    policy's own oauth2_generator_v1 namespace regardless, so sharing a
-    connection never collides in the keyspace. Only read when a policy
-    instance sets cacheStrategy: redis.
+    Operator/gateway-level settings for this policy's Redis tier, entirely
+    within this policy's own config.policy_configurations.oauth2_generator_v1.redis.*
+    namespace - nothing here is shared with any other policy. host/port/
+    username/password/db/poolSize are an OPTIONAL per-policy connection
+    override: left unset (the default), this policy instead uses the
+    gateway-wide default Redis client (the top-level config.redis section -
+    see redisclient.Shared() in sdk/core/utils/redisclient). Configure an
+    override only when this policy genuinely needs a distinct Redis
+    instance/database from that gateway default. keyPrefix/failureMode/
+    the timeouts apply regardless of which client backs the tier -
+    keyPrefix keeps this policy's keys from colliding with any other
+    policy's in whichever Redis is in use.
   properties:
     redis:
       type: object
@@ -240,35 +248,48 @@ systemParameters:
       properties:
         host:
           type: string
-          description: Specifies the Redis host name or IP address.
-          default: "localhost"
-          "wso2/defaultValue": "${config.policy_configurations.redis.host}"
+          description: >
+            Optional per-policy Redis host override. Unset (the default)
+            means: use the gateway-wide default Redis client instead of
+            connecting separately. Deliberately has no schema default and
+            resolves from this policy's own namespace - see
+            systemParameters.redis's own description.
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.host}"
 
         port:
           type: integer
-          description: Specifies the Redis server port.
+          description: >
+            Redis server port for the per-policy override above. Only
+            meaningful when host is set; has no effect on the gateway-wide
+            default client.
           minimum: 1
           maximum: 65535
           default: 6379
-          "wso2/defaultValue": "${config.policy_configurations.redis.port}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.port}"
 
         password:
           type: string
-          description: Specifies the optional Redis authentication password.
-          "wso2/defaultValue": "${config.policy_configurations.redis.password}"
+          description: >
+            Redis authentication password for the per-policy override
+            above. Only meaningful when host is set.
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.password}"
 
         username:
           type: string
-          description: Specifies the optional Redis ACL username.
-          "wso2/defaultValue": "${config.policy_configurations.redis.username}"
+          description: >
+            Redis ACL username for the per-policy override above. Only
+            meaningful when host is set.
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.username}"
 
         db:
           type: integer
-          description: Specifies the Redis database index.
+          description: >
+            Redis database index for the per-policy override above. Only
+            meaningful when host is set.
           minimum: 0
           maximum: 15
           default: 0
-          "wso2/defaultValue": "${config.policy_configurations.redis.db}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.db}"
 
         keyPrefix:
           type: string
@@ -285,31 +306,45 @@ systemParameters:
             acquisition failure.
           enum: ["open", "closed"]
           default: "open"
-          "wso2/defaultValue": "${config.policy_configurations.redis.failure_mode}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.failure_mode}"
 
         connectionTimeout:
           type: string
-          description: Redis connection timeout, as a Go duration string (e.g. "5s").
+          description: Connection timeout for the per-policy override above, as
+            a Go duration string (e.g. "5s"). Only meaningful when host is
+            set - has no effect on the gateway-wide default client, which is
+            bound by its own connection_timeout under config.toml's
+            top-level [redis] section instead.
           default: "5s"
-          "wso2/defaultValue": "${config.policy_configurations.redis.connection_timeout}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.connection_timeout}"
 
         readTimeout:
           type: string
-          description: Redis read timeout, as a Go duration string (e.g. "3s").
+          description: Read timeout for the per-policy override above, as a Go
+            duration string (e.g. "3s"). Only meaningful when host is set -
+            has no effect on the gateway-wide default client, which is bound
+            by its own read_timeout under config.toml's top-level [redis]
+            section instead.
           default: "3s"
-          "wso2/defaultValue": "${config.policy_configurations.redis.read_timeout}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.read_timeout}"
 
         writeTimeout:
           type: string
-          description: Redis write timeout, as a Go duration string (e.g. "3s").
+          description: Write timeout for the per-policy override above, as a Go
+            duration string (e.g. "3s"). Only meaningful when host is set -
+            has no effect on the gateway-wide default client, which is bound
+            by its own write_timeout under config.toml's top-level [redis]
+            section instead.
           default: "3s"
-          "wso2/defaultValue": "${config.policy_configurations.redis.write_timeout}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.write_timeout}"
 
         poolSize:
           type: integer
           description: |
-            Redis connection pool size for the shared client. 0 = go-redis
-            default (10 x GOMAXPROCS).
+            Connection pool size for the per-policy override above. Only
+            meaningful when host is set - has no effect on the gateway-wide
+            default client's own pool size. 0 = go-redis default
+            (10 x GOMAXPROCS).
           minimum: 0
           default: 0
-          "wso2/defaultValue": "${config.policy_configurations.redis.pool_size}"
+          "wso2/defaultValue": "${config.policy_configurations.oauth2_generator_v1.redis.pool_size}"
