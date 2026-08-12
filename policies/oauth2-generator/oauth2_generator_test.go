@@ -76,7 +76,8 @@ func newTestPolicy() *Policy {
 // for OnResponseHeaders tests that only care whether a purge happened, not
 // the real cache mechanics (see token_cache_test.go for those).
 type fakeTokenSource struct {
-	purgeCalls int
+	purgeCalls  int
+	purgeCalled bool
 }
 
 func (f *fakeTokenSource) Token() (*xoauth2.Token, error) {
@@ -85,6 +86,7 @@ func (f *fakeTokenSource) Token() (*xoauth2.Token, error) {
 
 func (f *fakeTokenSource) Purge() {
 	f.purgeCalls++
+	f.purgeCalled = true
 }
 
 func newResponseHeaderCtx(status int) *policy.ResponseHeaderContext {
@@ -1488,6 +1490,80 @@ func TestOnRequestHeaders_PreservesPreviousAuthContext(t *testing.T) {
 	}
 	if got.Previous == nil || got.Previous.AuthType != "jwt" || got.Previous.Subject != "end-user-123" {
 		t.Fatal("expected the prior inbound auth context to be preserved via Previous")
+	}
+}
+
+// ─── OnUpstreamAttemptRequestHeaders ─────────────────────────────────────────
+
+// newTestPolicyWithMockTokenSource returns a *Policy wired to a fakeTokenSource
+// that always succeeds, for tests that don't care about purge behavior.
+func newTestPolicyWithMockTokenSource(t *testing.T) *Policy {
+	t.Helper()
+	p := newTestPolicy()
+	p.tokenSource = &fakeTokenSource{}
+	return p
+}
+
+// newTestPolicyWithMockTokenSourceTrackingPurge returns a *Policy wired to a
+// fakeTokenSource, plus that same fakeTokenSource so the caller can assert on
+// its purgeCalled field - matching the fakeTokenSource convention already
+// used by the OnResponseHeaders purge tests above.
+func newTestPolicyWithMockTokenSourceTrackingPurge(t *testing.T) (*Policy, *fakeTokenSource) {
+	t.Helper()
+	fake := &fakeTokenSource{}
+	p := newTestPolicy()
+	p.tokenSource = fake
+	return p, fake
+}
+
+// newTestPolicyWithFailingTokenSource returns a *Policy whose token fetch
+// always errors, following the same tokenFunc-override convention as
+// TestOnRequestHeaders_TokenFetchFailure. tokenSource is still a fakeTokenSource
+// (rather than left nil) so a Purge() call on AttemptCount > 1 has somewhere
+// safe to land.
+func newTestPolicyWithFailingTokenSource(t *testing.T) *Policy {
+	t.Helper()
+	p := newTestPolicy()
+	p.tokenSource = &fakeTokenSource{}
+	p.tokenFunc = func() (*xoauth2.Token, error) {
+		return nil, errors.New("token endpoint returned invalid_client")
+	}
+	return p
+}
+
+func TestOnUpstreamAttemptRequestHeaders_AttemptOneUsesCachedToken(t *testing.T) {
+	p := newTestPolicyWithMockTokenSource(t)
+	actx := &policy.UpstreamAttemptContext{AttemptCount: 1, Headers: policy.NewHeaders(nil)}
+
+	action := p.OnUpstreamAttemptRequestHeaders(context.Background(), actx)
+	mods, ok := action.(policy.UpstreamAttemptHeaderModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamAttemptHeaderModifications, got %T", action)
+	}
+	if _, set := mods.HeadersToSet["Authorization"]; !set {
+		t.Error("expected Authorization to be set even on attempt 1")
+	}
+}
+
+func TestOnUpstreamAttemptRequestHeaders_RetryPurgesAndRefetches(t *testing.T) {
+	p, mockSource := newTestPolicyWithMockTokenSourceTrackingPurge(t)
+	actx := &policy.UpstreamAttemptContext{AttemptCount: 2, Headers: policy.NewHeaders(nil)}
+
+	_ = p.OnUpstreamAttemptRequestHeaders(context.Background(), actx)
+
+	if !mockSource.purgeCalled {
+		t.Error("expected AttemptCount > 1 to purge the cached token before refetching")
+	}
+}
+
+func TestOnUpstreamAttemptRequestHeaders_FetchErrorFailsOpen(t *testing.T) {
+	p := newTestPolicyWithFailingTokenSource(t)
+	actx := &policy.UpstreamAttemptContext{AttemptCount: 2, Headers: policy.NewHeaders(nil)}
+
+	action := p.OnUpstreamAttemptRequestHeaders(context.Background(), actx)
+	mods, ok := action.(policy.UpstreamAttemptHeaderModifications)
+	if !ok || len(mods.HeadersToSet) != 0 {
+		t.Errorf("expected an empty no-op action on fetch failure (fail open), got %#v", action)
 	}
 }
 
