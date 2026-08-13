@@ -249,3 +249,35 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 	}
 	return mods
 }
+
+// OnUpstreamAttemptRequestHeaders implements policy.UpstreamAttemptPolicy —
+// AttemptCount N corresponds directly to p.models[N-1] (verified sufficient
+// in the design spec: the translator builds the aggregate cluster's member
+// list in this exact order, so no additional per-attempt target-identity
+// plumbing — e.g. xds.cluster_name — is needed or reliable). Fails open
+// (nil Body, no mutation) if AttemptCount is out of range or actx.Body is
+// unavailable — this must only ever help a retry succeed, never add a new
+// failure mode.
+func (p *Policy) OnUpstreamAttemptRequestHeaders(ctx context.Context, actx *policy.UpstreamAttemptContext) policy.UpstreamAttemptAction {
+	if actx.Body == nil || !actx.Body.Present {
+		return policy.UpstreamAttemptHeaderModifications{}
+	}
+	idx := actx.AttemptCount - 1
+	if idx < 0 || idx >= len(p.models) {
+		return policy.UpstreamAttemptHeaderModifications{}
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(actx.Body.Content, &decoded); err != nil {
+		slog.WarnContext(ctx, "ModelFailover: upstream-attempt body is not valid JSON, failing open", "attempt", actx.AttemptCount, "error", err)
+		return policy.UpstreamAttemptHeaderModifications{}
+	}
+	decoded["model"] = p.models[idx].name
+	mutated, err := json.Marshal(decoded)
+	if err != nil {
+		slog.WarnContext(ctx, "ModelFailover: failed to re-marshal upstream-attempt body, failing open", "attempt", actx.AttemptCount, "error", err)
+		return policy.UpstreamAttemptHeaderModifications{}
+	}
+
+	return policy.UpstreamAttemptHeaderModifications{Body: mutated}
+}

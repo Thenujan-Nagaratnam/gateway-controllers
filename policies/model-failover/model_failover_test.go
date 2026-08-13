@@ -157,3 +157,42 @@ func TestSuspendKey_ScopedPerAPIOperationAndIndex(t *testing.T) {
 		t.Error("suspending an API must not affect the same operation path on a different API")
 	}
 }
+
+func TestOnUpstreamAttemptRequestHeaders_RewritesModelPerAttempt(t *testing.T) {
+	p := &Policy{models: []modelTarget{{name: "gpt-4o", upstreamDefinition: "primary"}, {name: "gpt-4o-mini", upstreamDefinition: "fallback-1"}}}
+
+	actx := &policy.UpstreamAttemptContext{
+		AttemptCount: 2,
+		Body:         &policy.Body{Content: []byte(`{"model":"gpt-4o","messages":[]}`), Present: true},
+	}
+	action := p.OnUpstreamAttemptRequestHeaders(context.Background(), actx)
+	mods, ok := action.(policy.UpstreamAttemptHeaderModifications)
+	if !ok || mods.Body == nil {
+		t.Fatalf("expected a body mutation, got %#v", action)
+	}
+	var decoded map[string]interface{}
+	json.Unmarshal(mods.Body, &decoded)
+	if decoded["model"] != "gpt-4o-mini" {
+		t.Errorf("expected attempt 2 to inject models[1].name, got %v", decoded["model"])
+	}
+}
+
+func TestOnUpstreamAttemptRequestHeaders_AttemptBeyondModelsListFailsOpen(t *testing.T) {
+	p := &Policy{models: []modelTarget{{name: "a", upstreamDefinition: "x"}, {name: "b", upstreamDefinition: "y"}}}
+	actx := &policy.UpstreamAttemptContext{AttemptCount: 5, Body: &policy.Body{Content: []byte(`{}`), Present: true}}
+	action := p.OnUpstreamAttemptRequestHeaders(context.Background(), actx)
+	mods, ok := action.(policy.UpstreamAttemptHeaderModifications)
+	if !ok || mods.Body != nil {
+		t.Errorf("expected a no-op (nil Body) when AttemptCount exceeds len(models), got %#v", action)
+	}
+}
+
+func TestOnUpstreamAttemptRequestHeaders_NilBodyFailsOpen(t *testing.T) {
+	p := &Policy{models: []modelTarget{{name: "a", upstreamDefinition: "x"}, {name: "b", upstreamDefinition: "y"}}}
+	actx := &policy.UpstreamAttemptContext{AttemptCount: 1, Body: nil} // cluster wasn't body-buffered for some reason
+	action := p.OnUpstreamAttemptRequestHeaders(context.Background(), actx)
+	mods, ok := action.(policy.UpstreamAttemptHeaderModifications)
+	if !ok || mods.Body != nil {
+		t.Errorf("expected a no-op when actx.Body is nil, got %#v", action)
+	}
+}
