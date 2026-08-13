@@ -1,0 +1,69 @@
+name: model-failover
+version: v0.1.0
+description: |
+  Transparently retries a failed request against an ordered list of
+  fallback model+endpoint targets (same request/response shape — e.g.
+  several OpenAI-compatible deployments). Each attempt injects the
+  target's configured model name into the request body. A target that
+  just failed is suspended for suspendDuration so the next request skips
+  straight past it. Requires each target's upstreamDefinition to already
+  be declared on the same API/LlmProvider spec.
+
+parameters:
+  type: object
+  additionalProperties: false
+  required:
+    - models
+    - statusCodes
+  properties:
+    models:
+      type: array
+      minItems: 2
+      x-wso2-policy-advanced-param: false
+      description: |
+        Ordered fallback chain. Index 0 is the primary target; every
+        subsequent entry is tried in order if all earlier ones fail.
+      items:
+        type: object
+        additionalProperties: false
+        required:
+          - name
+          - upstreamDefinition
+        properties:
+          name:
+            type: string
+            minLength: 1
+            description: Model name injected into the request body for this target.
+          upstreamDefinition:
+            type: string
+            minLength: 1
+            description: Must match an upstreamDefinitions[].name declared on the same API.
+    statusCodes:
+      type: array
+      minItems: 1
+      x-wso2-policy-advanced-param: false
+      description: Response status codes that trigger failover to the next target.
+      items:
+        type: integer
+        minimum: 100
+        maximum: 599
+    requestTimeout:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: Per-attempt timeout (e.g. "10s"). Defaults to the route's own timeout when unset.
+    suspendDuration:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        How long a failed target is skipped by future requests (e.g.
+        "30s"). Omit to disable suspend tracking entirely.
+    cache:
+      type: object
+      x-wso2-policy-advanced-param: true
+      additionalProperties: false
+      description: Only consulted when suspendDuration is set.
+      properties:
+        strategy:
+          type: string
+          enum: [memory, redis]
+          default: memory
