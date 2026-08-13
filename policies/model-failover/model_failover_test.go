@@ -18,7 +18,10 @@
 package modelfailover
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
+	"time"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
@@ -54,5 +57,103 @@ func TestGetPolicy_RejectsSingleModel(t *testing.T) {
 	}
 	if _, err := GetPolicy(policy.PolicyMetadata{}, params); err == nil {
 		t.Error("expected an error for a single-target models list")
+	}
+}
+
+func TestOnRequestBody_NoSuspendUsesModelsZero(t *testing.T) {
+	p := &Policy{
+		models:      []modelTarget{{name: "gpt-4o", upstreamDefinition: "primary"}, {name: "gpt-4o-mini", upstreamDefinition: "fallback-1"}},
+		statusCodes: map[int]struct{}{500: {}},
+		suspend:     newMemorySuspendStore(), // add this small constructor in the same package — see Step 3
+	}
+	rctx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{},
+		Body:          &policy.Body{Content: []byte(`{"model":"whatever-the-client-sent","messages":[]}`), Present: true},
+	}
+
+	action := p.OnRequestBody(context.Background(), rctx, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	if mods.UpstreamName != nil {
+		t.Errorf("expected no UpstreamName override when nothing is suspended, got %q", *mods.UpstreamName)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(mods.Body, &decoded); err != nil {
+		t.Fatalf("mutated body is not valid JSON: %v", err)
+	}
+	if decoded["model"] != "gpt-4o" {
+		t.Errorf("expected model rewritten to the primary target's name, got %v", decoded["model"])
+	}
+}
+
+func TestOnRequestBody_SuspendedPrimarySkipsAhead(t *testing.T) {
+	p := &Policy{
+		models:      []modelTarget{{name: "gpt-4o", upstreamDefinition: "primary"}, {name: "gpt-4o-mini", upstreamDefinition: "fallback-1"}},
+		statusCodes: map[int]struct{}{500: {}},
+		// suspendDuration must be non-zero here — firstAvailableTarget
+		// intentionally short-circuits to index 0 (fail toward primary) when
+		// suspend tracking is disabled (suspendDuration == 0). This test's
+		// whole point is exercising the enabled skip-ahead path.
+		suspendDuration: time.Minute,
+		suspend:         newMemorySuspendStore(),
+	}
+	p.suspend.Suspend(context.Background(), suspendKey(&policy.SharedContext{APIId: "api-1", OperationPath: "/chat/completions"}, 0), time.Minute)
+
+	rctx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{APIId: "api-1", OperationPath: "/chat/completions"},
+		Body:          &policy.Body{Content: []byte(`{"model":"x","messages":[]}`), Present: true},
+	}
+
+	action := p.OnRequestBody(context.Background(), rctx, nil)
+	mods := action.(policy.UpstreamRequestModifications)
+	if mods.UpstreamName == nil || *mods.UpstreamName != "fallback-1" {
+		t.Fatalf("expected UpstreamName override to the first non-suspended target, got %v", mods.UpstreamName)
+	}
+	var decoded map[string]interface{}
+	json.Unmarshal(mods.Body, &decoded)
+	if decoded["model"] != "gpt-4o-mini" {
+		t.Errorf("expected model rewritten to the skipped-to target's name, got %v", decoded["model"])
+	}
+}
+
+// TestSuspendKey_ScopedPerAPIOperationAndIndex locks in that suspend state
+// never leaks across APIs, operations, or target indices: suspending target
+// 0 on one operation must not affect target 0 on a different operation, nor
+// target 1 on the same operation.
+func TestSuspendKey_ScopedPerAPIOperationAndIndex(t *testing.T) {
+	opA := &policy.SharedContext{APIId: "api-1", OperationPath: "/chat/completions"}
+	opB := &policy.SharedContext{APIId: "api-1", OperationPath: "/embeddings"}
+	opC := &policy.SharedContext{APIId: "api-2", OperationPath: "/chat/completions"}
+
+	keyA0 := suspendKey(opA, 0)
+	keyA1 := suspendKey(opA, 1)
+	keyB0 := suspendKey(opB, 0)
+	keyC0 := suspendKey(opC, 0)
+
+	seen := map[string]bool{}
+	for _, k := range []string{keyA0, keyA1, keyB0, keyC0} {
+		if seen[k] {
+			t.Fatalf("suspendKey produced a colliding key %q across distinct (api, operation, index) inputs", k)
+		}
+		seen[k] = true
+	}
+
+	store := newMemorySuspendStore()
+	ctx := context.Background()
+	store.Suspend(ctx, keyA0, time.Minute)
+
+	if !store.IsSuspended(ctx, keyA0) {
+		t.Error("expected keyA0 to be suspended after Suspend()")
+	}
+	if store.IsSuspended(ctx, keyA1) {
+		t.Error("suspending target 0 must not affect target 1 on the same operation")
+	}
+	if store.IsSuspended(ctx, keyB0) {
+		t.Error("suspending an operation must not affect a different operation on the same API")
+	}
+	if store.IsSuspended(ctx, keyC0) {
+		t.Error("suspending an API must not affect the same operation path on a different API")
 	}
 }

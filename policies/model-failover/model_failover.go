@@ -21,8 +21,12 @@
 package modelfailover
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
@@ -44,6 +48,7 @@ type Policy struct {
 	requestTimeout  time.Duration
 	suspendDuration time.Duration // zero = suspend tracking disabled
 	cacheStrategy   string
+	suspend         suspendStore
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
@@ -105,6 +110,11 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		}
 	}
 
+	// In-memory only for now — a Redis-backed suspendStore (for cross-replica
+	// suspend sharing, keyed off p.cacheStrategy == "redis") is added in Task
+	// 10, following oauth2-generator/token_cache.go's cache pattern.
+	p.suspend = newMemorySuspendStore()
+
 	return p, nil
 }
 
@@ -138,4 +148,104 @@ func getStringParam(params map[string]interface{}, key string) string {
 		}
 	}
 	return ""
+}
+
+// suspendStore tracks which (route, target-index) pairs recently failed.
+// The in-memory implementation here is intentionally the ONLY implementation
+// this task adds — a Redis-backed one (for cross-replica suspend sharing) is
+// added in Task 10, following oauth2-generator/token_cache.go's cache
+// pattern; this interface is what makes that swap possible without touching
+// OnRequestBody/OnResponseHeaders again.
+type suspendStore interface {
+	IsSuspended(ctx context.Context, key string) bool
+	Suspend(ctx context.Context, key string, ttl time.Duration)
+}
+
+type memorySuspendStore struct {
+	mu      sync.Mutex
+	entries map[string]time.Time // key -> expiry
+}
+
+func newMemorySuspendStore() *memorySuspendStore {
+	return &memorySuspendStore{entries: make(map[string]time.Time)}
+}
+
+func (s *memorySuspendStore) IsSuspended(_ context.Context, key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	expiry, ok := s.entries[key]
+	if !ok {
+		return false
+	}
+	if time.Now().After(expiry) {
+		delete(s.entries, key)
+		return false
+	}
+	return true
+}
+
+func (s *memorySuspendStore) Suspend(_ context.Context, key string, ttl time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries[key] = time.Now().Add(ttl)
+}
+
+// suspendKey scopes suspend state to this specific route/operation and
+// target index — two different operations using model-failover must never
+// share suspend state, and suspending target 0 must never affect target 1's
+// own independent state.
+func suspendKey(shared *policy.SharedContext, targetIndex int) string {
+	return fmt.Sprintf("model-failover:%s:%s:%d", shared.APIId, shared.OperationPath, targetIndex)
+}
+
+// firstAvailableTarget walks p.models in order and returns the first whose
+// suspend state (if suspendDuration is configured at all) isn't currently
+// active. When suspendDuration is zero (disabled — see GetPolicy), or when
+// every target is currently suspended (nothing better to do), it returns
+// index 0 unconditionally — always trying the primary is strictly better
+// than refusing to route at all.
+func (p *Policy) firstAvailableTarget(ctx context.Context, shared *policy.SharedContext) (int, modelTarget) {
+	if p.suspendDuration == 0 {
+		return 0, p.models[0]
+	}
+	for i, m := range p.models {
+		if !p.suspend.IsSuspended(ctx, suspendKey(shared, i)) {
+			return i, m
+		}
+	}
+	return 0, p.models[0]
+}
+
+// OnRequestBody runs once per client request, before anything is sent —
+// this is the ONLY point that can redirect to a non-primary target ahead of
+// time (the upstream-attempt phase, Task 9, can only react to a target
+// Envoy already committed to dialing for that retry). It always rewrites
+// "model" to the chosen target's configured name — this policy never
+// passes through whatever model name the client sent, matching the old
+// APIM UI's explicit "target model" selection semantics (see design spec).
+func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+	if rctx.Body == nil || !rctx.Body.Present {
+		return policy.UpstreamRequestModifications{}
+	}
+
+	idx, target := p.firstAvailableTarget(ctx, rctx.SharedContext)
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(rctx.Body.Content, &decoded); err != nil {
+		slog.WarnContext(ctx, "ModelFailover: request body is not valid JSON, failing open (no mutation)", "error", err)
+		return policy.UpstreamRequestModifications{}
+	}
+	decoded["model"] = target.name
+	mutated, err := json.Marshal(decoded)
+	if err != nil {
+		slog.WarnContext(ctx, "ModelFailover: failed to re-marshal request body, failing open", "error", err)
+		return policy.UpstreamRequestModifications{}
+	}
+
+	mods := policy.UpstreamRequestModifications{Body: mutated}
+	if idx != 0 {
+		name := target.upstreamDefinition
+		mods.UpstreamName = &name
+	}
+	return mods
 }
