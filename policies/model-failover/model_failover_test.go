@@ -196,3 +196,52 @@ func TestOnUpstreamAttemptRequestHeaders_NilBodyFailsOpen(t *testing.T) {
 		t.Errorf("expected a no-op when actx.Body is nil, got %#v", action)
 	}
 }
+
+func TestOnResponseHeaders_FinalAttemptCountTwoSuspendsTargetZero(t *testing.T) {
+	store := newMemorySuspendStore()
+	p := &Policy{
+		models:          []modelTarget{{name: "a", upstreamDefinition: "primary"}, {name: "b", upstreamDefinition: "fallback-1"}},
+		suspend:         store,
+		suspendDuration: time.Minute,
+	}
+	shared := &policy.SharedContext{APIId: "api-1", OperationPath: "/chat/completions"}
+	rhctx := &policy.ResponseHeaderContext{
+		SharedContext:   shared,
+		ResponseHeaders: policy.NewHeaders(map[string][]string{"x-envoy-attempt-count": {"2"}}),
+	}
+
+	p.OnResponseHeaders(context.Background(), rhctx, nil)
+
+	if !store.IsSuspended(context.Background(), suspendKey(shared, 0)) {
+		t.Error("expected target index 0 to be suspended after a final attempt count of 2 (it must have failed to trigger attempt 2)")
+	}
+	if store.IsSuspended(context.Background(), suspendKey(shared, 1)) {
+		t.Error("target index 1 (the one that actually responded) must not be marked suspended")
+	}
+}
+
+func TestOnResponseHeaders_AttemptCountOneSuspendsNothing(t *testing.T) {
+	store := newMemorySuspendStore()
+	p := &Policy{models: []modelTarget{{name: "a", upstreamDefinition: "primary"}, {name: "b", upstreamDefinition: "fallback-1"}}, suspend: store, suspendDuration: time.Minute}
+	shared := &policy.SharedContext{APIId: "api-1", OperationPath: "/chat/completions"}
+	rhctx := &policy.ResponseHeaderContext{SharedContext: shared, ResponseHeaders: policy.NewHeaders(map[string][]string{"x-envoy-attempt-count": {"1"}})}
+
+	p.OnResponseHeaders(context.Background(), rhctx, nil)
+
+	if store.IsSuspended(context.Background(), suspendKey(shared, 0)) {
+		t.Error("a first-attempt success must not suspend the primary")
+	}
+}
+
+func TestOnResponseHeaders_SuspendDisabledIsNoOp(t *testing.T) {
+	store := newMemorySuspendStore()
+	p := &Policy{models: []modelTarget{{name: "a", upstreamDefinition: "primary"}, {name: "b", upstreamDefinition: "fallback-1"}}, suspend: store, suspendDuration: 0}
+	shared := &policy.SharedContext{APIId: "api-1", OperationPath: "/chat/completions"}
+	rhctx := &policy.ResponseHeaderContext{SharedContext: shared, ResponseHeaders: policy.NewHeaders(map[string][]string{"x-envoy-attempt-count": {"2"}})}
+
+	p.OnResponseHeaders(context.Background(), rhctx, nil)
+
+	if store.IsSuspended(context.Background(), suspendKey(shared, 0)) {
+		t.Error("suspendDuration == 0 must disable suspend tracking entirely, even with a multi-attempt response")
+	}
+}

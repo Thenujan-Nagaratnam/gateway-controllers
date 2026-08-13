@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,7 +48,6 @@ type Policy struct {
 	statusCodes     map[int]struct{}
 	requestTimeout  time.Duration
 	suspendDuration time.Duration // zero = suspend tracking disabled
-	cacheStrategy   string
 	suspend         suspendStore
 }
 
@@ -88,7 +88,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		statusCodes[code] = struct{}{}
 	}
 
-	p := &Policy{models: models, statusCodes: statusCodes, cacheStrategy: "memory"}
+	p := &Policy{models: models, statusCodes: statusCodes}
 
 	if raw := getStringParam(params, "requestTimeout"); raw != "" {
 		d, err := time.ParseDuration(raw)
@@ -104,15 +104,10 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		}
 		p.suspendDuration = d
 	}
-	if cache, ok := params["cache"].(map[string]interface{}); ok {
-		if strategy := getStringParam(cache, "strategy"); strategy != "" {
-			p.cacheStrategy = strategy
-		}
-	}
 
-	// In-memory only for now — a Redis-backed suspendStore (for cross-replica
-	// suspend sharing, keyed off p.cacheStrategy == "redis") is added in Task
-	// 10, following oauth2-generator/token_cache.go's cache pattern.
+	// Suspend tracking is in-memory only, permanently — there is no
+	// Redis-backed option (a cross-replica store was considered and
+	// deliberately dropped from scope).
 	p.suspend = newMemorySuspendStore()
 
 	return p, nil
@@ -151,11 +146,11 @@ func getStringParam(params map[string]interface{}, key string) string {
 }
 
 // suspendStore tracks which (route, target-index) pairs recently failed.
-// The in-memory implementation here is intentionally the ONLY implementation
-// this task adds — a Redis-backed one (for cross-replica suspend sharing) is
-// added in Task 10, following oauth2-generator/token_cache.go's cache
-// pattern; this interface is what makes that swap possible without touching
-// OnRequestBody/OnResponseHeaders again.
+// The in-memory implementation here is the ONLY implementation this policy
+// has, permanently — cross-replica (Redis-backed) suspend sharing was
+// considered and deliberately dropped from scope. The interface still earns
+// its keep as a seam between "the policy's suspend logic" and "how suspend
+// state is stored," even with a single implementation.
 type suspendStore interface {
 	IsSuspended(ctx context.Context, key string) bool
 	Suspend(ctx context.Context, key string, ttl time.Duration)
@@ -280,4 +275,30 @@ func (p *Policy) OnUpstreamAttemptRequestHeaders(ctx context.Context, actx *poli
 	}
 
 	return policy.UpstreamAttemptHeaderModifications{Body: mutated}
+}
+
+// OnResponseHeaders infers which targets failed this request from the FINAL
+// response's x-envoy-attempt-count: a final count of N means targets
+// [0, N-2] all failed (each had to fail to trigger the next retry) — no new
+// upstream-attempt response hook is needed for this (see design spec). A
+// missing/unparseable header is treated as 1 (nothing failed), matching the
+// same fail-toward-"first attempt" convention as the upstream-attempt phase.
+// A no-op entirely when suspendDuration is 0 (suspend tracking disabled).
+func (p *Policy) OnResponseHeaders(ctx context.Context, rhctx *policy.ResponseHeaderContext, _ map[string]interface{}) policy.ResponseHeaderAction {
+	if p.suspendDuration == 0 {
+		return policy.DownstreamResponseHeaderModifications{}
+	}
+
+	finalAttemptCount := 1
+	if vals := rhctx.ResponseHeaders.Get("x-envoy-attempt-count"); len(vals) > 0 {
+		if n, err := strconv.Atoi(vals[0]); err == nil && n > 0 {
+			finalAttemptCount = n
+		}
+	}
+
+	for i := 0; i < finalAttemptCount-1 && i < len(p.models); i++ {
+		p.suspend.Suspend(ctx, suspendKey(rhctx.SharedContext, i), p.suspendDuration)
+	}
+
+	return policy.DownstreamResponseHeaderModifications{}
 }

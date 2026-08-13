@@ -57,13 +57,3 @@ parameters:
       description: |
         How long a failed target is skipped by future requests (e.g.
         "30s"). Omit to disable suspend tracking entirely.
-    cache:
-      type: object
-      x-wso2-policy-advanced-param: true
-      additionalProperties: false
-      description: Only consulted when suspendDuration is set.
-      properties:
-        strategy:
-          type: string
-          enum: [memory, redis]
-          default: memory
