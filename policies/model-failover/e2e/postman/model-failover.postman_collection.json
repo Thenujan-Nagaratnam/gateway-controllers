@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "f831d728-9609-4854-828b-0d16cf607956",
+    "_postman_id": "19f50598-ff65-483d-b8f2-d1fd0478f8fc",
     "name": "model-failover e2e",
     "description": "End-to-end coverage for the model-failover gateway policy: multi-target-group dispatch, cross-cluster failover with per-attempt model rewrite, suspend-driven skip-ahead, unmatched-model passthrough, zero-fallback groups, registration-time validation (dangling upstreamDefinition references, model-failover+resilience.retry coexistence, basePath-carrying aggregate-cluster members), and LlmProxy cross-provider dispatch via additionalProviders aliases.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
@@ -1435,6 +1435,60 @@
                   "pm.test('status is 4xx, not 201', () => pm.expect(pm.response.code).to.be.oneOf([400, 422]));",
                   "pm.test('error message names the conflict', () => {",
                   "  pm.expect(pm.response.text().toLowerCase()).to.include('resilience.retry');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject: model-failover configured but upstreamDefinitions is entirely absent",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "description": "A different, more common mistake than the dangling-reference case above: the provider has NO upstreamDefinitions field at all (just spec.upstream.url) - not merely missing the one specific name referenced. declaredUpstreamDefs is an empty map, so every target reference is 'undeclared' and must be rejected the same way.",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-no-upstreamdefs-test\nspec:\n  displayName: MF No UpstreamDefs Test\n  version: v1.0\n  template: openai\n  context: /mf-no-upstreamdefs-test/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                upstreamDefinition: primary\n            statusCodes: [500]\n  accessControl:\n    mode: allow_all\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 4xx, not 201', () => pm.expect(pm.response.code).to.be.oneOf([400, 422]));",
+                  "pm.test('error message names the undeclared reference', () => {",
+                  "  pm.expect(pm.response.text()).to.include('primary');",
                   "});"
                 ]
               }
