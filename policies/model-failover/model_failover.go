@@ -36,7 +36,10 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-// fallbackTarget is one fallback entry within a target group's own chain.
+// fallbackTarget is one fallback entry within a target group's own chain. upstreamDefinition
+// == "" means the API's own main upstream (the same backend used with no model-failover
+// configured at all) — most APIs have exactly one upstream, so most fallbacks need nothing
+// here.
 type fallbackTarget struct {
 	model              string
 	upstreamDefinition string
@@ -46,6 +49,7 @@ type fallbackTarget struct {
 // that selects this whole group, and fallbacks is that group's own ordered failover chain —
 // entirely independent of every other group's chain (own suspend state, own starting point).
 // A group with zero fallbacks is legal: it's just "route this one model name, no failover."
+// upstreamDefinition == "" means the API's own main upstream, same as fallbackTarget above.
 type targetGroup struct {
 	model              string
 	upstreamDefinition string
@@ -92,10 +96,11 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 			return nil, fmt.Errorf("model-failover: targets[%d] is not an object", i)
 		}
 		model, _ := t["model"].(string)
-		upstreamDef, _ := t["upstreamDefinition"].(string)
-		if model == "" || upstreamDef == "" {
-			return nil, fmt.Errorf("model-failover: targets[%d] requires both model and upstreamDefinition", i)
+		if model == "" {
+			return nil, fmt.Errorf("model-failover: targets[%d].model is required", i)
 		}
+		// upstreamDefinition is optional: absent/empty means the API's own main upstream.
+		upstreamDef, _ := t["upstreamDefinition"].(string)
 		if _, exists := targetByModel[model]; exists {
 			return nil, fmt.Errorf("model-failover: targets[%d].model %q is declared more than once", i, model)
 		}
@@ -108,10 +113,11 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 				return nil, fmt.Errorf("model-failover: targets[%d].fallbacks[%d] is not an object", i, j)
 			}
 			fbModel, _ := fb["model"].(string)
-			fbUpstreamDef, _ := fb["upstreamDefinition"].(string)
-			if fbModel == "" || fbUpstreamDef == "" {
-				return nil, fmt.Errorf("model-failover: targets[%d].fallbacks[%d] requires both model and upstreamDefinition", i, j)
+			if fbModel == "" {
+				return nil, fmt.Errorf("model-failover: targets[%d].fallbacks[%d].model is required", i, j)
 			}
+			// upstreamDefinition is optional here too: absent/empty means main upstream.
+			fbUpstreamDef, _ := fb["upstreamDefinition"].(string)
 			fallbacks = append(fallbacks, fallbackTarget{model: fbModel, upstreamDefinition: fbUpstreamDef})
 		}
 
@@ -384,7 +390,7 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 		// added. Fall through to the direct-upstream branch below instead.
 		name := modelFailoverGroupUpstreamName(p.routeName, group.model)
 		mods.UpstreamName = &name
-	} else {
+	} else if resolvedUpstreamDef != "" {
 		// Either a skip-ahead within the group (idx > 0 — redirect DIRECTLY to that specific
 		// fallback's own upstream, bypassing the aggregate entirely, since Envoy has no way
 		// to "start" an aggregate cluster's priority walk partway through) or a zero-fallback
@@ -393,6 +399,18 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 		name := resolvedUpstreamDef
 		mods.UpstreamName = &name
 	}
+	// resolvedUpstreamDef == "" means "this API's own main upstream" — the same backend used
+	// with no model-failover at all. Leave UpstreamName unset entirely rather than trying to
+	// resolve a cluster name for it: main is NOT registered under the
+	// UpstreamDefinitionClusterPrefix scheme resolveUpstreamRedirect requires (only named
+	// upstreamDefinitions and this policy's own aggregate clusters are), so setting
+	// UpstreamName="main" or any other literal would resolve to a cluster that doesn't exist,
+	// or worse, collide with an operator-declared upstreamDefinition actually named "main".
+	// Leaving it unset reuses the kernel's own existing default-upstream-cluster mechanism
+	// (UpstreamExternalProcessorServer's caller falls back to the route's configured default
+	// cluster whenever no policy sets UpstreamName) — the exact same path a route with no
+	// model-failover policy at all already relies on, so main resolves correctly with zero
+	// new cluster-registration machinery needed on either side.
 	return mods
 }
 

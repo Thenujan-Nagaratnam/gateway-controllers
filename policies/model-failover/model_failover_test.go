@@ -117,13 +117,21 @@ func TestGetPolicy_TargetWithNoFallbacksIsLegal(t *testing.T) {
 	}
 }
 
-func TestGetPolicy_RejectsMissingTargetUpstreamDefinition(t *testing.T) {
+func TestGetPolicy_TargetUpstreamDefinitionIsOptional(t *testing.T) {
 	params := map[string]interface{}{
-		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}}, // upstreamDefinition omitted - defaults to main
 		"statusCodes": []interface{}{500},
 	}
-	if _, err := GetPolicy(policy.PolicyMetadata{}, params); err == nil {
-		t.Error("expected an error when a target omits upstreamDefinition")
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("expected no error when a target omits upstreamDefinition (defaults to main), got: %v", err)
+	}
+	mfp, ok := p.(*Policy)
+	if !ok {
+		t.Fatalf("expected *Policy, got %T", p)
+	}
+	if mfp.targets[0].upstreamDefinition != "" {
+		t.Errorf("expected empty upstreamDefinition (main) to be preserved as-is, got %q", mfp.targets[0].upstreamDefinition)
 	}
 }
 
@@ -218,6 +226,75 @@ func TestOnRequestBody_ZeroFallbackGroupRoutesDirectlyNotViaAggregate(t *testing
 	}
 	if mods.UpstreamName == nil || *mods.UpstreamName != "primary" {
 		t.Fatalf("expected UpstreamName to point directly at the target's own upstreamDefinition %q (no aggregate cluster exists for a zero-fallback group), got %v", "primary", mods.UpstreamName)
+	}
+}
+
+// A target with an empty upstreamDefinition defaults to the API's own main upstream — the
+// same backend used with no model-failover configured at all. UpstreamName must be left
+// entirely UNSET (not set to "" or any literal): main isn't registered under the
+// UpstreamDefinitionClusterPrefix scheme resolveUpstreamRedirect requires, so the only
+// correct way to reach it is to fall through to the kernel's own existing
+// default-upstream-cluster mechanism, which only activates when no policy sets UpstreamName.
+func TestOnRequestBody_EmptyUpstreamDefinitionLeavesUpstreamNameUnset(t *testing.T) {
+	p := &Policy{
+		routeName:     "POST|/chat/completions|main.local",
+		targets:       []targetGroup{{model: "gpt-4o", upstreamDefinition: ""}}, // main, zero fallbacks
+		targetByModel: map[string]int{"gpt-4o": 0},
+		statusCodes:   map[int]struct{}{500: {}},
+		suspend:       newMemorySuspendStore(),
+	}
+	rctx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{},
+		Body:          &policy.Body{Content: []byte(`{"model":"gpt-4o","messages":[]}`), Present: true},
+	}
+
+	action := p.OnRequestBody(context.Background(), rctx, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	if mods.UpstreamName != nil {
+		t.Fatalf("expected UpstreamName to be left unset (nil) so the kernel's default-upstream-cluster mechanism applies, got %q", *mods.UpstreamName)
+	}
+	// The model rewrite must still happen even though the destination defaults to main.
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(mods.Body, &decoded); err != nil {
+		t.Fatalf("mutated body is not valid JSON: %v", err)
+	}
+	if decoded["model"] != "gpt-4o" {
+		t.Errorf("expected model unchanged (gpt-4o is both the dispatch key and the model sent), got %v", decoded["model"])
+	}
+}
+
+// A skip-ahead fallback with an empty upstreamDefinition (main) must ALSO leave UpstreamName
+// unset — the same rule applies regardless of whether it's the group's own zero-fallback
+// primary or a fallback reached via suspend-driven skip-ahead.
+func TestOnRequestBody_SkipAheadToEmptyUpstreamDefinitionLeavesUpstreamNameUnset(t *testing.T) {
+	p := &Policy{
+		routeName: "POST|/chat/completions|main.local",
+		targets: []targetGroup{{
+			model: "gpt-4o", upstreamDefinition: "primary",
+			fallbacks: []fallbackTarget{{model: "gpt-4o-mini", upstreamDefinition: ""}}, // main
+		}},
+		targetByModel:   map[string]int{"gpt-4o": 0},
+		statusCodes:     map[int]struct{}{500: {}},
+		suspendDuration: time.Minute,
+		suspend:         newMemorySuspendStore(),
+	}
+	shared := &policy.SharedContext{APIId: "api-1", OperationPath: "/chat/completions"}
+	p.suspend.Suspend(context.Background(), suspendKey(shared, "gpt-4o", 0), time.Minute)
+
+	rctx := &policy.RequestContext{
+		SharedContext: shared,
+		Body:          &policy.Body{Content: []byte(`{"model":"gpt-4o","messages":[]}`), Present: true},
+	}
+	action := p.OnRequestBody(context.Background(), rctx, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	if mods.UpstreamName != nil {
+		t.Fatalf("expected UpstreamName to be left unset (nil) for a skip-ahead to main, got %q", *mods.UpstreamName)
 	}
 }
 

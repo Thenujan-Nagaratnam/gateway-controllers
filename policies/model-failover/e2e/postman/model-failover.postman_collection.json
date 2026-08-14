@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "19f50598-ff65-483d-b8f2-d1fd0478f8fc",
+    "_postman_id": "6da67ec6-e3df-471a-bcf4-4649d6ca7c65",
     "name": "model-failover e2e",
     "description": "End-to-end coverage for the model-failover gateway policy: multi-target-group dispatch, cross-cluster failover with per-attempt model rewrite, suspend-driven skip-ahead, unmatched-model passthrough, zero-fallback groups, registration-time validation (dangling upstreamDefinition references, model-failover+resilience.retry coexistence, basePath-carrying aggregate-cluster members), and LlmProxy cross-provider dispatch via additionalProviders aliases.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
@@ -3487,7 +3487,320 @@
       ]
     },
     {
-      "name": "24 - LlmProxy: Register providers + zero-fallback dispatch proxy",
+      "name": "24 - LlmProvider: Register minimal default-to-main config",
+      "item": [
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend B",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend C",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendCBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendCBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend D",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendDBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendDBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Register: mf-minimal-default (no upstreamDefinitions, no explicit upstreamDefinition anywhere)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "description": "The truly minimal config: one upstream, a target with a fallback, neither declares upstreamDefinition. Everything defaults to the API's own main upstream.",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-minimal-default\nspec:\n  displayName: MF Minimal Default Test\n  version: v1.0\n  template: openai\n  context: /mf-minimal-default/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                fallbacks:\n                  - model: gpt-4o-mini\n            statusCodes: [500]\n  accessControl:\n    mode: allow_all\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "25 - LlmProvider: Minimal default-to-main config - baseline + failover",
+      "item": [
+        {
+          "name": "Baseline: gpt-4o -> main (backend A)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-minimal-default/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-minimal-default",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('routed to main, model unchanged', () => pm.expect(pm.response.json().choices[0].message.content).to.include('gpt-4o'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Force backend A to fail",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "code",
+                  "value": "500"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Force-fail: gpt-4o -> retries through the aggregate cluster, SAME backend A, model rewritten to gpt-4o-mini",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-minimal-default/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-minimal-default",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 despite the forced failure', () => pm.response.to.have.status(200));",
+                  "pm.test('retried against main again with the rewritten model - both target and fallback default to the SAME backend', () => {",
+                  "  pm.expect(pm.response.json().choices[0].message.content).to.include('gpt-4o-mini');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cleanup: delete mf-minimal-default",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-minimal-default",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "mf-minimal-default"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "26 - LlmProxy: Register providers + zero-fallback dispatch proxy",
       "item": [
         {
           "name": "Reset backend A",
@@ -3725,7 +4038,7 @@
       ]
     },
     {
-      "name": "25 - LlmProxy: Model-keyed dispatch across provider aliases",
+      "name": "27 - LlmProxy: Model-keyed dispatch across provider aliases",
       "item": [
         {
           "name": "gpt-4o -> openai-alias (backend A, via loopback)",
@@ -3899,7 +4212,196 @@
       ]
     },
     {
-      "name": "26 - LlmProxy: Registration-time rejection of an unsafe loopback+fallback config",
+      "name": "28 - LlmProxy: Zero-fallback default-to-main needs no additionalProviders",
+      "item": [
+        {
+          "name": "Register: mf-proxy-default-test (target omits upstreamDefinition, no additionalProviders declared)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ],
+              "protocol": "http"
+            },
+            "description": "Reuses mf-proxy-primary-provider (already registered by folder 26). The simplification the optional-upstreamDefinition design unlocks for LlmProxy: no self-aliasing needed to reach the proxy's own primary provider via model-failover.",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: mf-proxy-default-test\nspec:\n  displayName: MF Proxy Default To Main Test\n  version: v1.0\n  context: /mf-proxy-default-test\n  provider:\n    id: mf-proxy-primary-provider\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n            statusCodes: [500]\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "29 - LlmProxy: Verify default-to-main dispatch works with no additionalProviders",
+      "item": [
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "gpt-4o -> the proxy's own main upstream (backend A, via loopback), no alias declared",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-proxy-default-test/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-proxy-default-test",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify backend A received it via the loopback path",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request carries the internal loopback marker despite no additionalProviders being declared', () => {",
+                  "  const headers = pm.response.json().headers;",
+                  "  pm.expect(headers).to.have.property('X-Wso2-Internal-Loopback');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cleanup: delete mf-proxy-default-test",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/mf-proxy-default-test",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "mf-proxy-default-test"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "30 - LlmProxy: Registration-time rejection of an unsafe loopback+fallback config",
       "item": [
         {
           "name": "Reject: a fallback-having target group using loopback aliases",
@@ -3958,7 +4460,7 @@
       ]
     },
     {
-      "name": "27 - LlmProxy: Registration-time rejection when additionalProviders is absent entirely",
+      "name": "31 - LlmProxy: Registration-time rejection when additionalProviders is absent entirely",
       "item": [
         {
           "name": "Reject: model-failover references an alias, but additionalProviders is not set at all",
@@ -4017,7 +4519,68 @@
       ]
     },
     {
-      "name": "28 - LlmProxy: Cleanup",
+      "name": "32 - LlmProxy: Registration-time rejection when a fallback-having group defaults to main",
+      "item": [
+        {
+          "name": "Reject: target has a fallback and defaults its own primary to main - an LlmProxy's main is ALSO loopback+path-based",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ],
+              "protocol": "http"
+            },
+            "description": "targets[0] omits upstreamDefinition (defaults to main) and has a fallback pointing at anthropic-alias. An LlmProxy's own main upstream is ALWAYS loopback-routed with the provider's context baked into the URL - structurally identical to an additionalProviders alias's BasePath - so this must be rejected exactly like an explicit BasePath-carrying reference would be.",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: mf-proxy-unsafe-default-test\nspec:\n  displayName: MF Proxy Unsafe Default To Main Test\n  version: v1.0\n  context: /mf-proxy-unsafe-default-test\n  provider:\n    id: mf-proxy-primary-provider\n  additionalProviders:\n    - id: mf-proxy-anthropic-provider\n      as: anthropic-alias\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                fallbacks:\n                  - model: claude-3-haiku\n                    upstreamDefinition: anthropic-alias\n            statusCodes: [500]\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 4xx, not 201', () => pm.expect(pm.response.code).to.be.oneOf([400, 422]));",
+                  "pm.test('error message explains the basePath/aggregate-cluster conflict, and names main explicitly', () => {",
+                  "  const text = pm.response.text().toLowerCase();",
+                  "  pm.expect(text).to.include('basepath');",
+                  "  pm.expect(text).to.include('main');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "33 - LlmProxy: Cleanup",
       "item": [
         {
           "name": "Delete: mf-proxy-zerofb-test",

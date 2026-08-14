@@ -175,6 +175,7 @@ delete_llm_proxy() {
 
 cleanup_all_registered_resources() {
   delete_llm_proxy mf-proxy-zerofb-test
+  delete_llm_proxy mf-proxy-default-test
   delete_llm_provider mf-proxy-primary-provider
   delete_llm_provider mf-proxy-anthropic-provider
   delete_llm_provider mf-zero-fallback-test
@@ -184,6 +185,7 @@ cleanup_all_registered_resources() {
   delete_llm_provider mf-multi-op-test
   delete_llm_provider mf-3level-test
   delete_llm_provider mf-suspend-expiry-test
+  delete_llm_provider mf-minimal-default
 }
 
 run_newman() {
@@ -351,9 +353,25 @@ run_attempt() {
     --reporter-junit-export "$REPORT_DIR/junit-suspend-expiry-after-window.xml" \
     --color on || return 1
 
+  # --- LlmProvider: minimal config - no upstreamDefinitions, no explicit upstreamDefinition anywhere ---
+  run_newman "Registering mf-minimal-default ..." \
+    --folder "24 - LlmProvider: Register minimal default-to-main config" \
+    --reporters cli --color on || return 1
+
+  log "Waiting for gateway-runtime to pick up mf-minimal-default via xDS ..."
+  wait_for_route "mf-minimal-default/latest/chat/completions" || { echo "route for 'mf-minimal-default' never came up" >&2; return 1; }
+  sleep 3
+  echo "mf-minimal-default route is live."
+
+  run_newman "Verifying minimal default-to-main config ..." \
+    --folder "25 - LlmProvider: Minimal default-to-main config - baseline + failover" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-minimal-default.xml" \
+    --color on || return 1
+
   # --- LlmProxy: model-keyed dispatch across additionalProviders aliases ---
   run_newman "Registering LlmProxy providers + mf-proxy-zerofb-test ..." \
-    --folder "24 - LlmProxy: Register providers + zero-fallback dispatch proxy" \
+    --folder "26 - LlmProxy: Register providers + zero-fallback dispatch proxy" \
     --reporters cli --color on || return 1
 
   log "Waiting for gateway-runtime to pick up mf-proxy-zerofb-test via xDS ..."
@@ -362,25 +380,47 @@ run_attempt() {
   echo "mf-proxy-zerofb-test route is live."
 
   run_newman "Running LlmProxy dispatch flow ..." \
-    --folder "25 - LlmProxy: Model-keyed dispatch across provider aliases" \
+    --folder "27 - LlmProxy: Model-keyed dispatch across provider aliases" \
     --reporters "$NEWMAN_REPORTERS" \
     --reporter-junit-export "$REPORT_DIR/junit-llmproxy-dispatch.xml" \
     --color on || return 1
 
+  # --- LlmProxy: zero-fallback default-to-main, no additionalProviders self-aliasing needed ---
+  run_newman "Registering mf-proxy-default-test ..." \
+    --folder "28 - LlmProxy: Zero-fallback default-to-main needs no additionalProviders" \
+    --reporters cli --color on || return 1
+
+  log "Waiting for gateway-runtime to pick up mf-proxy-default-test via xDS ..."
+  wait_for_route "mf-proxy-default-test/chat/completions" || { echo "route for 'mf-proxy-default-test' never came up" >&2; return 1; }
+  sleep 3
+  echo "mf-proxy-default-test route is live."
+
+  run_newman "Verifying default-to-main dispatch with no additionalProviders ..." \
+    --folder "29 - LlmProxy: Verify default-to-main dispatch works with no additionalProviders" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-llmproxy-default-to-main.xml" \
+    --color on || return 1
+
   run_newman "Running LlmProxy unsafe-config rejection ..." \
-    --folder "26 - LlmProxy: Registration-time rejection of an unsafe loopback+fallback config" \
+    --folder "30 - LlmProxy: Registration-time rejection of an unsafe loopback+fallback config" \
     --reporters "$NEWMAN_REPORTERS" \
     --reporter-junit-export "$REPORT_DIR/junit-llmproxy-rejection.xml" \
     --color on || return 1
 
   run_newman "Running LlmProxy no-additionalProviders rejection ..." \
-    --folder "27 - LlmProxy: Registration-time rejection when additionalProviders is absent entirely" \
+    --folder "31 - LlmProxy: Registration-time rejection when additionalProviders is absent entirely" \
     --reporters "$NEWMAN_REPORTERS" \
     --reporter-junit-export "$REPORT_DIR/junit-llmproxy-no-additional-rejection.xml" \
     --color on || return 1
 
+  run_newman "Running LlmProxy unsafe-default-to-main rejection ..." \
+    --folder "32 - LlmProxy: Registration-time rejection when a fallback-having group defaults to main" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-llmproxy-unsafe-default-rejection.xml" \
+    --color on || return 1
+
   run_newman "Cleaning up LlmProxy resources ..." \
-    --folder "28 - LlmProxy: Cleanup" \
+    --folder "33 - LlmProxy: Cleanup" \
     --reporters cli --color on || return 1
 
   return 0
