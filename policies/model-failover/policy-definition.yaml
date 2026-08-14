@@ -1,48 +1,78 @@
 name: model-failover
 version: v0.1.0
 description: |
-  Transparently retries a failed request against an ordered list of
-  fallback model+endpoint targets (same request/response shape — e.g.
-  several OpenAI-compatible deployments). Each attempt injects the
-  target's configured model name into the request body. A target that
-  just failed is suspended for suspendDuration so the next request skips
-  straight past it. Requires each target's upstreamDefinition to already
-  be declared on the same API/LlmProvider spec.
+  Transparently retries a failed LLM request against an ordered fallback
+  chain — one independently-selectable chain per target model, selected by
+  matching the client's own request.body.model against a declared target.
+  Each attempt injects that target's configured model name into the
+  request body. A target that just failed is suspended for
+  suspendDuration so the next request skips straight past it, scoped to
+  its own chain only — other target groups are entirely unaffected. A
+  request for a model that isn't declared as any target passes through
+  completely untouched (no body mutation, no redirect); if that then
+  fails, no failover applies. Every target and fallback must reference an
+  upstreamDefinition already declared on the same API/LlmProvider spec —
+  when two entries genuinely share a backend, reference the same
+  upstreamDefinition name on both rather than declaring it twice.
 
 parameters:
   type: object
   additionalProperties: false
   required:
-    - models
+    - targets
     - statusCodes
   properties:
-    models:
+    targets:
       type: array
-      minItems: 2
+      minItems: 1
       x-wso2-policy-advanced-param: false
       description: |
-        Ordered fallback chain. Index 0 is the primary target; every
-        subsequent entry is tried in order if all earlier ones fail.
+        One entry per independently-selectable target model. The
+        client's own request.body.model must equal a target's model to
+        select that target's whole chain.
       items:
         type: object
         additionalProperties: false
         required:
-          - name
+          - model
           - upstreamDefinition
         properties:
-          name:
+          model:
             type: string
             minLength: 1
-            description: Model name injected into the request body for this target.
+            description: The client-requested model name that selects this target.
           upstreamDefinition:
             type: string
             minLength: 1
             description: Must match an upstreamDefinitions[].name declared on the same API.
+          fallbacks:
+            type: array
+            x-wso2-policy-advanced-param: false
+            description: |
+              This target's own ordered fallback chain, tried in order if
+              the target itself (and each earlier fallback) fails. May be
+              empty or omitted: a target with no fallbacks is just routed
+              plainly, with no failover.
+            items:
+              type: object
+              additionalProperties: false
+              required:
+                - model
+                - upstreamDefinition
+              properties:
+                model:
+                  type: string
+                  minLength: 1
+                  description: Model name injected into the request body for this fallback attempt.
+                upstreamDefinition:
+                  type: string
+                  minLength: 1
+                  description: Must match an upstreamDefinitions[].name declared on the same API.
     statusCodes:
       type: array
       minItems: 1
       x-wso2-policy-advanced-param: false
-      description: Response status codes that trigger failover to the next target.
+      description: Response status codes that trigger failover to the next target in whichever chain matched.
       items:
         type: integer
         minimum: 100
@@ -55,5 +85,6 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: true
       description: |
-        How long a failed target is skipped by future requests (e.g.
-        "30s"). Omit to disable suspend tracking entirely.
+        How long a failed target/fallback is skipped by future requests
+        for its own chain (e.g. "30s"). Omit to disable suspend tracking
+        entirely.
