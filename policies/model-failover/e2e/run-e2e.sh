@@ -179,6 +179,11 @@ cleanup_all_registered_resources() {
   delete_llm_provider mf-proxy-anthropic-provider
   delete_llm_provider mf-zero-fallback-test
   delete_llm_provider model-failover-test
+  delete_llm_provider mf-plain-single-upstream
+  delete_llm_provider mf-shared-upstream-test
+  delete_llm_provider mf-multi-op-test
+  delete_llm_provider mf-3level-test
+  delete_llm_provider mf-suspend-expiry-test
 }
 
 run_newman() {
@@ -214,13 +219,14 @@ run_attempt() {
     --folder "03 - LlmProvider: Cross-cluster failover with per-attempt model rewrite" \
     --folder "04 - LlmProvider: Suspend skip-ahead" \
     --folder "05 - LlmProvider: Unmatched model passes through untouched" \
+    --folder "06 - LlmProvider: Unmatched model passthrough is unaffected by an unrelated suspend" \
     --reporters "$NEWMAN_REPORTERS" \
     --reporter-junit-export "$REPORT_DIR/junit-llmprovider-flows.xml" \
     --color on || return 1
 
   # --- LlmProvider: zero-fallback group (separate registration/route) ---
   run_newman "Registering mf-zero-fallback-test ..." \
-    --folder "06 - LlmProvider: Register zero-fallback provider" \
+    --folder "07 - LlmProvider: Register zero-fallback provider" \
     --reporters cli --color on || return 1
 
   log "Waiting for gateway-runtime to pick up mf-zero-fallback-test via xDS ..."
@@ -229,25 +235,125 @@ run_attempt() {
   echo "mf-zero-fallback-test route is live."
 
   run_newman "Running zero-fallback target group flow ..." \
-    --folder "07 - LlmProvider: Zero-fallback target group" \
+    --folder "08 - LlmProvider: Zero-fallback target group" \
     --reporters "$NEWMAN_REPORTERS" \
     --reporter-junit-export "$REPORT_DIR/junit-zero-fallback.xml" \
     --color on || return 1
 
   # --- Registration-time validation rejections (no route wait needed - these never register) ---
   run_newman "Running registration-time validation rejections ..." \
-    --folder "08 - LlmProvider: Registration-time validation rejections" \
+    --folder "09 - LlmProvider: Registration-time validation rejections" \
     --reporters "$NEWMAN_REPORTERS" \
     --reporter-junit-export "$REPORT_DIR/junit-validation-rejections.xml" \
     --color on || return 1
 
   run_newman "Cleaning up model-failover-test ..." \
-    --folder "09 - LlmProvider: Cleanup" \
+    --folder "10 - LlmProvider: Cleanup" \
     --reporters cli --color on || return 1
+
+  # --- LlmProvider: single-upstream sanity check (exactly one cluster, common/default case) ---
+  run_newman "Registering mf-plain-single-upstream ..." \
+    --folder "11 - LlmProvider: Register single-upstream sanity check" \
+    --reporters cli --color on || return 1
+
+  log "Waiting for gateway-runtime to pick up mf-plain-single-upstream via xDS ..."
+  wait_for_route "mf-plain-single-upstream/latest/chat/completions" || { echo "route for 'mf-plain-single-upstream' never came up" >&2; return 1; }
+  sleep 3
+  echo "mf-plain-single-upstream route is live."
+
+  run_newman "Verifying single-upstream sanity check (exactly one Envoy cluster) ..." \
+    --folder "12 - LlmProvider: Single-upstream sanity check (exactly one cluster)" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-single-upstream.xml" \
+    --color on || return 1
+
+  # --- LlmProvider: shared upstreamDefinition across two groups dedupes to one cluster ---
+  run_newman "Registering mf-shared-upstream-test ..." \
+    --folder "13 - LlmProvider: Register shared-upstream test" \
+    --reporters cli --color on || return 1
+
+  log "Waiting for gateway-runtime to pick up mf-shared-upstream-test via xDS ..."
+  wait_for_route "mf-shared-upstream-test/latest/chat/completions" || { echo "route for 'mf-shared-upstream-test' never came up" >&2; return 1; }
+  sleep 3
+  echo "mf-shared-upstream-test route is live."
+
+  run_newman "Verifying shared-upstream cluster dedup ..." \
+    --folder "14 - LlmProvider: Shared upstreamDefinition across two groups dedupes to one cluster" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-shared-upstream.xml" \
+    --color on || return 1
+
+  # --- LlmProvider: multi-operation route-scoping (no cluster-name collision, no cross-op suspend leak) ---
+  run_newman "Registering mf-multi-op-test ..." \
+    --folder "15 - LlmProvider: Register multi-operation test" \
+    --reporters cli --color on || return 1
+
+  log "Waiting for gateway-runtime to pick up mf-multi-op-test via xDS (both operations) ..."
+  wait_for_route "mf-multi-op-test/latest/chat/completions" || { echo "route for 'mf-multi-op-test' (op1) never came up" >&2; return 1; }
+  wait_for_route "mf-multi-op-test/latest/other-chat/completions" || { echo "route for 'mf-multi-op-test' (op2) never came up" >&2; return 1; }
+  sleep 3
+  echo "mf-multi-op-test routes are live."
+
+  run_newman "Verifying multi-operation route-scoping ..." \
+    --folder "16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak)" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-multi-op.xml" \
+    --color on || return 1
+
+  # --- LlmProvider: 3-level fallback chain (cascading failover + full exhaustion) ---
+  run_newman "Registering mf-3level-test ..." \
+    --folder "17 - LlmProvider: Register 3-level chain test" \
+    --reporters cli --color on || return 1
+
+  log "Waiting for gateway-runtime to pick up mf-3level-test via xDS ..."
+  wait_for_route "mf-3level-test/latest/chat/completions" || { echo "route for 'mf-3level-test' never came up" >&2; return 1; }
+  sleep 3
+  echo "mf-3level-test route is live."
+
+  run_newman "Verifying 3-level cascading failover ..." \
+    --folder "18 - LlmProvider: 3-level fallback chain cascades through every member" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-3level-cascade.xml" \
+    --color on || return 1
+
+  run_newman "Verifying full chain exhaustion ..." \
+    --folder "19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-3level-exhaustion.xml" \
+    --color on || return 1
+
+  # --- LlmProvider: suspend expiry (requires waiting out a real 3s window - shell-orchestrated) ---
+  run_newman "Registering mf-suspend-expiry-test ..." \
+    --folder "20 - LlmProvider: Register suspend-expiry test" \
+    --reporters cli --color on || return 1
+
+  log "Waiting for gateway-runtime to pick up mf-suspend-expiry-test via xDS ..."
+  wait_for_route "mf-suspend-expiry-test/latest/chat/completions" || { echo "route for 'mf-suspend-expiry-test' never came up" >&2; return 1; }
+  sleep 3
+  echo "mf-suspend-expiry-test route is live."
+
+  run_newman "Triggering suspend ..." \
+    --folder "21 - LlmProvider: Suspend expiry - trigger suspend" \
+    --reporters cli --color on || return 1
+
+  run_newman "Verifying skip-ahead within the suspend window ..." \
+    --folder "22 - LlmProvider: Suspend expiry - verify skip-ahead within the window" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-suspend-expiry-within-window.xml" \
+    --color on || return 1
+
+  log "Waiting out the 3s suspendDuration window (+1s margin) before checking expiry ..."
+  sleep 4
+
+  run_newman "Verifying primary is eligible again after the window elapses ..." \
+    --folder "23 - LlmProvider: Suspend expiry - verify primary is eligible again after the window elapses" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-suspend-expiry-after-window.xml" \
+    --color on || return 1
 
   # --- LlmProxy: model-keyed dispatch across additionalProviders aliases ---
   run_newman "Registering LlmProxy providers + mf-proxy-zerofb-test ..." \
-    --folder "10 - LlmProxy: Register providers + zero-fallback dispatch proxy" \
+    --folder "24 - LlmProxy: Register providers + zero-fallback dispatch proxy" \
     --reporters cli --color on || return 1
 
   log "Waiting for gateway-runtime to pick up mf-proxy-zerofb-test via xDS ..."
@@ -256,19 +362,25 @@ run_attempt() {
   echo "mf-proxy-zerofb-test route is live."
 
   run_newman "Running LlmProxy dispatch flow ..." \
-    --folder "11 - LlmProxy: Model-keyed dispatch across provider aliases" \
+    --folder "25 - LlmProxy: Model-keyed dispatch across provider aliases" \
     --reporters "$NEWMAN_REPORTERS" \
     --reporter-junit-export "$REPORT_DIR/junit-llmproxy-dispatch.xml" \
     --color on || return 1
 
   run_newman "Running LlmProxy unsafe-config rejection ..." \
-    --folder "12 - LlmProxy: Registration-time rejection of an unsafe loopback+fallback config" \
+    --folder "26 - LlmProxy: Registration-time rejection of an unsafe loopback+fallback config" \
     --reporters "$NEWMAN_REPORTERS" \
     --reporter-junit-export "$REPORT_DIR/junit-llmproxy-rejection.xml" \
     --color on || return 1
 
+  run_newman "Running LlmProxy no-additionalProviders rejection ..." \
+    --folder "27 - LlmProxy: Registration-time rejection when additionalProviders is absent entirely" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-llmproxy-no-additional-rejection.xml" \
+    --color on || return 1
+
   run_newman "Cleaning up LlmProxy resources ..." \
-    --folder "13 - LlmProxy: Cleanup" \
+    --folder "28 - LlmProxy: Cleanup" \
     --reporters cli --color on || return 1
 
   return 0

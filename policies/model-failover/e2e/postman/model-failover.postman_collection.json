@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "3fe508e9-9803-47b9-bc47-bd793845d088",
+    "_postman_id": "f831d728-9609-4854-828b-0d16cf607956",
     "name": "model-failover e2e",
     "description": "End-to-end coverage for the model-failover gateway policy: multi-target-group dispatch, cross-cluster failover with per-attempt model rewrite, suspend-driven skip-ahead, unmatched-model passthrough, zero-fallback groups, registration-time validation (dangling upstreamDefinition references, model-failover+resilience.retry coexistence, basePath-carrying aggregate-cluster members), and LlmProxy cross-provider dispatch via additionalProviders aliases.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
@@ -17,6 +17,10 @@
     {
       "key": "gatewayBaseUrl",
       "value": "localhost:8443"
+    },
+    {
+      "key": "envoyAdminUrl",
+      "value": "localhost:9901"
     },
     {
       "key": "backendABaseUrl",
@@ -964,7 +968,210 @@
       ]
     },
     {
-      "name": "06 - LlmProvider: Register zero-fallback provider",
+      "name": "06 - LlmProvider: Unmatched model passthrough is unaffected by an unrelated suspend",
+      "item": [
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Force backend A to fail",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "code",
+                  "value": "500"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Trigger gpt-4o failover (records a suspend for backend A within this group)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/model-failover-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "model-failover-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 via fallback', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset backend A (clear last-request only)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Immediately invoke an unmatched model - must still route straight to backend A untouched",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/model-failover-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "model-failover-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"some-other-model\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 - passthrough is not affected by a sibling suspend', () => pm.response.to.have.status(200));",
+                  "pm.test('model unchanged', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.choices[0].message.content).to.include('some-other-model');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify backend A WAS dialed directly (passthrough bypasses group/suspend lookup entirely)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('backend A received the untouched request despite being suspended for the gpt-4o group', () => {",
+                  "  const body = JSON.parse(pm.response.json().body);",
+                  "  pm.expect(body.model).to.eql('some-other-model');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - LlmProvider: Register zero-fallback provider",
       "item": [
         {
           "name": "Reset backend A",
@@ -1040,7 +1247,7 @@
       ]
     },
     {
-      "name": "07 - LlmProvider: Zero-fallback target group",
+      "name": "08 - LlmProvider: Zero-fallback target group",
       "item": [
         {
           "name": "Invoke gpt-4o - must route directly, not through a nonexistent aggregate cluster",
@@ -1124,7 +1331,7 @@
       ]
     },
     {
-      "name": "08 - LlmProvider: Registration-time validation rejections",
+      "name": "09 - LlmProvider: Registration-time validation rejections",
       "item": [
         {
           "name": "Reject: target references an undeclared upstreamDefinition",
@@ -1237,7 +1444,7 @@
       ]
     },
     {
-      "name": "09 - LlmProvider: Cleanup",
+      "name": "10 - LlmProvider: Cleanup",
       "item": [
         {
           "name": "Delete: model-failover-test",
@@ -1270,7 +1477,1963 @@
       ]
     },
     {
-      "name": "10 - LlmProxy: Register providers + zero-fallback dispatch proxy",
+      "name": "11 - LlmProvider: Register single-upstream sanity check",
+      "item": [
+        {
+          "name": "Register: mf-plain-single-upstream (no model-failover, no upstreamDefinitions)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "description": "The common/default case: a provider with just ONE upstream and no model-failover complexity at all.",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-plain-single-upstream\nspec:\n  displayName: MF Plain Single Upstream\n  version: v1.0\n  template: openai\n  context: /mf-plain-single-upstream/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  accessControl:\n    mode: allow_all\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "12 - LlmProvider: Single-upstream sanity check (exactly one cluster)",
+      "item": [
+        {
+          "name": "Invoke - plain passthrough works",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-plain-single-upstream/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-plain-single-upstream",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anything\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify exactly ONE Envoy cluster exists for this API (no aggregate/per-upstreamDefinition overhead)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{envoyAdminUrl}}/config_dump?resource=dynamic_active_clusters",
+              "host": [
+                "{{envoyAdminUrl}}"
+              ],
+              "path": [
+                "config_dump"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "resource",
+                  "value": "dynamic_active_clusters"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exactly one cluster references this API', () => {",
+                  "  const dump = pm.response.json();",
+                  "  const matches = dump.configs.filter(c => (c.cluster && c.cluster.name || '').includes('mf-plain-single-upstream') || (c.cluster && c.cluster.name === 'upstream_main_host.docker.internal_9711'));",
+                  "  pm.expect(matches.length).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cleanup: delete mf-plain-single-upstream",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-plain-single-upstream",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "mf-plain-single-upstream"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "13 - LlmProvider: Register shared-upstream test",
+      "item": [
+        {
+          "name": "Register: mf-shared-upstream-test (two groups, one upstreamDefinition)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-shared-upstream-test\nspec:\n  displayName: MF Shared Upstream Test\n  version: v1.0\n  template: openai\n  context: /mf-shared-upstream-test/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  upstreamDefinitions:\n    - name: shared\n      upstreams:\n        - url: http://host.docker.internal:9711\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                upstreamDefinition: shared\n              - model: gpt-4o-mini\n                upstreamDefinition: shared\n            statusCodes: [500]\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "14 - LlmProvider: Shared upstreamDefinition across two groups dedupes to one cluster",
+      "item": [
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "gpt-4o -> shared",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-shared-upstream-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-shared-upstream-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('routed correctly', () => pm.expect(pm.response.json().choices[0].message.content).to.include('gpt-4o'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gpt-4o-mini -> shared (the SAME upstreamDefinition, a different group)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-shared-upstream-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-shared-upstream-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('routed correctly', () => pm.expect(pm.response.json().choices[0].message.content).to.include('gpt-4o-mini'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify exactly ONE 'shared' cluster exists, not two",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{envoyAdminUrl}}/config_dump?resource=dynamic_active_clusters",
+              "host": [
+                "{{envoyAdminUrl}}"
+              ],
+              "path": [
+                "config_dump"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "resource",
+                  "value": "dynamic_active_clusters"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"exactly one cluster named '..._shared' exists (deduped across both groups)\", () => {",
+                  "  const dump = pm.response.json();",
+                  "  const matches = dump.configs.filter(c => (c.cluster && c.cluster.name || '').includes('mf-shared-upstream-test') === false && (c.cluster && c.cluster.name || '').toLowerCase().endsWith('_shared'));",
+                  "  pm.expect(matches.length).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cleanup: delete mf-shared-upstream-test",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-shared-upstream-test",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "mf-shared-upstream-test"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "15 - LlmProvider: Register multi-operation test",
+      "item": [
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend B",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend C",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendCBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendCBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend D",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendDBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendDBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Register: mf-multi-op-test (2 operations, same model name, swapped upstreams)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-multi-op-test\nspec:\n  displayName: MF Multi Operation Test\n  version: v1.0\n  template: openai\n  context: /mf-multi-op-test/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  upstreamDefinitions:\n    - name: primary\n      upstreams:\n        - url: http://host.docker.internal:9711\n    - name: fallback-1\n      upstreams:\n        - url: http://host.docker.internal:9712\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                upstreamDefinition: primary\n                fallbacks:\n                  - model: gpt-4o-mini\n                    upstreamDefinition: fallback-1\n            statusCodes: [500]\n            suspendDuration: 10s\n        - path: /other-chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                upstreamDefinition: fallback-1\n                fallbacks:\n                  - model: gpt-4o-mini\n                    upstreamDefinition: primary\n            statusCodes: [500]\n            suspendDuration: 10s\n  accessControl:\n    mode: allow_all\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "16 - LlmProvider: Multi-operation route-scoping (no collision, no cross-op suspend leak)",
+      "item": [
+        {
+          "name": "op1 (/chat/completions): gpt-4o -> its OWN primary (backend A)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-multi-op-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-multi-op-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify backend A (not B) received op1's request",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('backend A was dialed', () => pm.expect(pm.response.json().method).to.eql('POST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset backend A and B",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend B",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "op2 (/other-chat/completions): gpt-4o -> its OWN primary (backend B, the OPPOSITE mapping from op1)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-multi-op-test/latest/other-chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-multi-op-test",
+                "latest",
+                "other-chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify backend B (not A) received op2's request - proves route-scoped cluster naming, no collision with op1",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('backend B was dialed for op2, matching its OWN config', () => pm.expect(pm.response.json().method).to.eql('POST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Force backend A to fail",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "code",
+                  "value": "500"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Suspend op1's primary (backend A) via a forced failure",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-multi-op-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-multi-op-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 via op1 fallback', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset backend B",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "op2 again: gpt-4o must STILL resolve to backend B - completely unaffected by op1's suspend on backend A",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-multi-op-test/latest/other-chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-multi-op-test",
+                "latest",
+                "other-chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify backend B received op2's request, unaffected by op1's suspend state",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('backend B was dialed - op2 is fully independent of op1', () => pm.expect(pm.response.json().method).to.eql('POST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cleanup: delete mf-multi-op-test",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-multi-op-test",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "mf-multi-op-test"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "17 - LlmProvider: Register 3-level chain test",
+      "item": [
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend B",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend C",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendCBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendCBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend D",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendDBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendDBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Register: mf-3level-test (primary + 2 fallbacks, no suspendDuration)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "description": "suspendDuration intentionally omitted so every request starts fresh at index 0, keeping the cascading-failover and full-exhaustion sub-tests below order-independent.",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-3level-test\nspec:\n  displayName: MF 3-Level Chain Test\n  version: v1.0\n  template: openai\n  context: /mf-3level-test/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  upstreamDefinitions:\n    - name: primary\n      upstreams:\n        - url: http://host.docker.internal:9711\n    - name: fallback-1\n      upstreams:\n        - url: http://host.docker.internal:9712\n    - name: fallback-2\n      upstreams:\n        - url: http://host.docker.internal:9713\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                upstreamDefinition: primary\n                fallbacks:\n                  - model: gpt-4o-mini\n                    upstreamDefinition: fallback-1\n                  - model: gpt-4o-nano\n                    upstreamDefinition: fallback-2\n            statusCodes: [500]\n  accessControl:\n    mode: allow_all\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "18 - LlmProvider: 3-level fallback chain cascades through every member",
+      "item": [
+        {
+          "name": "Force backend A (primary) to fail",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "code",
+                  "value": "500"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Force backend B (fallback-1) to fail",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/force-status?code=500",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "code",
+                  "value": "500"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Invoke gpt-4o - primary AND fallback-1 both fail, expect success via fallback-2",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-3level-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-3level-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 via the SECOND fallback', () => pm.response.to.have.status(200));",
+                  "pm.test('model rewritten to gpt-4o-nano (fallback-2)', () => {",
+                  "  pm.expect(pm.response.json().choices[0].message.content).to.include('gpt-4o-nano');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify each backend received its own correctly-rewritten model",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendCBaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendCBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fallback-2 (backend C) received gpt-4o-nano', () => {",
+                  "  const body = JSON.parse(pm.response.json().body);",
+                  "  pm.expect(body.model).to.eql('gpt-4o-nano');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "19 - LlmProvider: Fully exhausted chain surfaces the final attempt's error",
+      "item": [
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend B",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend C",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendCBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendCBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Force backend A (primary) to fail",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "code",
+                  "value": "500"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Force backend B (fallback-1) to fail",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/force-status?code=500",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "code",
+                  "value": "500"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Force backend C (fallback-2) to fail",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendCBaseUrl}}/debug/force-status?code=500",
+              "host": [
+                "{{backendCBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "code",
+                  "value": "500"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Invoke gpt-4o - every member of the chain fails",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-3level-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-3level-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the final attempt error surfaces cleanly - not a hang, not a mangled/swallowed response', () => {",
+                  "  pm.expect(pm.response.code).to.eql(500);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify all three members were actually dialed, each with its own rewritten model",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendCBaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendCBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the last member (fallback-2) received the request too', () => {",
+                  "  const body = JSON.parse(pm.response.json().body);",
+                  "  pm.expect(body.model).to.eql('gpt-4o-nano');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cleanup: delete mf-3level-test",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-3level-test",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "mf-3level-test"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "20 - LlmProvider: Register suspend-expiry test",
+      "item": [
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend B",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend C",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendCBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendCBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend D",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendDBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendDBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Register: mf-suspend-expiry-test (suspendDuration: 3s)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-suspend-expiry-test\nspec:\n  displayName: MF Suspend Expiry Test\n  version: v1.0\n  template: openai\n  context: /mf-suspend-expiry-test/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  upstreamDefinitions:\n    - name: primary\n      upstreams:\n        - url: http://host.docker.internal:9711\n    - name: fallback-1\n      upstreams:\n        - url: http://host.docker.internal:9712\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                upstreamDefinition: primary\n                fallbacks:\n                  - model: gpt-4o-mini\n                    upstreamDefinition: fallback-1\n            statusCodes: [500]\n            suspendDuration: 3s\n  accessControl:\n    mode: allow_all\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "21 - LlmProvider: Suspend expiry - trigger suspend",
+      "item": [
+        {
+          "name": "Force backend A to fail",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/force-status?code=500",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "code",
+                  "value": "500"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Invoke gpt-4o - triggers failover and records a 3s suspend on backend A",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-suspend-expiry-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-suspend-expiry-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 via fallback', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "22 - LlmProvider: Suspend expiry - verify skip-ahead within the window",
+      "item": [
+        {
+          "name": "Reset backend A (clear last-request only)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Invoke again immediately - expect skip-ahead, backend A NOT dialed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-suspend-expiry-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-suspend-expiry-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify backend A was skipped (still suspended)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('backend A last-request is empty - suspend window still active', () => pm.expect(pm.response.json().method).to.eql(''));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "23 - LlmProvider: Suspend expiry - verify primary is eligible again after the window elapses",
+      "item": [
+        {
+          "name": "Reset backend A (clear last-request only)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Invoke again after waiting out the suspend window - expect backend A dialed again",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-suspend-expiry-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-suspend-expiry-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify backend A WAS dialed - suspend correctly expired, not a permanent skip",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('backend A received the request again after expiry', () => pm.expect(pm.response.json().method).to.eql('POST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cleanup: delete mf-suspend-expiry-test",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-suspend-expiry-test",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "mf-suspend-expiry-test"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "24 - LlmProxy: Register providers + zero-fallback dispatch proxy",
       "item": [
         {
           "name": "Reset backend A",
@@ -1508,7 +3671,7 @@
       ]
     },
     {
-      "name": "11 - LlmProxy: Model-keyed dispatch across provider aliases",
+      "name": "25 - LlmProxy: Model-keyed dispatch across provider aliases",
       "item": [
         {
           "name": "gpt-4o -> openai-alias (backend A, via loopback)",
@@ -1682,7 +3845,7 @@
       ]
     },
     {
-      "name": "12 - LlmProxy: Registration-time rejection of an unsafe loopback+fallback config",
+      "name": "26 - LlmProxy: Registration-time rejection of an unsafe loopback+fallback config",
       "item": [
         {
           "name": "Reject: a fallback-having target group using loopback aliases",
@@ -1741,7 +3904,66 @@
       ]
     },
     {
-      "name": "13 - LlmProxy: Cleanup",
+      "name": "27 - LlmProxy: Registration-time rejection when additionalProviders is absent entirely",
+      "item": [
+        {
+          "name": "Reject: model-failover references an alias, but additionalProviders is not set at all",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ],
+              "protocol": "http"
+            },
+            "description": "LlmProxy has no upstreamDefinitions field of its own - the only way to populate one is via additionalProviders synthesis. Omitting it entirely means 'openai-alias' can never resolve, and must be caught by the same dangling-upstreamDefinition-reference validator used for LlmProvider.",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: mf-proxy-no-additional-test\nspec:\n  displayName: MF Proxy No Additional Providers Test\n  version: v1.0\n  context: /mf-proxy-no-additional-test\n  provider:\n    id: mf-proxy-primary-provider\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                upstreamDefinition: openai-alias\n            statusCodes: [500]\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 4xx, not 201', () => pm.expect(pm.response.code).to.be.oneOf([400, 422]));",
+                  "pm.test('error message names the undeclared reference', () => {",
+                  "  pm.expect(pm.response.text()).to.include('openai-alias');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "28 - LlmProxy: Cleanup",
       "item": [
         {
           "name": "Delete: mf-proxy-zerofb-test",
