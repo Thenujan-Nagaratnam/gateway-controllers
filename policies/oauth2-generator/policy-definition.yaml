@@ -3,7 +3,6 @@ version: v0.1.0
 x-wso2-retry-conditions:
   statusCodes: {fromParam: tokenPurgeStatusCodes}
   minAttempts: 2
-x-wso2-upstream-response-observer: true
 description: |
   Generates an upstream credential and injects it into a configurable
   request header before forwarding the request to the backend. Configure
@@ -25,11 +24,12 @@ description: |
   (OnResponseHeaders) and, via this policy's own x-wso2-retry-conditions
   declaration, also contributes tokenPurgeStatusCodes to the route's
   merged Envoy RetryPolicy - so Envoy itself retries the SAME client
-  request, and OnUpstreamAttemptRequest (wired via
-  x-wso2-upstream-response-observer) fetches a genuinely fresh token for
-  that retry attempt. The net effect: a revoked token is usually invisible
-  to the client, resolved within the one request, rather than only
-  guaranteeing the next request gets a fresh token. The token-endpoint call also
+  request, and OnUpstreamAttemptRequest (invoked because the route now
+  carries a RetryPolicy - see gateway-controller's per-cluster upstream
+  ext_proc wiring) fetches a genuinely fresh token for that retry attempt.
+  The net effect: a revoked token is usually invisible to the client,
+  resolved within the one request, rather than only guaranteeing the next
+  request gets a fresh token. The token-endpoint call also
   supports proxy/TLS configuration (proxyURL/tlsCaCertPath/
   tlsInsecureSkipVerify).
 
