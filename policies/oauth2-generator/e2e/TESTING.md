@@ -1584,7 +1584,7 @@ them - see below for why). Confirmed live:
   both `500` (model-failover's retry-source) and `401` (the operator's
   `resilience.retry`) -
   confirmed via `GET {{envoyAdminUrl}}/config_dump?resource=dynamic_route_configs`.
-- `oauth2-generator`'s own trigger (revoke a cached token, expect a clean
+- `oauth2-generator`'s own self-retry (revoke a cached token, expect a clean
   single-request `200`) still works on this merged-policy route - **with one
   important, empirically-confirmed caveat**: the retry attempt is NOT
   guaranteed to land back on the same target that failed. Because this route
