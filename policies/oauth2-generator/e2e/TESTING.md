@@ -1563,12 +1563,32 @@ involved.
 `oauth2-test-mf-combined` is registered with **all three** of: `upstream.auth:
 {type: oauth2}` (default `tokenPurgeStatusCodes: [401]`), a `model-failover`
 policy (retry-source, `statusCodes: [500]`), and an explicit
-`resilience.retry: {statusCodes: [401]}` block. `oauth2-generator` itself
+`resilience.retry: {statusCodes: [503]}` block. `oauth2-generator` itself
 contributes nothing to `RouteAction.RetryPolicy` - it self-retries directly
-against the backend instead (see E.34) - so the merged policy's `500`+`401`
+against the backend instead (see E.34) - so the merged policy's `500`+`503`
 now comes from `model-failover`'s retry-source and the operator's
 `resilience.retry` composing via `MergeRetryConditions`, not from
 oauth2-generator's (removed) trigger.
+
+**`resilience.retry` deliberately uses `503`, not `401` - empirically
+confirmed necessary, not a style choice.** An earlier version of this test
+gave `resilience.retry` the same code oauth2-generator's own
+`tokenPurgeStatusCodes` watches (`401`), and it failed consistently, not
+intermittently. Root cause: once `401` is in the route's *merged* Envoy
+`RouteAction.RetryPolicy`, Envoy's own native retry can resolve a `401` by
+dispatching to the next aggregate-cluster priority target *before*
+`oauth2-generator`'s downstream/listener-scoped response-phase `ext_proc`
+logic - which is what actually does the token purge+refetch - ever sees the
+failure. That `ext_proc` response phase only observes the *final* response
+after Envoy's own retry loop has already completed. If that Envoy-level
+retry happens to land on a target that returns `200` regardless of the
+(still-revoked) token's validity, the client sees a clean `200` with no fresh
+token ever fetched - the self-retry purge/refetch simply never runs. This is
+a genuine precedence gotcha for combining `resilience.retry` with a policy's
+own response-phase self-retry mechanism on the *same* status code - pick a
+disjoint code, as this test now does, rather than relying on `ext_proc`
+response-phase logic to run before Envoy's own retry decision for an
+overlapping code.
 
 Not narrated here in full - maintained directly as requests in
 `postman/oauth2.postman_collection.json` (folders `E.35a`/`E.35b`, run as two
@@ -1581,7 +1601,7 @@ them - see below for why). Confirmed live:
   authoritative proof of this underlying mechanism).
 - gateway-controller's `MergeRetryConditions` merges both into **exactly one**
   Envoy `RouteAction.RetryPolicy`, whose `retriable_status_codes` contains
-  both `500` (model-failover's retry-source) and `401` (the operator's
+  both `500` (model-failover's retry-source) and `503` (the operator's
   `resilience.retry`) -
   confirmed via `GET {{envoyAdminUrl}}/config_dump?resource=dynamic_route_configs`.
 - `oauth2-generator`'s own self-retry (revoke a cached token, expect a clean
