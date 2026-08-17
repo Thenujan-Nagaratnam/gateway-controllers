@@ -2,6 +2,9 @@ name: model-failover
 version: v0.1.0
 x-wso2-retry-source:
   groupKeyField: model
+  targetsField: targets
+x-wso2-retry-conditions:
+  statusCodes: {fromParam: statusCodes}
 description: |
   Transparently retries a failed LLM request against an ordered fallback
   chain — one independently-selectable chain per target model, selected by
