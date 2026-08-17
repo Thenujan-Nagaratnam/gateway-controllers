@@ -955,6 +955,37 @@ func (p *Policy) OnResponseHeaders(ctx context.Context, respCtx *policy.Response
 	return policy.DownstreamResponseHeaderModifications{}
 }
 
+// OnUpstreamAttemptRequest implements policy.UpstreamAttemptPolicy - it
+// runs once per individual upstream dial attempt (including Envoy-native
+// retries; see resilience.retry), not once per client request. On any
+// attempt after the first, the previous attempt's response is assumed
+// rejected (that's why Envoy retried at all, per the configured
+// resilience.retry.statusCodes), so the cached token is purged before
+// refetching, guaranteeing attempt 2+ gets a genuinely fresh token rather
+// than resending the same one that was just rejected. Fails open on any
+// fetch error: an empty action lets the retry proceed with whatever
+// Authorization header it already had rather than blocking it - this
+// mechanism only ever makes a retry more likely to succeed, never a new way
+// for it to fail (see Global Constraints).
+func (p *Policy) OnUpstreamAttemptRequest(ctx context.Context, actx *policy.UpstreamAttemptContext) policy.UpstreamAttemptAction {
+	if actx.AttemptCount > 1 {
+		p.tokenSource.Purge()
+	}
+
+	tok, err := p.retrieveToken()
+	if err != nil {
+		slog.WarnContext(ctx, "OAuth2Generator: failed to fetch token for upstream attempt, failing open (no header mutation)",
+			"attempt", actx.AttemptCount, "grantType", p.grantType, "clientId", p.clientID, "error", err)
+		return policy.UpstreamAttemptRequestModifications{}
+	}
+
+	return policy.UpstreamAttemptRequestModifications{
+		HeadersToSet: map[string]string{
+			p.headerName: buildHeaderValue(p.valuePrefix, tok.AccessToken),
+		},
+	}
+}
+
 // retrieveToken fetches the current (possibly cached/refreshed) access token
 // from the token source built once in GetPolicy.
 func (p *Policy) retrieveToken() (*xoauth2.Token, error) {

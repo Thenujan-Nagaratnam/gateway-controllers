@@ -1,5 +1,8 @@
 name: oauth2-generator
 version: v0.1.0
+x-wso2-retry-trigger:
+  statusCodesField: tokenPurgeStatusCodes
+  minAttempts: 2
 description: |
   Generates an upstream credential and injects it into a configurable
   request header before forwarding the request to the backend. Configure
