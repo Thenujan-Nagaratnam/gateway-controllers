@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "6da67ec6-e3df-471a-bcf4-4649d6ca7c65",
     "name": "model-failover e2e",
-    "description": "End-to-end coverage for the model-failover gateway policy: multi-target-group dispatch, cross-cluster failover with per-attempt model rewrite, suspend-driven skip-ahead, unmatched-model passthrough, zero-fallback groups, registration-time validation (dangling upstreamDefinition references, model-failover+resilience.retry coexistence, basePath-carrying aggregate-cluster members), and LlmProxy cross-provider dispatch via additionalProviders aliases.",
+    "description": "End-to-end coverage for the model-failover gateway policy: multi-target-group dispatch, cross-cluster failover with per-attempt model rewrite, suspend-driven skip-ahead, unmatched-model passthrough, zero-fallback groups, registration-time validation (dangling upstreamDefinition references, model-failover+resilience.retry composition (union of retriable status codes), basePath-carrying aggregate-cluster members), and LlmProxy cross-provider dispatch via additionalProviders aliases.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -1388,60 +1388,6 @@
           ]
         },
         {
-          "name": "Reject: model-failover + resilience.retry on the same operation",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/yaml"
-              },
-              {
-                "key": "Authorization",
-                "value": "{{adminAuthHeader}}"
-              }
-            ],
-            "url": {
-              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
-              "host": [
-                "{{controllerBaseUrl}}"
-              ],
-              "path": [
-                "api",
-                "management",
-                "v1",
-                "llm-providers"
-              ],
-              "protocol": "http"
-            },
-            "description": "Both model-failover and resilience.retry drive RouteAction.RetryPolicy independently - must be rejected, not silently let one win.",
-            "body": {
-              "mode": "raw",
-              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-retry-conflict-test\nspec:\n  displayName: MF Retry Conflict Test\n  version: v1.0\n  template: openai\n  context: /mf-retry-conflict-test/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  upstreamDefinitions:\n    - name: primary\n      upstreams:\n        - url: http://host.docker.internal:9711\n    - name: fallback-1\n      upstreams:\n        - url: http://host.docker.internal:9712\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                upstreamDefinition: primary\n                fallbacks:\n                  - model: gpt-4o-mini\n                    upstreamDefinition: fallback-1\n            statusCodes: [500]\n  resilience:\n    retry:\n      statusCodes: [502]\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
-              "options": {
-                "raw": {
-                  "language": "yaml"
-                }
-              }
-            }
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 4xx, not 201', () => pm.expect(pm.response.code).to.be.oneOf([400, 422]));",
-                  "pm.test('error message names the conflict', () => {",
-                  "  pm.expect(pm.response.text().toLowerCase()).to.include('resilience.retry');",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
           "name": "Reject: model-failover configured but upstreamDefinitions is entirely absent",
           "request": {
             "method": "POST",
@@ -1494,6 +1440,300 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "09b - LlmProvider: Register model-failover + resilience.retry composing on the same operation",
+      "item": [
+        {
+          "name": "Reset backend A",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Reset backend B",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/reset",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Register: mf-resilience-retry-compose-test",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ],
+              "protocol": "http"
+            },
+            "description": "model-failover (statusCodes: [500]) and resilience.retry (statusCodes: [502]) on the same operation - now composes into one merged retry policy instead of being rejected.",
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: mf-resilience-retry-compose-test\nspec:\n  displayName: MF + Resilience Retry Compose Test\n  version: v1.0\n  template: openai\n  context: /mf-resilience-retry-compose-test/latest\n  upstream:\n    url: http://host.docker.internal:9711\n  upstreamDefinitions:\n    - name: primary\n      upstreams:\n        - url: http://host.docker.internal:9711\n    - name: fallback-1\n      upstreams:\n        - url: http://host.docker.internal:9712\n  policies:\n    - name: model-failover\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            targets:\n              - model: gpt-4o\n                upstreamDefinition: primary\n                fallbacks:\n                  - model: gpt-4o-mini\n                    upstreamDefinition: fallback-1\n            statusCodes: [500]\n  resilience:\n    retry:\n      statusCodes: [502]\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration succeeds now that model-failover + resilience.retry compose on one operation', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "09c - LlmProvider: Composed retry - operator's resilience.retry status code also triggers model-failover's cross-cluster failover",
+      "item": [
+        {
+          "name": "Reset backend A (clear last-request + force-status)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/reset",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Force backend A (primary) to fail with 502 (operator-contributed code, not model-failover's own 500)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/force-status?code=502",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "force-status"
+              ],
+              "protocol": "http",
+              "query": [
+                {
+                  "key": "code",
+                  "value": "502"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Invoke gpt-4o - expect clean 200 via fallback on a 502 (proves union, not just model-failover's own codes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/mf-resilience-retry-compose-test/latest/chat/completions",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "mf-resilience-retry-compose-test",
+                "latest",
+                "chat",
+                "completions"
+              ],
+              "protocol": "https"
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o\",\"messages\":[]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 despite primary returning 502', () => pm.response.to.have.status(200));",
+                  "pm.test('per-attempt body rewrite: model became gpt-4o-mini', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.choices[0].message.content).to.include('gpt-4o-mini');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify backend B (fallback) received the rewritten model",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendBBaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendBBaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('backend B was dialed with the rewritten model', () => {",
+                  "  const body = JSON.parse(pm.response.json().body);",
+                  "  pm.expect(body.model).to.eql('gpt-4o-mini');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify backend A's own attempt kept the ORIGINAL model (never the fallback's)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{backendABaseUrl}}/debug/last-request",
+              "host": [
+                "{{backendABaseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"backend A's single attempt still shows gpt-4o, not gpt-4o-mini\", () => {",
+                  "  const body = JSON.parse(pm.response.json().body);",
+                  "  pm.expect(body.model).to.eql('gpt-4o');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cleanup: delete mf-resilience-retry-compose-test",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/mf-resilience-retry-compose-test",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "mf-resilience-retry-compose-test"
+              ],
+              "protocol": "http"
+            },
+            "description": ""
+          },
+          "response": []
         }
       ]
     },

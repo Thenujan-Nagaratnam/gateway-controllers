@@ -8,7 +8,8 @@
 #
 # Covers both LlmProvider (multi-target-group dispatch, cross-cluster
 # failover, suspend skip-ahead, unmatched-model passthrough, zero-fallback
-# groups, registration-time validation rejections) and LlmProxy (model-keyed
+# groups, registration-time validation rejections, model-failover +
+# resilience.retry composing on one operation) and LlmProxy (model-keyed
 # dispatch across additionalProviders aliases, registration-time rejection of
 # an unsafe loopback+fallback config).
 #
@@ -247,6 +248,22 @@ run_attempt() {
     --folder "09 - LlmProvider: Registration-time validation rejections" \
     --reporters "$NEWMAN_REPORTERS" \
     --reporter-junit-export "$REPORT_DIR/junit-validation-rejections.xml" \
+    --color on || return 1
+
+  # --- LlmProvider: model-failover + resilience.retry composing on one operation ---
+  run_newman "Registering mf-resilience-retry-compose-test ..." \
+    --folder "09b - LlmProvider: Register model-failover + resilience.retry composing on the same operation" \
+    --reporters cli --color on || return 1
+
+  log "Waiting for gateway-runtime to pick up mf-resilience-retry-compose-test via xDS ..."
+  wait_for_route "mf-resilience-retry-compose-test/latest/chat/completions" || { echo "route for 'mf-resilience-retry-compose-test' never came up" >&2; return 1; }
+  sleep 3
+  echo "mf-resilience-retry-compose-test route is live."
+
+  run_newman "Running composed retry (resilience.retry status code triggers model-failover cross-cluster failover) ..." \
+    --folder "09c - LlmProvider: Composed retry - operator's resilience.retry status code also triggers model-failover's cross-cluster failover" \
+    --reporters "$NEWMAN_REPORTERS" \
+    --reporter-junit-export "$REPORT_DIR/junit-resilience-retry-compose.xml" \
     --color on || return 1
 
   run_newman "Cleaning up model-failover-test ..." \
