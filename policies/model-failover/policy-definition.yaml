@@ -8,9 +8,18 @@ x-wso2-retry-conditions:
 description: |
   Transparently retries a failed LLM request against an ordered fallback
   chain — one independently-selectable chain per target model, selected by
-  matching the client's own request.body.model against a declared target.
-  Each attempt injects that target's configured model name into the
-  request body. A target that just failed is suspended for
+  matching the client's own requested model against a declared target.
+  The requested model is read from, and each attempt's target model
+  written to, the JSONPath the API's own LlmProvider template declares
+  via requestModel (gateway-controller auto-injects this into the
+  policy's own params from the template) — not a hardcoded "model" key,
+  so a template with a nested payload path (not just the top-level
+  "model" every shipped template happens to use today) is handled
+  correctly. Only a payload-located model identity is supported today:
+  templates declaring requestModel.location other than payload (AWS
+  Bedrock and Gemini put the model in the URL path instead) are rejected
+  at registration rather than silently matching/rewriting nothing. A
+  target that just failed is suspended for
   suspendDuration so the next request skips straight past it, scoped to
   its own chain only — other target groups are entirely unaffected. A
   request for a model that isn't declared as any target passes through

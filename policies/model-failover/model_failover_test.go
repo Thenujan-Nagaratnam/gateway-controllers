@@ -148,6 +148,56 @@ func TestGetPolicy_RejectsDuplicateTargetModel(t *testing.T) {
 	}
 }
 
+// gateway-controller auto-injects requestModel: {location, identifier} into every
+// LLM-attached policy's params, sourced from the API's own LlmProvider template (see
+// buildTemplateParams/mergeParams in llm_transformer.go) - GetPolicy must actually read it
+// rather than silently assuming every template puts the model at the top-level "model" key.
+func TestGetPolicy_ReadsRequestModelIdentifierFromParams(t *testing.T) {
+	params := twoGroupParams()
+	params["requestModel"] = map[string]interface{}{"location": "payload", "identifier": "$.request.model"}
+
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	mfp := p.(*Policy)
+	if mfp.modelIdentifier() != "$.request.model" {
+		t.Errorf("expected requestModel.identifier to be read from params, got %q", mfp.modelIdentifier())
+	}
+}
+
+// No template metadata at all (e.g. hand-built params in a test, or a config path that
+// predates this policy reading requestModel) must default to "$.model" - the same top-level
+// field every payload-based template shipped today happens to use - so existing configs and
+// tests are unaffected.
+func TestGetPolicy_DefaultsRequestModelIdentifierWhenAbsent(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, twoGroupParams())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	mfp := p.(*Policy)
+	if mfp.modelIdentifier() != "$.model" {
+		t.Errorf("expected default requestModel identifier \"$.model\", got %q", mfp.modelIdentifier())
+	}
+}
+
+// AWS Bedrock's and Gemini's templates declare requestModel.location: pathParam (the model
+// name lives in the URL, not the JSON body - there is no payload field to read at all).
+// model-failover's core mechanism (OnRequestBody's body rewrite, and OnUpstreamAttemptRequest's
+// reverse-lookup-from-the-baseline-body trick - see that function's own doc comment) only
+// works for a payload-located model identity. Rather than silently misbehaving against such a
+// template (matching nothing, rewriting nothing), GetPolicy must reject the configuration
+// outright with a clear reason - this location is a genuinely unsupported combination today,
+// not a bug to paper over.
+func TestGetPolicy_RejectsNonPayloadRequestModelLocation(t *testing.T) {
+	params := twoGroupParams()
+	params["requestModel"] = map[string]interface{}{"location": "pathParam", "identifier": "model/([A-Za-z0-9.:-]+)/"}
+
+	if _, err := GetPolicy(policy.PolicyMetadata{}, params); err == nil {
+		t.Error("expected an error for a non-payload requestModel.location (e.g. AWS Bedrock/Gemini's pathParam)")
+	}
+}
+
 func TestOnRequestBody_UnmatchedModelPassesThroughUntouched(t *testing.T) {
 	p := twoGroupPolicy()
 	rctx := &policy.RequestContext{
@@ -198,6 +248,33 @@ func TestOnRequestBody_NoSuspendUsesGroupsOwnPrimary(t *testing.T) {
 	}
 	if rctx.SharedContext.Metadata[metaStartIndexKey] != 0 {
 		t.Errorf("expected start-index metadata stashed as 0, got %v", rctx.SharedContext.Metadata[metaStartIndexKey])
+	}
+}
+
+// A template declaring a nested payload path (not the top-level "model" key every shipped
+// template happens to use today) must be honored for BOTH reading the client's requested
+// model AND rewriting it for the resolved target - proves this policy no longer hardcodes
+// "model" as a flat map key.
+func TestOnRequestBody_UsesTemplateDeclaredNestedPayloadPath(t *testing.T) {
+	p := twoGroupPolicy()
+	p.requestModelIdentifier = "$.request.model"
+	rctx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{},
+		Body:          &policy.Body{Content: []byte(`{"request":{"model":"gpt-4o"},"messages":[]}`), Present: true},
+	}
+
+	action := p.OnRequestBody(context.Background(), rctx, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok || mods.Body == nil {
+		t.Fatalf("expected a body mutation (nested model should have matched the gpt-4o group), got %#v", action)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(mods.Body, &decoded); err != nil {
+		t.Fatalf("mutated body is not valid JSON: %v", err)
+	}
+	nested, _ := decoded["request"].(map[string]interface{})
+	if nested == nil || nested["model"] != "gpt-4o" {
+		t.Errorf("expected model rewritten at the nested path request.model, got %#v", decoded["request"])
 	}
 }
 
@@ -442,6 +519,29 @@ func TestOnUpstreamAttemptRequest_UsesSelectedGroupNotJustAnyGroup(t *testing.T)
 	json.Unmarshal(mods.Body, &decoded)
 	if decoded["model"] != "claude-3-haiku" {
 		t.Errorf("expected attempt 2 to inject the CLAUDE group's own fallback name, got %v", decoded["model"])
+	}
+}
+
+// Same nested-path requirement as OnRequestBody, but for the upstream-attempt phase's own
+// reverse lookup (recovering which group was selected from the replayed baseline body - see
+// this method's own doc comment) and its own per-attempt rewrite.
+func TestOnUpstreamAttemptRequest_UsesTemplateDeclaredNestedPayloadPath(t *testing.T) {
+	p := twoGroupPolicy()
+	p.requestModelIdentifier = "$.request.model"
+	actx := &policy.UpstreamAttemptContext{
+		AttemptCount: 2,
+		Body:         &policy.Body{Content: []byte(`{"request":{"model":"gpt-4o"},"messages":[]}`), Present: true},
+	}
+	action := p.OnUpstreamAttemptRequest(context.Background(), actx)
+	mods, ok := action.(policy.UpstreamAttemptRequestModifications)
+	if !ok || mods.Body == nil {
+		t.Fatalf("expected a body mutation, got %#v", action)
+	}
+	var decoded map[string]interface{}
+	json.Unmarshal(mods.Body, &decoded)
+	nested, _ := decoded["request"].(map[string]interface{})
+	if nested == nil || nested["model"] != "gpt-4o-mini" {
+		t.Errorf("expected attempt 2 to inject the fallback name at the nested path request.model, got %#v", decoded["request"])
 	}
 }
 

@@ -17,10 +17,13 @@
 
 // Package modelfailover provides a policy that transparently retries a failed LLM request
 // against an ordered fallback chain — one independently-selectable chain per target model,
-// selected by matching the client's own request.body.model against a declared target. A
-// request for a model that isn't declared passes through completely untouched (no body
-// mutation, no redirect); if that then fails, no failover applies — this policy only ever
-// engages for models it explicitly knows about.
+// selected by matching the client's own requested model against a declared target. The
+// requested model is read from (and rewritten at) the JSONPath the API's own LlmProvider
+// template declares via requestModel (see Policy.modelIdentifier), not a hardcoded "model"
+// key — only a payload-located model identity is supported today (see GetPolicy). A request
+// for a model that isn't declared passes through completely untouched (no body mutation, no
+// redirect); if that then fails, no failover applies — this policy only ever engages for
+// models it explicitly knows about.
 package modelfailover
 
 import (
@@ -34,6 +37,7 @@ import (
 	"time"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	sdkutils "github.com/wso2/api-platform/sdk/core/utils"
 )
 
 // fallbackTarget is one fallback entry within a target group's own chain. upstreamDefinition
@@ -79,6 +83,52 @@ type Policy struct {
 	requestTimeout  time.Duration
 	suspendDuration time.Duration // zero = suspend tracking disabled
 	suspend         suspendStore
+
+	// requestModelIdentifier is the JSONPath (per the LlmProvider's own template, see
+	// modelIdentifier's doc comment) at which the client's requested/resolved model lives
+	// in the request payload. Left "" when GetPolicy wasn't given a requestModel param at
+	// all (e.g. a Policy built directly by a test) - modelIdentifier() is what applies the
+	// "$.model" default in that case, not this field directly.
+	requestModelIdentifier string
+}
+
+// modelIdentifier returns the JSONPath used to read/write the model name in the request
+// payload: the LlmProvider template's own declared requestModel.identifier when GetPolicy
+// was given one (gateway-controller auto-injects requestModel: {location, identifier} into
+// every LLM-attached policy's params - see buildTemplateParams/mergeParams in
+// llm_transformer.go), or "$.model" otherwise - the same top-level field every payload-based
+// template shipped today happens to use, so this default matches what this policy hardcoded
+// before it read the template at all. Hardcoding "model" as a flat map key was wrong even for
+// the payload-only case: a template is free to declare a NESTED payload path, and this policy
+// must follow it rather than assuming top-level placement.
+func (p *Policy) modelIdentifier() string {
+	if p.requestModelIdentifier != "" {
+		return p.requestModelIdentifier
+	}
+	return "$.model"
+}
+
+// extractModel reads the model identity out of decoded at this policy's configured
+// JSONPath (see modelIdentifier), returning "" on any miss (wrong type, path not present) -
+// the same fail-open shape the two previous callers' `decoded["model"].(string)` type
+// assertions already had (a failed assertion silently yields "").
+func (p *Policy) extractModel(decoded map[string]interface{}) string {
+	val, err := sdkutils.ExtractValueFromJsonpath(decoded, p.modelIdentifier())
+	if err != nil {
+		return ""
+	}
+	s, _ := val.(string)
+	return s
+}
+
+// setModel writes model into decoded at this policy's configured JSONPath (see
+// modelIdentifier). Returns an error rather than panicking/silently no-op'ing when the path's
+// intermediate segments don't exist in decoded - callers must fail open on that (log +
+// leave the request unmutated), never let a mutation failure become a new failure mode of
+// its own (the fail-open convention this whole file already follows for a non-JSON or null
+// body).
+func (p *Policy) setModel(decoded map[string]interface{}, model string) error {
+	return sdkutils.SetValueAtJSONPath(decoded, p.modelIdentifier(), model)
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
@@ -143,6 +193,32 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	}
 
 	p := &Policy{routeName: metadata.RouteName, targets: targets, targetByModel: targetByModel, statusCodes: statusCodes}
+
+	// requestModel: {location, identifier} is auto-injected by gateway-controller into every
+	// LLM-attached policy's params, sourced from the API's own LlmProvider template (see
+	// buildTemplateParams/mergeParams in llm_transformer.go) - absent here only for params
+	// built by hand (a test, or a config path that predates this policy reading it at all),
+	// in which case modelIdentifier()'s own "$.model" default applies and nothing below runs.
+	if raw, ok := params["requestModel"]; ok {
+		rm, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("model-failover: requestModel must be an object")
+		}
+		// This policy's core mechanism only supports a payload-located model identity:
+		// OnRequestBody rewrites the request BODY, and OnUpstreamAttemptRequest's reverse
+		// lookup (see that method's own doc comment) recovers which group was selected by
+		// reading the replayed baseline BODY - neither has anywhere to read/write a
+		// header/queryParam/pathParam-located model (e.g. AWS Bedrock's and Gemini's own
+		// templates, which put the model in the URL instead of the JSON body). Rejecting
+		// outright here is deliberate: silently matching/rewriting nothing against such a
+		// template would be a much worse failure mode than refusing to register at all.
+		if location, _ := rm["location"].(string); location != "" && location != "payload" {
+			return nil, fmt.Errorf("model-failover: this LlmProvider's template declares requestModel.location %q, but model-failover only supports a payload-located model identity today (the model name must be a JSON field in the request body) - a path/header/query-param-based model identity is not yet supported", location)
+		}
+		if identifier, _ := rm["identifier"].(string); identifier != "" {
+			p.requestModelIdentifier = identifier
+		}
+	}
 
 	if raw := getStringParam(params, "requestTimeout"); raw != "" {
 		d, err := time.ParseDuration(raw)
@@ -298,8 +374,9 @@ const (
 )
 
 // OnRequestBody runs once per client request, before anything is sent. It is the ONLY point
-// that selects a target group (by matching the client's own request.body.model against a
-// declared target) and can redirect ahead of time to a non-primary index within that group
+// that selects a target group (by matching the client's own requested model, read via
+// modelIdentifier, against a declared target) and can redirect ahead of time to a non-primary
+// index within that group
 // (the upstream-attempt phase can only react to an index Envoy already committed to dialing
 // for that retry, and only within the group's own aggregate cluster). A model that doesn't
 // match any declared target is sent completely as-is — no mutation, no redirect — falling
@@ -323,7 +400,7 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 		decoded = make(map[string]interface{})
 	}
 
-	requestedModel, _ := decoded["model"].(string)
+	requestedModel := p.extractModel(decoded)
 	group, matched := p.groupByModel(requestedModel)
 	if !matched {
 		return policy.UpstreamRequestModifications{}
@@ -337,7 +414,10 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 		resolvedModel, resolvedUpstreamDef, idx = group.model, group.upstreamDefinition, 0
 	}
 
-	decoded["model"] = resolvedModel
+	if err := p.setModel(decoded, resolvedModel); err != nil {
+		slog.WarnContext(ctx, "ModelFailover: failed to set model in request body at configured path, failing open (no mutation)", "path", p.modelIdentifier(), "error", err)
+		return policy.UpstreamRequestModifications{}
+	}
 	mutated, err := json.Marshal(decoded)
 	if err != nil {
 		slog.WarnContext(ctx, "ModelFailover: failed to re-marshal request body, failing open", "error", err)
@@ -430,7 +510,7 @@ func (p *Policy) OnUpstreamAttemptRequest(ctx context.Context, actx *policy.Upst
 	if decoded == nil {
 		decoded = make(map[string]interface{})
 	}
-	baselineModel, _ := decoded["model"].(string)
+	baselineModel := p.extractModel(decoded)
 	group, ok := p.groupByModel(baselineModel)
 	if !ok {
 		return policy.UpstreamAttemptRequestModifications{}
@@ -440,7 +520,10 @@ func (p *Policy) OnUpstreamAttemptRequest(ctx context.Context, actx *policy.Upst
 		return policy.UpstreamAttemptRequestModifications{}
 	}
 
-	decoded["model"] = resolvedModel
+	if err := p.setModel(decoded, resolvedModel); err != nil {
+		slog.WarnContext(ctx, "ModelFailover: failed to set model in upstream-attempt body at configured path, failing open", "attempt", actx.AttemptCount, "path", p.modelIdentifier(), "error", err)
+		return policy.UpstreamAttemptRequestModifications{}
+	}
 	mutated, err := json.Marshal(decoded)
 	if err != nil {
 		slog.WarnContext(ctx, "ModelFailover: failed to re-marshal upstream-attempt body, failing open", "attempt", actx.AttemptCount, "error", err)
