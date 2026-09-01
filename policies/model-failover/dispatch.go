@@ -33,14 +33,34 @@ import (
 
 // internalLoopbackHeader mirrors constants.InternalLoopbackHeader in gateway-controller's
 // llm_transformer.go — this is a separate Go module with no import path to that package, so
-// the literal value is duplicated here rather than shared. Set on every provider-loopback
-// dial for parity with the existing additionalProviders loopback mechanism (today it's
-// consumed only for analytics dedup, not as an access-control bypass — see the package doc's
-// open question on this).
+// the literal value is duplicated here rather than shared. Set on every dial this policy
+// originates itself (a provider redial or a same-provider fallback/reuse dial), matching the
+// existing additionalProviders loopback convention, so the analytics system can dedupe the
+// duplicate event. NOT usable as a recursion guard: gateway-controller's own
+// proxyInternalLoopbackMarkerPolicy stamps this SAME header, unconditionally, on every request
+// through this proxy's operation — including the client's very first, genuine request — so it
+// is already present long before this policy ever runs. modelFailoverRedialHeader below is the
+// dedicated marker for that purpose.
 const internalLoopbackHeader = "x-wso2-internal-loopback"
 
-// retryHTTPClient abstracts the outbound call a fallback dial makes, so tests can substitute
-// a fake transport instead of hitting the network. *http.Client satisfies this directly.
+// modelFailoverRedialHeader marks a provider redial as this policy's own re-entry into the
+// operation, distinct from internalLoopbackHeader (see above) — OnRequestBody uses this one,
+// and only this one, to recognize and skip reprocessing its own redial.
+const modelFailoverRedialHeader = "x-wso2-model-failover-redial"
+
+// providerHeaderName is the header a provider redial sets to select the target provider — the
+// SAME header llm-header-router already reads by default (its own DefaultHeaderName). Setting
+// it makes this dial indistinguishable from a genuine client request asking for that provider:
+// llm-header-router publishes selected_provider in the request-HEADER phase (before the
+// provider's own conditional upstream-auth policy's CEL gate evaluates — a header-phase-only
+// policy would otherwise see stale metadata, since this policy can only ever decide a
+// redirect in body phase, having to inspect the client's own "model" field first), and the
+// real, already-attached translator does full bidirectional body conversion. This policy never
+// resolves or applies auth/template conversion itself — see the package doc.
+const providerHeaderName = "x-provider"
+
+// retryHTTPClient abstracts the outbound call a dial makes, so tests can substitute a fake
+// transport instead of hitting the network. *http.Client satisfies this directly.
 type retryHTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
@@ -72,36 +92,35 @@ var hopByHopHeaders = map[string]struct{}{
 	"host":                {},
 }
 
-// credentialHeaders are stripped before dialing a provider-loopback fallback (fb.provider !=
-// "") — the original request's credential was for the PRIMARY's own upstream, not this
-// target. tryFallback sets the provider's own resolved credential explicitly afterward (see
-// resolvedAuthHeader/resolvedAuthValue) when one is declared; stripping first means a request
-// missing that resolved credential never falls back to leaking the primary's own credential to
-// a backend it was never meant for.
+// credentialHeaders are stripped before a provider redial — the original request's credential
+// was for the PRIMARY's own upstream, not this provider. The redialed request re-enters the
+// full policy chain (llm-header-router -> translator -> the provider's own conditional
+// upstream-auth policy), which sets the correct credential itself; stripping first means a
+// request that somehow reaches the provider's backend without that credential never falls back
+// to leaking the primary's own credential to a backend it was never meant for.
 var credentialHeaders = map[string]struct{}{
 	"authorization": {},
 	"x-api-key":     {},
 }
 
-// tryFallback makes one direct outbound attempt at fb and reports (action, true) on success
-// or (nil, false) on any failure — network error, a response status still in statusCodes, or
-// a request/response the configured template adapter can't convert. The caller is
-// responsible for suspend bookkeeping; this function only ever executes a single dial, never
-// recurses into the rest of the chain itself.
-func (p *Policy) tryFallback(ctx context.Context, rhctx *policy.ResponseHeaderContext, group targetGroup, fb fallbackTarget, originalBody map[string]interface{}) (policy.ResponseHeaderAction, bool) {
-	targetURL, err := resolveTargetURL(fb, rhctx.Upstream, rhctx.RequestPath)
+// doDial builds and executes one outbound POST-shaped attempt at targetURL, cloning src's
+// headers (stripping credentials when stripCredentials is set, always stripping hop-by-hop),
+// then applying extraHeaders, with model swapped into a shallow clone of originalBody. It
+// reports (response, true) on a non-failing status or (zero value, false) on any failure —
+// network error, oversized/unreadable response body, or a response status still in
+// p.statusCodes. logField is attached to warning logs only, to distinguish call sites.
+func (p *Policy) doDial(ctx context.Context, targetURL, method string, src *policy.Headers, stripCredentials bool, extraHeaders map[string]string, model string, originalBody map[string]interface{}, logField string) (policy.ImmediateResponse, bool) {
+	clone := make(map[string]interface{}, len(originalBody))
+	for k, v := range originalBody {
+		clone[k] = v
+	}
+	clone["model"] = model
+	bodyBytes, err := json.Marshal(clone)
 	if err != nil {
-		slog.WarnContext(ctx, "ModelFailover: could not resolve fallback URL, skipping", "model", fb.model, "error", err)
-		return nil, false
+		slog.WarnContext(ctx, "ModelFailover: could not build request body, skipping", "target", logField, "error", err)
+		return policy.ImmediateResponse{}, false
 	}
 
-	bodyBytes, requiredHeaders, err := buildTargetBody(fb, originalBody)
-	if err != nil {
-		slog.WarnContext(ctx, "ModelFailover: could not build fallback request body, skipping", "model", fb.model, "error", err)
-		return nil, false
-	}
-
-	method := rhctx.RequestMethod
 	if method == "" {
 		method = http.MethodPost
 	}
@@ -111,111 +130,101 @@ func (p *Policy) tryFallback(ctx context.Context, rhctx *policy.ResponseHeaderCo
 
 	req, err := http.NewRequestWithContext(dialCtx, method, targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		slog.WarnContext(ctx, "ModelFailover: could not build fallback request, skipping", "model", fb.model, "error", err)
-		return nil, false
+		slog.WarnContext(ctx, "ModelFailover: could not build request, skipping", "target", logField, "error", err)
+		return policy.ImmediateResponse{}, false
 	}
-	// Credential stripping and the loopback marker only apply to a provider (genuinely
-	// different backend, own auth) — an upstreamDefinition fallback is the SAME provider, so
-	// the original request's own credential is exactly what it needs, unchanged.
-	cloneRequestHeaders(req.Header, rhctx.RequestHeaders, fb.provider != "")
-	for name, value := range requiredHeaders {
+	cloneRequestHeaders(req.Header, src, stripCredentials)
+	for name, value := range extraHeaders {
 		req.Header.Set(name, value)
-	}
-	if fb.provider != "" {
-		req.Header.Set(internalLoopbackHeader, "1")
-		// A target-level provider redirect stays in the SAME request-phase chain, so it gets
-		// the provider's own conditional upstream-auth policy for free (see the package doc).
-		// This response-phase dial never re-enters that chain, so the credential is set
-		// directly here from gateway-controller's resolvedAuthHeader/resolvedAuthValue
-		// (mirrors proxyUpstreamAuthPolicy's own header, valuePrefix already applied) — the
-		// same reasoning as resolvedUpstreamURL/resolvedTransformerType above. Empty means no
-		// api-key auth was declared for this provider ("none", or "other" left to the
-		// operator's own attached policies).
-		if fb.resolvedAuthHeader != "" {
-			req.Header.Set(fb.resolvedAuthHeader, fb.resolvedAuthValue)
-		}
 	}
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		slog.WarnContext(ctx, "ModelFailover: fallback dial failed, trying next", "model", fb.model, "error", err)
-		return nil, false
+		slog.WarnContext(ctx, "ModelFailover: dial failed, trying next", "target", logField, "error", err)
+		return policy.ImmediateResponse{}, false
 	}
 	defer resp.Body.Close()
 
 	respBody, err := readBounded(resp.Body, p.maxResponseBytes)
 	if err != nil {
-		slog.WarnContext(ctx, "ModelFailover: fallback response exceeded size limit or failed to read, trying next", "model", fb.model, "error", err)
-		return nil, false
+		slog.WarnContext(ctx, "ModelFailover: response exceeded size limit or failed to read, trying next", "target", logField, "error", err)
+		return policy.ImmediateResponse{}, false
 	}
 
 	if _, stillFailing := p.statusCodes[resp.StatusCode]; stillFailing {
-		slog.WarnContext(ctx, "ModelFailover: fallback also returned a failing status, trying next", "model", fb.model, "status", resp.StatusCode)
-		return nil, false
-	}
-
-	finalBody := respBody
-	if fb.resolvedTransformerType != "" {
-		adapter := templateAdapters[fb.resolvedTransformerType] // parseFallbackTarget already validated this exists
-		finalBody, err = adapter.FromTarget(respBody)
-		if err != nil {
-			slog.WarnContext(ctx, "ModelFailover: could not convert fallback response, trying next", "model", fb.model, "error", err)
-			return nil, false
-		}
+		slog.WarnContext(ctx, "ModelFailover: also returned a failing status, trying next", "target", logField, "status", resp.StatusCode)
+		return policy.ImmediateResponse{}, false
 	}
 
 	return policy.ImmediateResponse{
 		StatusCode: resp.StatusCode,
 		Headers:    sanitizeResponseHeaders(resp.Header),
-		Body:       finalBody,
+		Body:       respBody,
 	}, true
 }
 
-// buildTargetBody swaps "model" to fb.model and, if fb resolved to a non-empty transformer,
-// converts the whole body via the registered adapter. Model rewriting always happens before
-// conversion — mirrors the original policy's ordering guarantee that a template adapter never
-// needs to know anything about model-name placement, just full-body conversion.
-func buildTargetBody(fb fallbackTarget, originalBody map[string]interface{}) ([]byte, map[string]string, error) {
-	clone := make(map[string]interface{}, len(originalBody))
-	for k, v := range originalBody {
-		clone[k] = v
+// tryProviderRedial makes one self-redial attempt at providerID: it dials THIS OPERATION's own
+// externally-facing URL (selfBaseURL + downstreamPath, e.g.
+// "http://127.0.0.1:8080/mf-poc-proxy/chat/completions") with providerHeaderName set, so Envoy
+// treats it as a genuinely fresh inbound request and re-runs the full policy chain —
+// llm-header-router, the matching translator, and the provider's own conditional
+// upstream-auth policy — rather than this policy dialing the provider or resolving its
+// credential/template itself. OnRequestBody's internalLoopbackHeader guard prevents this
+// redial from recursing back into a target-level redirect on its own re-entry.
+func (p *Policy) tryProviderRedial(ctx context.Context, selfBaseURL, downstreamPath, method string, headers *policy.Headers, providerID, model string, originalBody map[string]interface{}) (policy.ImmediateResponse, bool) {
+	if selfBaseURL == "" || downstreamPath == "" {
+		slog.WarnContext(ctx, "ModelFailover: no self base URL/downstream path available, cannot redial", "provider", providerID)
+		return policy.ImmediateResponse{}, false
 	}
-	clone["model"] = fb.model
-
-	if fb.resolvedTransformerType == "" {
-		body, err := json.Marshal(clone)
-		return body, nil, err
+	targetURL := strings.TrimSuffix(selfBaseURL, "/") + downstreamPath
+	extra := map[string]string{
+		internalLoopbackHeader:    "1",
+		modelFailoverRedialHeader: "1",
+		providerHeaderName:        providerID,
 	}
-
-	adapter, ok := templateAdapters[fb.resolvedTransformerType]
-	if !ok {
-		return nil, nil, fmt.Errorf("no adapter registered for transformer %q", fb.resolvedTransformerType)
-	}
-	body, err := adapter.ToTarget(clone)
-	if err != nil {
-		return nil, nil, err
-	}
-	return body, adapter.RequiredHeaders(), nil
+	return p.doDial(ctx, targetURL, method, headers, true, extra, model, originalBody, "provider:"+providerID)
 }
 
-// resolveTargetURL determines the full URL to dial for fb. Neither provider nor
-// upstreamDefinition reuses the primary's own resolved upstream (same backend — see the
-// fallbackTarget doc comment); either one dials its own resolvedUpstreamURL
-// (gateway-controller-injected, never operator-supplied) with the original request's own
-// relative path appended, matching the operation path convention every LlmProvider shares.
-func resolveTargetURL(fb fallbackTarget, upstream *policy.UpstreamResponseContext, originalPath string) (string, error) {
-	if !fb.crossesProvider() {
-		if upstream == nil || upstream.URL == "" {
-			return "", fmt.Errorf("fallback has no provider/upstreamDefinition configured and the primary upstream is unknown")
-		}
-		return joinURL(upstream.URL, upstream.BasePath, originalPath)
+// tryUpstreamDefinitionDial makes one direct outbound attempt at fb's own resolvedUpstreamURL
+// (an upstreamDefinition — same provider, a different backend of it, e.g. a backup region).
+// Unlike a provider redial this never crosses providers, so the original request's own
+// credential is reused unchanged and no translator conversion applies.
+func (p *Policy) tryUpstreamDefinitionDial(ctx context.Context, operationPath, method string, headers *policy.Headers, fb fallbackTarget, originalBody map[string]interface{}) (policy.ImmediateResponse, bool) {
+	targetURL, err := joinURL(fb.resolvedUpstreamURL, "", operationPath)
+	if err != nil {
+		slog.WarnContext(ctx, "ModelFailover: could not resolve fallback URL, skipping", "model", fb.model, "error", err)
+		return policy.ImmediateResponse{}, false
 	}
-	if fb.resolvedUpstreamURL == "" {
-		// parseFallbackTarget already rejects this at config-load time; unreachable in
-		// practice, but must never silently dial an empty target.
-		return "", fmt.Errorf("fallback has no resolved upstream URL")
+	return p.doDial(ctx, targetURL, method, headers, false, nil, fb.model, originalBody, "upstreamDefinition:"+fb.upstreamDefinition)
+}
+
+// tryReusePrimaryDial makes one direct outbound attempt at the SAME backend the primary attempt
+// itself already resolved to (fb declares neither provider nor upstreamDefinition) — only
+// meaningful from OnResponseHeaders, where an actual primary attempt already happened and
+// upstream reflects it.
+func (p *Policy) tryReusePrimaryDial(ctx context.Context, upstream *policy.UpstreamResponseContext, operationPath, method string, headers *policy.Headers, fb fallbackTarget, originalBody map[string]interface{}) (policy.ImmediateResponse, bool) {
+	if upstream == nil || upstream.URL == "" {
+		slog.WarnContext(ctx, "ModelFailover: primary upstream is unknown, cannot reuse it for fallback", "model", fb.model)
+		return policy.ImmediateResponse{}, false
 	}
-	return joinURL(fb.resolvedUpstreamURL, "", originalPath)
+	targetURL, err := joinURL(upstream.URL, upstream.BasePath, operationPath)
+	if err != nil {
+		slog.WarnContext(ctx, "ModelFailover: could not resolve fallback URL, skipping", "model", fb.model, "error", err)
+		return policy.ImmediateResponse{}, false
+	}
+	return p.doDial(ctx, targetURL, method, headers, false, nil, fb.model, originalBody, "reuse-primary")
+}
+
+// tryFallbackEntry dispatches fb to the right dial mechanism based on which reference it set.
+func (p *Policy) tryFallbackEntry(ctx context.Context, selfBaseURL, downstreamPath, operationPath, method string, headers *policy.Headers, upstream *policy.UpstreamResponseContext, fb fallbackTarget, originalBody map[string]interface{}) (policy.ImmediateResponse, bool) {
+	switch {
+	case fb.provider != "":
+		return p.tryProviderRedial(ctx, selfBaseURL, downstreamPath, method, headers, fb.provider, fb.model, originalBody)
+	case fb.upstreamDefinition != "":
+		return p.tryUpstreamDefinitionDial(ctx, operationPath, method, headers, fb, originalBody)
+	default:
+		return p.tryReusePrimaryDial(ctx, upstream, operationPath, method, headers, fb, originalBody)
+	}
 }
 
 func joinURL(base, basePath, path string) (string, error) {
@@ -243,8 +252,8 @@ func joinURL(base, basePath, path string) (string, error) {
 // anything that starts with ":" (HTTP/2 pseudo-headers should never appear in this SDK's
 // Headers type for a downstream-phase context, but net/http.Transport rejects them outright
 // if one ever did — skip defensively rather than let a single bad header fail the whole
-// attempt). stripCredentials additionally drops credentialHeaders — set for a provider-loopback
-// dial, where the original request's credential belongs to a different backend entirely.
+// attempt). stripCredentials additionally drops credentialHeaders — set for a provider
+// redial, where the original request's credential belongs to a different backend entirely.
 func cloneRequestHeaders(dst http.Header, src *policy.Headers, stripCredentials bool) {
 	if src == nil {
 		return
@@ -268,7 +277,7 @@ func cloneRequestHeaders(dst http.Header, src *policy.Headers, stripCredentials 
 	})
 }
 
-// sanitizeResponseHeaders builds the header map for ImmediateResponse from the fallback's own
+// sanitizeResponseHeaders builds the header map for ImmediateResponse from the dial's own
 // response, dropping hop-by-hop headers for the same reason cloneRequestHeaders does on the
 // way out.
 func sanitizeResponseHeaders(src http.Header) map[string]string {

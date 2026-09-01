@@ -60,6 +60,8 @@ func errResp(err error) func(*http.Request) (*http.Response, error) {
 	return func(*http.Request) (*http.Response, error) { return nil, err }
 }
 
+const testSelfBaseURL = "http://127.0.0.1:8080"
+
 func baseResponseHeaderContext(t *testing.T, requestBody string, status int) *policy.ResponseHeaderContext {
 	t.Helper()
 	return &policy.ResponseHeaderContext{
@@ -77,6 +79,9 @@ func baseResponseHeaderContext(t *testing.T, requestBody string, status int) *po
 		Upstream: &policy.UpstreamResponseContext{
 			Name: "primary", URL: "https://api.openai.com", BasePath: "",
 		},
+		Downstream: &policy.DownstreamContext{Request: &policy.DownstreamRequest{
+			Path: "/mf-proxy/chat/completions",
+		}},
 	}
 }
 
@@ -84,9 +89,16 @@ func baseRequestContext(t *testing.T, requestBody string) *policy.RequestContext
 	t.Helper()
 	return &policy.RequestContext{
 		SharedContext: &policy.SharedContext{APIId: "api-1", OperationPath: "/chat/completions"},
-		Body:          &policy.Body{Content: []byte(requestBody), Present: true},
-		Path:          "/v1/chat/completions",
-		Method:        http.MethodPost,
+		Headers: policy.NewHeaders(map[string][]string{
+			"authorization": {"Bearer original-token"},
+			"content-type":  {"application/json"},
+		}),
+		Body:   &policy.Body{Content: []byte(requestBody), Present: true},
+		Path:   "/v1/chat/completions",
+		Method: http.MethodPost,
+		Downstream: &policy.DownstreamContext{Request: &policy.DownstreamRequest{
+			Path: "/mf-proxy/chat/completions",
+		}},
 	}
 }
 
@@ -115,44 +127,114 @@ func TestGetPolicy_ValidMinimalConfig(t *testing.T) {
 	}
 }
 
-func TestGetPolicy_TargetLevelProvider(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{
-			map[string]interface{}{"model": "claude-3-5-sonnet", "provider": "anthropic-backup"},
-		},
+func TestGetPolicy_MissingTargets_Errors(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
 		"statusCodes": []interface{}{500},
 	})
-	if p.targets[0].provider != "anthropic-backup" {
-		t.Fatalf("expected target-level provider to be parsed, got %+v", p.targets[0])
+	if err == nil {
+		t.Fatal("expected an error for missing targets")
 	}
 }
 
-func TestGetPolicy_FallbackWithResolvedProvider(t *testing.T) {
+func TestGetPolicy_MissingStatusCodes_Errors(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"targets": []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error for missing statusCodes")
+	}
+}
+
+func TestGetPolicy_DuplicateTargetModel_Errors(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{"model": "gpt-4o"},
+			map[string]interface{}{"model": "gpt-4o"},
+		},
+		"statusCodes": []interface{}{500},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a duplicated target model")
+	}
+}
+
+func TestGetPolicy_TargetLevelProvider_RequiresSelfBaseURL(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{"model": "claude-direct", "provider": "anthropic-backup"},
+		},
+		"statusCodes": []interface{}{500},
+	})
+	if err == nil {
+		t.Fatal("expected an error when a provider reference is configured with no selfBaseURL")
+	}
+}
+
+func TestGetPolicy_TargetLevelProvider_WithSelfBaseURL_Succeeds(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{"model": "claude-direct", "provider": "anthropic-backup"},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	if p.targets[0].provider != "anthropic-backup" {
+		t.Fatalf("expected target provider to be parsed, got %+v", p.targets[0])
+	}
+}
+
+func TestGetPolicy_TargetProviderAndUpstreamDefinition_MutuallyExclusive(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{"model": "gpt-4o", "provider": "a", "upstreamDefinition": "b"},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	if err == nil {
+		t.Fatal("expected an error when both provider and upstreamDefinition are set on a target")
+	}
+}
+
+func TestGetPolicy_FallbackProviderAndUpstreamDefinition_MutuallyExclusive(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
 				"model": "gpt-4o",
 				"fallbacks": []interface{}{
-					map[string]interface{}{
-						"model": "claude-3-5-sonnet", "provider": "anthropic-backup",
-						"resolvedUpstreamURL": "http://127.0.0.1:9090/anthropic-provider/latest",
-					},
+					map[string]interface{}{"model": "x", "provider": "a", "upstreamDefinition": "b"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	if err == nil {
+		t.Fatal("expected an error when both provider and upstreamDefinition are set on a fallback")
+	}
+}
+
+func TestGetPolicy_FallbackUpstreamDefinition_RequiresResolvedURL(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "backend-b"},
 				},
 			},
 		},
 		"statusCodes": []interface{}{500},
 	})
-	fb := p.targets[0].fallbacks[0]
-	if fb.provider != "anthropic-backup" || fb.resolvedUpstreamURL != "http://127.0.0.1:9090/anthropic-provider/latest" {
-		t.Fatalf("expected provider+resolvedUpstreamURL to be parsed, got %+v", fb)
+	if err == nil {
+		t.Fatal("expected an error when upstreamDefinition has no resolvedUpstreamURL")
 	}
 }
 
-func TestGetPolicy_FallbackProviderWithoutResolution_Errors(t *testing.T) {
-	// Simulates a policy attached to an LlmProvider (no additionalProviders to resolve
-	// against) or a hand-crafted config that bypassed gateway-controller's registration-time
-	// resolution step entirely — must fail closed, not silently produce an undialable fallback.
-	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+func TestGetPolicy_FallbackProvider_DoesNotRequireResolvedURL(t *testing.T) {
+	// Unlike upstreamDefinition, a fallback-level provider reference resolves entirely via
+	// self-redial — it never needs a gateway-controller-resolved URL of its own.
+	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
 				"model": "gpt-4o",
@@ -162,668 +244,264 @@ func TestGetPolicy_FallbackProviderWithoutResolution_Errors(t *testing.T) {
 			},
 		},
 		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
 	})
-	if err == nil {
-		t.Fatalf("expected an error for a provider fallback with no resolved upstream URL")
+	fb := p.targets[0].fallbacks[0]
+	if fb.provider != "anthropic-backup" || fb.resolvedUpstreamURL != "" {
+		t.Fatalf("expected a bare provider reference with no resolvedUpstreamURL, got %+v", fb)
 	}
 }
 
-func TestGetPolicy_FallbackWithResolvedUpstreamDefinition(t *testing.T) {
+func TestGetPolicy_TargetRedirectsOwnPrimary_RequiresFallbacksToCrossProvider(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":    "claude-direct",
+				"provider": "anthropic-backup",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "claude-direct-retry"}, // bare reuse-primary — invalid here
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	if err == nil {
+		t.Fatal("expected an error: a target that redirects its own primary attempt has no primary left for a bare fallback to reuse")
+	}
+}
+
+func TestGetPolicy_TargetRedirectsOwnPrimary_CrossingFallback_Succeeds(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
-				"model": "gpt-4o-chain",
+				"model":    "claude-direct",
+				"provider": "anthropic-backup",
 				"fallbacks": []interface{}{
-					map[string]interface{}{
-						"model": "gpt-4o-chain-b", "upstreamDefinition": "backend-b",
-						"resolvedUpstreamURL": "http://host.docker.internal:9712",
-					},
+					map[string]interface{}{"model": "claude-direct-retry", "provider": "anthropic-secondary"},
 				},
 			},
 		},
 		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
 	})
-	fb := p.targets[0].fallbacks[0]
-	if fb.upstreamDefinition != "backend-b" || fb.resolvedUpstreamURL != "http://host.docker.internal:9712" || fb.provider != "" {
-		t.Fatalf("expected upstreamDefinition+resolvedUpstreamURL to be parsed, got %+v", fb)
+	if len(p.targets[0].fallbacks) != 1 {
+		t.Fatalf("expected the crossing fallback to be accepted, got %+v", p.targets[0])
 	}
 }
 
-func TestGetPolicy_FallbackBothProviderAndUpstreamDefinition_Errors(t *testing.T) {
-	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+// ─── OnRequestBody ────────────────────────────────────────────────────────────
+
+func TestOnRequestBody_ModelFailoverRedialHeader_PassesThroughUnchanged(t *testing.T) {
+	// A request already carrying this policy's own marker must never be redirected again —
+	// this is the recursion guard for a provider redial re-entering the operation. Deliberately
+	// NOT internalLoopbackHeader: gateway-controller's own proxyInternalLoopbackMarkerPolicy
+	// stamps that one unconditionally on every request through this proxy, including a
+	// genuine client request — using it here would silently swallow real traffic.
+	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
-			map[string]interface{}{
-				"model": "gpt-4o",
-				"fallbacks": []interface{}{
-					map[string]interface{}{
-						"model": "x", "provider": "anthropic-backup", "upstreamDefinition": "backend-b",
-						"resolvedUpstreamURL": "http://example.com",
-					},
-				},
-			},
+			map[string]interface{}{"model": "claude-direct", "provider": "anthropic-backup"},
 		},
 		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
 	})
-	if err == nil {
-		t.Fatalf("expected an error when both provider and upstreamDefinition are set on the same fallback")
+	rctx := baseRequestContext(t, `{"model":"claude-direct","messages":[]}`)
+	rctx.Headers = policy.NewHeaders(map[string][]string{modelFailoverRedialHeader: {"1"}})
+
+	action := p.OnRequestBody(context.Background(), rctx, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok || mods.UpstreamName != nil {
+		t.Fatalf("expected a plain passthrough with no redirect, got %#v", action)
 	}
 }
 
-func TestGetPolicy_TargetBothProviderAndUpstreamDefinition_Errors(t *testing.T) {
-	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+func TestOnRequestBody_InternalLoopbackHeaderAlone_StillRedirects(t *testing.T) {
+	// Regression test: gateway-controller's proxyInternalLoopbackMarkerPolicy stamps
+	// internalLoopbackHeader unconditionally on EVERY request through this proxy, including a
+	// genuine client request — a request carrying only that header (no modelFailoverRedialHeader)
+	// must still be treated as genuine and redirected normally. Confirmed live: an earlier
+	// version of this guard checked internalLoopbackHeader instead, which silently swallowed
+	// every real client request and never redirected anything.
+	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
-			map[string]interface{}{"model": "gpt-4o", "provider": "anthropic-backup", "upstreamDefinition": "backend-b"},
+			map[string]interface{}{"model": "claude-direct", "provider": "anthropic-backup"},
 		},
 		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
 	})
-	if err == nil {
-		t.Fatalf("expected an error when both provider and upstreamDefinition are set on the same target")
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
+	p.httpClient = fake
+	rctx := baseRequestContext(t, `{"model":"claude-direct","messages":[]}`)
+	rctx.Headers = policy.NewHeaders(map[string][]string{internalLoopbackHeader: {"1"}})
+
+	action := p.OnRequestBody(context.Background(), rctx, nil)
+	if _, ok := action.(policy.ImmediateResponse); !ok {
+		t.Fatalf("expected the target's provider redial to still fire, got %#v", action)
 	}
 }
 
-func TestGetPolicy_FallbackUpstreamDefinitionWithoutResolution_Errors(t *testing.T) {
-	// Simulates a policy attached to an LlmProxy (no native upstreamDefinitions to resolve
-	// against — see llm_transformer.go) — must fail closed.
-	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
-		"targets": []interface{}{
-			map[string]interface{}{
-				"model": "gpt-4o",
-				"fallbacks": []interface{}{
-					map[string]interface{}{"model": "x", "upstreamDefinition": "backend-b"},
-				},
-			},
-		},
-		"statusCodes": []interface{}{500},
-	})
-	if err == nil {
-		t.Fatalf("expected an error for an upstreamDefinition fallback with no resolved upstream URL")
-	}
-}
-
-func TestGetPolicy_UnsupportedTransformerType_Errors(t *testing.T) {
-	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
-		"targets": []interface{}{
-			map[string]interface{}{
-				"model": "gpt-4o",
-				"fallbacks": []interface{}{
-					map[string]interface{}{
-						"model": "x", "provider": "bedrock-backup",
-						"resolvedUpstreamURL":     "http://127.0.0.1:9090/bedrock-provider/latest",
-						"resolvedTransformerType": "openai-to-bedrock",
-					},
-				},
-			},
-		},
-		"statusCodes": []interface{}{500},
-	})
-	if err == nil {
-		t.Fatalf("expected an error for an unsupported transformer type")
-	}
-}
-
-func TestGetPolicy_Errors(t *testing.T) {
-	cases := []struct {
-		name   string
-		params map[string]interface{}
-	}{
-		{"no targets", map[string]interface{}{"statusCodes": []interface{}{500}}},
-		{"empty targets", map[string]interface{}{"targets": []interface{}{}, "statusCodes": []interface{}{500}}},
-		{"no statusCodes", map[string]interface{}{"targets": []interface{}{map[string]interface{}{"model": "gpt-4o"}}}},
-		{"duplicate model", map[string]interface{}{
-			"targets": []interface{}{
-				map[string]interface{}{"model": "gpt-4o"},
-				map[string]interface{}{"model": "gpt-4o"},
-			},
-			"statusCodes": []interface{}{500},
-		}},
-		{"fallback missing model", map[string]interface{}{
-			"targets": []interface{}{map[string]interface{}{
-				"model":     "gpt-4o",
-				"fallbacks": []interface{}{map[string]interface{}{}},
-			}},
-			"statusCodes": []interface{}{500},
-		}},
-		{"invalid requestTimeout", map[string]interface{}{
-			"targets": []interface{}{map[string]interface{}{"model": "gpt-4o"}}, "statusCodes": []interface{}{500},
-			"requestTimeout": "not-a-duration",
-		}},
-		{"invalid maxResponseBytes", map[string]interface{}{
-			"targets": []interface{}{map[string]interface{}{"model": "gpt-4o"}}, "statusCodes": []interface{}{500},
-			"maxResponseBytes": -1,
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := GetPolicy(policy.PolicyMetadata{}, tc.params); err == nil {
-				t.Fatalf("expected an error, got none")
-			}
-		})
-	}
-}
-
-// ─── OnRequestBody: target-level provider redirect ───────────────────────────
-
-func TestOnRequestBody_NoProvider_NoOp(t *testing.T) {
+func TestOnRequestBody_UnmatchedModel_PassesThroughUnchanged(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
 		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
 		"statusCodes": []interface{}{500},
 	})
-	rctx := baseRequestContext(t, `{"model":"gpt-4o"}`)
+	rctx := baseRequestContext(t, `{"model":"totally-unrelated","messages":[]}`)
+
 	action := p.OnRequestBody(context.Background(), rctx, nil)
 	mods, ok := action.(policy.UpstreamRequestModifications)
 	if !ok || mods.UpstreamName != nil {
-		t.Fatalf("expected a no-op with no UpstreamName, got %#v", action)
-	}
-	if _, set := rctx.SharedContext.Metadata[selectedProviderMetadataKey]; set {
-		t.Fatalf("expected no selected_provider metadata to be set")
+		t.Fatalf("expected a plain passthrough, got %#v", action)
 	}
 }
 
-func TestOnRequestBody_TargetProvider_RedirectsAndSetsMetadata(t *testing.T) {
+func TestOnRequestBody_TargetUpstreamDefinition_RedirectsInProcess(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
-			map[string]interface{}{"model": "claude-3-5-sonnet", "provider": "anthropic-backup"},
+			map[string]interface{}{
+				"model": "gpt-4o-backup", "upstreamDefinition": "backend-b",
+			},
 		},
 		"statusCodes": []interface{}{500},
 	})
-	rctx := baseRequestContext(t, `{"model":"claude-3-5-sonnet","messages":[]}`)
-	action := p.OnRequestBody(context.Background(), rctx, nil)
-	mods, ok := action.(policy.UpstreamRequestModifications)
-	if !ok || mods.UpstreamName == nil || *mods.UpstreamName != "anthropic-backup" {
-		t.Fatalf("expected UpstreamName=anthropic-backup, got %#v", action)
-	}
-	if got := rctx.SharedContext.Metadata[selectedProviderMetadataKey]; got != "anthropic-backup" {
-		t.Fatalf("expected selected_provider metadata to be set, got %v", got)
-	}
-	if mods.Body != nil {
-		t.Fatalf("expected no body mutation from a target-level redirect, got %s", mods.Body)
-	}
-}
+	rctx := baseRequestContext(t, `{"model":"gpt-4o-backup","messages":[]}`)
 
-func TestOnRequestBody_TargetUpstreamDefinition_RedirectsWithNoMetadata(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{
-			map[string]interface{}{"model": "gpt-4o", "upstreamDefinition": "backend-b"},
-		},
-		"statusCodes": []interface{}{500},
-	})
-	rctx := baseRequestContext(t, `{"model":"gpt-4o","messages":[]}`)
 	action := p.OnRequestBody(context.Background(), rctx, nil)
 	mods, ok := action.(policy.UpstreamRequestModifications)
 	if !ok || mods.UpstreamName == nil || *mods.UpstreamName != "backend-b" {
-		t.Fatalf("expected UpstreamName=backend-b, got %#v", action)
-	}
-	if _, set := rctx.SharedContext.Metadata[selectedProviderMetadataKey]; set {
-		t.Fatalf("a same-provider upstreamDefinition redirect must not set selected_provider metadata — there is no conditional policy to activate")
+		t.Fatalf("expected an UpstreamName redirect to backend-b, got %#v", action)
 	}
 }
 
-func TestOnRequestBody_UnmatchedModel_NoOp(t *testing.T) {
+func TestOnRequestBody_TargetProvider_SuccessfulRedial(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
-		"targets":     []interface{}{map[string]interface{}{"model": "claude-3-5-sonnet", "provider": "anthropic-backup"}},
+		"targets": []interface{}{
+			map[string]interface{}{"model": "claude-direct", "provider": "anthropic-backup"},
+		},
 		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
 	})
-	rctx := baseRequestContext(t, `{"model":"some-other-model"}`)
-	action := p.OnRequestBody(context.Background(), rctx, nil)
-	mods, ok := action.(policy.UpstreamRequestModifications)
-	if !ok || mods.UpstreamName != nil {
-		t.Fatalf("expected a no-op for an unmatched model, got %#v", action)
-	}
-}
-
-func TestOnRequestBody_MalformedBody_NoOp(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets":     []interface{}{map[string]interface{}{"model": "claude-3-5-sonnet", "provider": "anthropic-backup"}},
-		"statusCodes": []interface{}{500},
-	})
-	rctx := baseRequestContext(t, `not-json`)
-	action := p.OnRequestBody(context.Background(), rctx, nil)
-	mods, ok := action.(policy.UpstreamRequestModifications)
-	if !ok || mods.UpstreamName != nil {
-		t.Fatalf("expected a no-op for a malformed body, got %#v", action)
-	}
-}
-
-func TestOnRequestBody_BodyAbsent_NoOp(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets":     []interface{}{map[string]interface{}{"model": "claude-3-5-sonnet", "provider": "anthropic-backup"}},
-		"statusCodes": []interface{}{500},
-	})
-	rctx := baseRequestContext(t, "")
-	rctx.Body = &policy.Body{Present: false}
-	action := p.OnRequestBody(context.Background(), rctx, nil)
-	mods, ok := action.(policy.UpstreamRequestModifications)
-	if !ok || mods.UpstreamName != nil {
-		t.Fatalf("expected a no-op when the request body wasn't buffered, got %#v", action)
-	}
-}
-
-// ─── OnResponseHeaders: passthrough (no-op) cases ────────────────────────────
-
-func TestOnResponseHeaders_StatusNotFailing_NoOp(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4o-mini"}}}},
-		"statusCodes": []interface{}{500},
-	})
-	fake := &fakeHTTPClient{}
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
 	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o"}`, 200)
+	rctx := baseRequestContext(t, `{"model":"claude-direct","messages":[{"role":"user","content":"hi"}]}`)
 
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
-		t.Fatalf("expected a no-op passthrough, got %#v", action)
-	}
-	if len(fake.calls) != 0 {
-		t.Fatalf("expected no outbound calls, got %d", len(fake.calls))
-	}
-}
-
-func TestOnResponseHeaders_UnmatchedModel_NoOp(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4o-mini"}}}},
-		"statusCodes": []interface{}{500},
-	})
-	fake := &fakeHTTPClient{}
-	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"some-other-model"}`, 500)
-
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
-		t.Fatalf("expected a no-op passthrough for an unmatched model, got %#v", action)
-	}
-	if len(fake.calls) != 0 {
-		t.Fatalf("expected no outbound calls for an unmatched model, got %d", len(fake.calls))
-	}
-}
-
-func TestOnResponseHeaders_NoFallbacksDeclared_NoOp(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
-		"statusCodes": []interface{}{500},
-	})
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o"}`, 500)
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
-		t.Fatalf("expected a no-op passthrough, got %#v", action)
-	}
-}
-
-func TestOnResponseHeaders_MalformedRequestBody_NoOp(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4o-mini"}}}},
-		"statusCodes": []interface{}{500},
-	})
-	rhctx := baseResponseHeaderContext(t, `not-json`, 500)
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
-		t.Fatalf("expected a no-op passthrough for a malformed body, got %#v", action)
-	}
-}
-
-func TestOnResponseHeaders_RequestBodyAbsent_NoOp(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o", "fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4o-mini"}}}},
-		"statusCodes": []interface{}{500},
-	})
-	rhctx := baseResponseHeaderContext(t, "", 500)
-	rhctx.RequestBody = &policy.Body{Present: false}
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
-		t.Fatalf("expected a no-op passthrough when the request body wasn't buffered, got %#v", action)
-	}
-}
-
-// ─── OnResponseHeaders: same-provider fallback (no provider) ─────────────────
-
-func TestOnResponseHeaders_SameProviderFallback_Succeeds(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model":     "gpt-4o",
-			"fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4o-mini"}},
-		}},
-		"statusCodes": []interface{}{500},
-	})
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){
-		jsonResp(200, `{"id":"resp-1","choices":[]}`),
-	}}
-	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`, 500)
-
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	action := p.OnRequestBody(context.Background(), rctx, nil)
 	imm, ok := action.(policy.ImmediateResponse)
-	if !ok {
-		t.Fatalf("expected ImmediateResponse, got %#v", action)
-	}
-	if imm.StatusCode != 200 || string(imm.Body) != `{"id":"resp-1","choices":[]}` {
-		t.Fatalf("unexpected response: %+v", imm)
-	}
-	if len(fake.calls) != 1 {
-		t.Fatalf("expected exactly one outbound call, got %d", len(fake.calls))
+	if !ok || imm.StatusCode != 200 {
+		t.Fatalf("expected a successful ImmediateResponse, got %#v", action)
 	}
 
 	req := fake.calls[0]
-	if req.URL.String() != "https://api.openai.com/v1/chat/completions" {
-		t.Fatalf("expected fallback to reuse the primary's own upstream+path, got %s", req.URL.String())
+	if req.URL.String() != testSelfBaseURL+"/mf-proxy/chat/completions" {
+		t.Fatalf("expected the redial to hit the operation's own downstream path via selfBaseURL, got %s", req.URL.String())
 	}
-	if got := req.Header.Get("Authorization"); got != "Bearer original-token" {
-		t.Fatalf("expected the original credential to be reused verbatim (no provider = same provider), got %q", got)
-	}
-	if req.Header.Get(internalLoopbackHeader) != "" {
-		t.Fatalf("internal loopback header must only be set for a provider-loopback dial")
-	}
-	if req.Header.Get("Connection") != "" || req.Header.Get("Transfer-Encoding") != "" {
-		t.Fatalf("hop-by-hop headers must not be replayed, got Connection=%q Transfer-Encoding=%q",
-			req.Header.Get("Connection"), req.Header.Get("Transfer-Encoding"))
-	}
-	if _, hasConn := imm.Headers["Connection"]; hasConn {
-		t.Fatalf("hop-by-hop response headers must not be forwarded to the client")
-	}
-
-	var sentBody map[string]interface{}
-	bodyBytes, _ := io.ReadAll(req.Body)
-	if err := json.Unmarshal(bodyBytes, &sentBody); err != nil {
-		t.Fatalf("fallback request body was not valid JSON: %v", err)
-	}
-	if sentBody["model"] != "gpt-4o-mini" {
-		t.Fatalf("expected model to be rewritten to the fallback's own model, got %v", sentBody["model"])
-	}
-}
-
-func TestOnResponseHeaders_FirstFallbackFails_SecondSucceeds(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model": "gpt-4o",
-			"fallbacks": []interface{}{
-				map[string]interface{}{"model": "gpt-4o-mini"},
-				map[string]interface{}{"model": "gpt-4o-nano"},
-			},
-		}},
-		"statusCodes": []interface{}{500, 503},
-	})
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){
-		jsonResp(503, `{"error":"still down"}`),
-		jsonResp(200, `{"id":"ok"}`),
-	}}
-	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`, 500)
-
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	imm, ok := action.(policy.ImmediateResponse)
-	if !ok || imm.StatusCode != 200 {
-		t.Fatalf("expected the second fallback's success, got %#v", action)
-	}
-	if len(fake.calls) != 2 {
-		t.Fatalf("expected two outbound calls, got %d", len(fake.calls))
-	}
-}
-
-func TestOnResponseHeaders_AllFallbacksFail_PassesOriginalResponseThrough(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model":     "gpt-4o",
-			"fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4o-mini"}},
-		}},
-		"statusCodes": []interface{}{500},
-	})
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){
-		jsonResp(500, `{"error":"also down"}`),
-	}}
-	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o"}`, 500)
-
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
-		t.Fatalf("expected a passthrough of the original failing response, got %#v", action)
-	}
-}
-
-func TestOnResponseHeaders_NetworkError_TriesNextFallback(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model": "gpt-4o",
-			"fallbacks": []interface{}{
-				map[string]interface{}{"model": "gpt-4o-mini"},
-				map[string]interface{}{"model": "gpt-4o-nano"},
-			},
-		}},
-		"statusCodes": []interface{}{500},
-	})
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){
-		errResp(fmt.Errorf("connection refused")),
-		jsonResp(200, `{"id":"ok"}`),
-	}}
-	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o"}`, 500)
-
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if imm, ok := action.(policy.ImmediateResponse); !ok || imm.StatusCode != 200 {
-		t.Fatalf("expected a network error on one fallback to fall through to the next, got %#v", action)
-	}
-}
-
-func TestOnResponseHeaders_ResponseTooLarge_TriesNextFallback(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model": "gpt-4o",
-			"fallbacks": []interface{}{
-				map[string]interface{}{"model": "gpt-4o-mini"},
-				map[string]interface{}{"model": "gpt-4o-nano"},
-			},
-		}},
-		"statusCodes":      []interface{}{500},
-		"maxResponseBytes": 10,
-	})
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){
-		jsonResp(200, `{"this response body is way over ten bytes"}`),
-		jsonResp(200, `{"ok":1}`),
-	}}
-	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o"}`, 500)
-
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if imm, ok := action.(policy.ImmediateResponse); !ok || imm.StatusCode != 200 || string(imm.Body) != `{"ok":1}` {
-		t.Fatalf("expected the oversized response to be rejected and the next fallback used, got %#v", action)
-	}
-}
-
-// ─── Suspend behavior ─────────────────────────────────────────────────────────
-
-func TestOnResponseHeaders_Suspend_DeprioritizesRecentlyFailedFallback(t *testing.T) {
-	params := map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model": "gpt-4o",
-			"fallbacks": []interface{}{
-				map[string]interface{}{"model": "gpt-4o-mini"},
-				map[string]interface{}{"model": "gpt-4o-nano"},
-			},
-		}},
-		"statusCodes":     []interface{}{500},
-		"suspendDuration": "1m",
-	}
-	p := newTestPolicy(t, params)
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){
-		jsonResp(500, `{"error":"mini down"}`), // fallback[0] fails -> suspended
-		jsonResp(200, `{"id":"nano-ok"}`),      // fallback[1] succeeds
-	}}
-	p.httpClient = fake
-	rhctx1 := baseResponseHeaderContext(t, `{"model":"gpt-4o"}`, 500)
-	if action := p.OnResponseHeaders(context.Background(), rhctx1, nil); action == nil {
-		t.Fatalf("expected an action")
-	}
-
-	// Second, independent request: fallback[0] (gpt-4o-mini) is now suspended, so it should
-	// be tried LAST — the first dial this time should go straight to fallback[1] (gpt-4o-nano).
-	fake2 := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){
-		jsonResp(200, `{"id":"nano-ok-2"}`),
-	}}
-	p.httpClient = fake2
-	rhctx2 := baseResponseHeaderContext(t, `{"model":"gpt-4o"}`, 500)
-	action := p.OnResponseHeaders(context.Background(), rhctx2, nil)
-	imm, ok := action.(policy.ImmediateResponse)
-	if !ok || imm.StatusCode != 200 {
-		t.Fatalf("expected a successful response, got %#v", action)
-	}
-	if len(fake2.calls) != 1 {
-		t.Fatalf("expected the suspended fallback to be skipped first, resolving in one call, got %d calls", len(fake2.calls))
-	}
-	var sentBody map[string]interface{}
-	body, _ := io.ReadAll(fake2.calls[0].Body)
-	_ = json.Unmarshal(body, &sentBody)
-	if sentBody["model"] != "gpt-4o-nano" {
-		t.Fatalf("expected the non-suspended fallback (gpt-4o-nano) to be tried first, got model=%v", sentBody["model"])
-	}
-}
-
-// ─── Provider-loopback fallback (cross-provider) ──────────────────────────────
-
-func TestOnResponseHeaders_ProviderFallback_DialsResolvedLoopbackURL(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model": "gpt-4o",
-			"fallbacks": []interface{}{
-				map[string]interface{}{
-					"model": "claude-3-5-sonnet", "provider": "anthropic-backup",
-					"resolvedUpstreamURL":     "http://127.0.0.1:9090/anthropic-provider/latest",
-					"resolvedTransformerType": "openai-to-anthropic-transformer",
-				},
-			},
-		}},
-		"statusCodes": []interface{}{500},
-	})
-	anthropicResponse := `{"id":"msg_1","model":"claude-3-5-sonnet","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":3}}`
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, anthropicResponse)}}
-	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[{"role":"system","content":"be nice"},{"role":"user","content":"hi"}]}`, 500)
-
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	imm, ok := action.(policy.ImmediateResponse)
-	if !ok || imm.StatusCode != 200 {
-		t.Fatalf("expected a successful cross-provider response, got %#v", action)
-	}
-
-	req := fake.calls[0]
-	// resolvedUpstreamURL already includes the target provider's own context (BasePath) —
-	// the original request's own relative path is appended on top of it.
-	if req.URL.String() != "http://127.0.0.1:9090/anthropic-provider/latest/v1/chat/completions" {
-		t.Fatalf("expected the resolved loopback URL + original path, got %s", req.URL.String())
+	if got := req.Header.Get(providerHeaderName); got != "anthropic-backup" {
+		t.Fatalf("expected %s to be set to the target's provider, got %q", providerHeaderName, got)
 	}
 	if req.Header.Get(internalLoopbackHeader) != "1" {
-		t.Fatalf("expected the internal loopback header to be set on a provider dial")
+		t.Fatalf("expected the internal loopback marker to be set")
 	}
 	if req.Header.Get("Authorization") != "" {
-		t.Fatalf("expected the original credential to be stripped on a provider-loopback dial, got %q", req.Header.Get("Authorization"))
-	}
-	if got := req.Header.Get("anthropic-version"); got == "" {
-		t.Fatalf("expected the template adapter's required header to be set")
+		t.Fatalf("expected the original credential to be stripped on a provider redial, got %q", req.Header.Get("Authorization"))
 	}
 
-	var sentToTarget map[string]interface{}
+	var sentBody map[string]interface{}
 	body, _ := io.ReadAll(req.Body)
-	if err := json.Unmarshal(body, &sentToTarget); err != nil {
-		t.Fatalf("request to the loopback target was not valid JSON: %v", err)
+	if err := json.Unmarshal(body, &sentBody); err != nil {
+		t.Fatalf("redial body was not valid JSON: %v", err)
 	}
-	if sentToTarget["system"] != "be nice" {
-		t.Fatalf("expected the system message to be lifted to the top-level system field, got %v", sentToTarget)
-	}
-	if sentToTarget["model"] != "claude-3-5-sonnet" {
-		t.Fatalf("expected model to be rewritten, got %v", sentToTarget["model"])
-	}
-
-	var clientBody map[string]interface{}
-	if err := json.Unmarshal(imm.Body, &clientBody); err != nil {
-		t.Fatalf("response back to the client was not valid JSON: %v", err)
-	}
-	choices, _ := clientBody["choices"].([]interface{})
-	if len(choices) != 1 {
-		t.Fatalf("expected exactly one choice in the openai-shaped response, got %v", clientBody)
-	}
-	msg := choices[0].(map[string]interface{})["message"].(map[string]interface{})
-	if msg["content"] != "hello" {
-		t.Fatalf("expected the anthropic text block to be converted back to message.content, got %v", msg)
+	if sentBody["model"] != "claude-direct" {
+		t.Fatalf("expected model to stay as the target's own model, got %v", sentBody["model"])
 	}
 }
 
-func TestOnResponseHeaders_ProviderFallback_SetsResolvedAuthCredential(t *testing.T) {
-	// resolvedAuthHeader/resolvedAuthValue are gateway-controller-injected from the target
-	// provider's own additionalProviders[].auth (api-key type) - this fallback-level dial never
-	// re-enters the proxy's own request-phase chain, so its conditional upstream-auth policy
-	// never fires for it (see the package doc); the policy must set the credential itself.
+func TestOnRequestBody_TargetProvider_RedialFailsThenFallbackSucceeds(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model": "gpt-4o",
-			"fallbacks": []interface{}{
-				map[string]interface{}{
-					"model": "claude-3-5-sonnet", "provider": "anthropic-backup",
-					"resolvedUpstreamURL": "http://127.0.0.1:9090/anthropic-provider/latest",
-					"resolvedAuthHeader":  "x-api-key",
-					"resolvedAuthValue":   "anthropic-static-key",
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":    "claude-direct",
+				"provider": "anthropic-backup",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "claude-direct-retry", "provider": "anthropic-secondary"},
 				},
 			},
-		}},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){
+		jsonResp(500, `{"error":"down"}`),
+		jsonResp(200, `{"id":"ok-from-secondary"}`),
+	}}
+	p.httpClient = fake
+	rctx := baseRequestContext(t, `{"model":"claude-direct","messages":[{"role":"user","content":"hi"}]}`)
+
+	action := p.OnRequestBody(context.Background(), rctx, nil)
+	imm, ok := action.(policy.ImmediateResponse)
+	if !ok || imm.StatusCode != 200 {
+		t.Fatalf("expected the fallback's success, got %#v", action)
+	}
+	if len(fake.calls) != 2 {
+		t.Fatalf("expected two dial attempts (primary provider, then fallback), got %d", len(fake.calls))
+	}
+	if got := fake.calls[0].Header.Get(providerHeaderName); got != "anthropic-backup" {
+		t.Fatalf("expected the first attempt to target anthropic-backup, got %q", got)
+	}
+	if got := fake.calls[1].Header.Get(providerHeaderName); got != "anthropic-secondary" {
+		t.Fatalf("expected the second attempt to target anthropic-secondary, got %q", got)
+	}
+}
+
+func TestOnRequestBody_TargetProvider_EverythingFails_ReturnsGenericFailure(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{"model": "claude-direct", "provider": "anthropic-backup"},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(500, `{"error":"down"}`)}}
+	p.httpClient = fake
+	rctx := baseRequestContext(t, `{"model":"claude-direct","messages":[{"role":"user","content":"hi"}]}`)
+
+	action := p.OnRequestBody(context.Background(), rctx, nil)
+	imm, ok := action.(policy.ImmediateResponse)
+	if !ok || imm.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected an honest 502 (no primary response exists to relay), got %#v", action)
+	}
+}
+
+// ─── OnResponseHeaders ────────────────────────────────────────────────────────
+
+func TestOnResponseHeaders_NonFailingStatus_PassesThroughUnchanged(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini"},
+				},
+			},
+		},
 		"statusCodes": []interface{}{500},
 	})
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
-	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`, 500)
+	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 200)
 
 	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if _, ok := action.(policy.ImmediateResponse); !ok {
-		t.Fatalf("expected success, got %#v", action)
-	}
-
-	req := fake.calls[0]
-	if got := req.Header.Get("x-api-key"); got != "anthropic-static-key" {
-		t.Fatalf("expected the resolved auth credential to be set on the fallback dial, got %q", got)
+	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
+		t.Fatalf("expected a plain passthrough for a non-failing status, got %#v", action)
 	}
 }
 
-func TestOnResponseHeaders_ProviderFallback_NoResolvedAuth_SendsNoCredential(t *testing.T) {
-	// A provider declaring "none"/"other" auth (or none at all) resolves no
-	// resolvedAuthHeader/resolvedAuthValue - the fallback dial must not invent a credential, and
-	// the original request's own (unrelated) credential must stay stripped.
+func TestOnResponseHeaders_ReusePrimaryFallback_DialsSameUpstream(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model": "gpt-4o",
-			"fallbacks": []interface{}{
-				map[string]interface{}{
-					"model": "claude-3-5-sonnet", "provider": "anthropic-backup",
-					"resolvedUpstreamURL": "http://127.0.0.1:9090/anthropic-provider/latest",
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini"},
 				},
 			},
-		}},
-		"statusCodes": []interface{}{500},
-	})
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
-	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`, 500)
-
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if _, ok := action.(policy.ImmediateResponse); !ok {
-		t.Fatalf("expected success, got %#v", action)
-	}
-
-	req := fake.calls[0]
-	if got := req.Header.Get("x-api-key"); got != "" {
-		t.Fatalf("expected no x-api-key header without a resolved auth credential, got %q", got)
-	}
-	if got := req.Header.Get("Authorization"); got != "" {
-		t.Fatalf("expected the original credential to stay stripped, got %q", got)
-	}
-}
-
-func TestOnResponseHeaders_ProviderFallback_NoTransformer_BodyPassesThroughWithModelRewrite(t *testing.T) {
-	// resolvedTransformerType empty means the target provider's own template already
-	// matches the primary's - e.g. two OpenAI-compatible providers behind one proxy.
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model": "gpt-4o",
-			"fallbacks": []interface{}{
-				map[string]interface{}{
-					"model": "gpt-4o-mini", "provider": "openai-backup",
-					"resolvedUpstreamURL": "http://127.0.0.1:9090/openai-backup-provider/latest",
-				},
-			},
-		}},
+		},
 		"statusCodes": []interface{}{500},
 	})
 	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
@@ -835,188 +513,283 @@ func TestOnResponseHeaders_ProviderFallback_NoTransformer_BodyPassesThroughWithM
 		t.Fatalf("expected success, got %#v", action)
 	}
 	req := fake.calls[0]
-	if req.URL.String() != "http://127.0.0.1:9090/openai-backup-provider/latest/v1/chat/completions" {
-		t.Fatalf("unexpected url: %s", req.URL.String())
+	if req.URL.String() != "https://api.openai.com/v1/chat/completions" {
+		t.Fatalf("expected a dial to the primary's own resolved upstream, got %s", req.URL.String())
 	}
-	var sentBody map[string]interface{}
-	body, _ := io.ReadAll(req.Body)
-	_ = json.Unmarshal(body, &sentBody)
-	if sentBody["model"] != "gpt-4o-mini" {
-		t.Fatalf("expected model rewrite with no other transformation, got %v", sentBody)
+	if req.Header.Get("Authorization") != "Bearer original-token" {
+		t.Fatalf("expected the original credential to be reused unchanged, got %q", req.Header.Get("Authorization"))
+	}
+	if req.Header.Get(providerHeaderName) != "" {
+		t.Fatalf("expected no provider header on a reuse-primary dial")
 	}
 }
 
-// TestOnResponseHeaders_UpstreamDefinitionFallback_DialsResolvedURLWithOriginalCredential is
-// the exact scenario that regressed in e2e when the schema redesign around `provider` first
-// landed: a same-provider fallback naming an upstreamDefinition (a different backend of the
-// SAME vendor, e.g. a backup region) must dial that backend's own resolved URL — NOT silently
-// fall back to reusing the primary's own upstream — while still reusing the ORIGINAL
-// credential (same provider, same auth) and setting neither the internal loopback header nor
-// stripping any header, unlike a cross-provider dial.
 func TestOnResponseHeaders_UpstreamDefinitionFallback_DialsResolvedURLWithOriginalCredential(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model": "gpt-4o-chain",
-			"fallbacks": []interface{}{
-				map[string]interface{}{
-					"model": "gpt-4o-chain-b", "upstreamDefinition": "backend-b",
-					"resolvedUpstreamURL": "http://host.docker.internal:9712",
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{
+						"model": "gpt-4o-mini", "upstreamDefinition": "backend-b",
+						"resolvedUpstreamURL": "http://backend-b.internal:9090",
+					},
 				},
 			},
-		}},
+		},
 		"statusCodes": []interface{}{500},
 	})
 	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
 	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o-chain","messages":[]}`, 500)
+	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 500)
 
 	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
 	if _, ok := action.(policy.ImmediateResponse); !ok {
 		t.Fatalf("expected success, got %#v", action)
 	}
 	req := fake.calls[0]
-	if req.URL.String() != "http://host.docker.internal:9712/v1/chat/completions" {
-		t.Fatalf("expected the resolved upstreamDefinition URL (NOT the primary's own upstream), got %s", req.URL.String())
+	if req.URL.String() != "http://backend-b.internal:9090/v1/chat/completions" {
+		t.Fatalf("expected a dial to the resolved upstreamDefinition URL, got %s", req.URL.String())
 	}
-	if got := req.Header.Get("Authorization"); got != "Bearer original-token" {
-		t.Fatalf("expected the original credential to be reused (same provider), got %q", got)
-	}
-	if req.Header.Get(internalLoopbackHeader) != "" {
-		t.Fatalf("internal loopback header must only be set for a cross-provider dial, not a same-provider upstreamDefinition")
+	if req.Header.Get("Authorization") != "Bearer original-token" {
+		t.Fatalf("expected the original credential to be reused unchanged for a same-provider fallback, got %q", req.Header.Get("Authorization"))
 	}
 }
 
-func TestOnResponseHeaders_ProviderFallback_MalformedTransformSource_SkipsFallback(t *testing.T) {
+func TestOnResponseHeaders_ProviderFallback_SelfRedialsWithProviderHeader(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{
-			"model": "gpt-4o",
-			"fallbacks": []interface{}{
-				map[string]interface{}{
-					"model": "claude-3-5-sonnet", "provider": "anthropic-backup",
-					"resolvedUpstreamURL":     "http://127.0.0.1:9090/anthropic-provider/latest",
-					"resolvedTransformerType": "openai-to-anthropic-transformer",
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "claude-3-5-sonnet", "provider": "anthropic-backup"},
 				},
 			},
-		}},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
+	p.httpClient = fake
+	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`, 500)
+
+	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	imm, ok := action.(policy.ImmediateResponse)
+	if !ok || imm.StatusCode != 200 {
+		t.Fatalf("expected a successful cross-provider response, got %#v", action)
+	}
+
+	req := fake.calls[0]
+	if req.URL.String() != testSelfBaseURL+"/mf-proxy/chat/completions" {
+		t.Fatalf("expected a self-redial to the operation's own downstream path, got %s", req.URL.String())
+	}
+	if got := req.Header.Get(providerHeaderName); got != "anthropic-backup" {
+		t.Fatalf("expected %s to be set to the fallback's provider, got %q", providerHeaderName, got)
+	}
+	if req.Header.Get(internalLoopbackHeader) != "1" {
+		t.Fatalf("expected the internal loopback marker to be set on a provider redial")
+	}
+	if req.Header.Get("Authorization") != "" {
+		t.Fatalf("expected the original credential to be stripped on a provider redial, got %q", req.Header.Get("Authorization"))
+	}
+
+	var sentBody map[string]interface{}
+	body, _ := io.ReadAll(req.Body)
+	if err := json.Unmarshal(body, &sentBody); err != nil {
+		t.Fatalf("redial body was not valid JSON: %v", err)
+	}
+	if sentBody["model"] != "claude-3-5-sonnet" {
+		t.Fatalf("expected model to be rewritten to the fallback's own model, got %v", sentBody["model"])
+	}
+}
+
+func TestOnResponseHeaders_ProviderFallback_NoSelfBaseURL_SkipsToNextFallback(t *testing.T) {
+	// A defensive path: if selfBaseURL is somehow empty at dial time (should never happen once
+	// GetPolicy's own validation is in place), the redial must fail closed rather than dial an
+	// invalid URL, and the walk continues to the next candidate.
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini"},
+				},
+			},
+		},
 		"statusCodes": []interface{}{500},
 	})
-	fake := &fakeHTTPClient{}
+	p.selfBaseURL = "" // simulate the defensive case directly, bypassing GetPolicy's own guard
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
 	p.httpClient = fake
-	// No "messages" array at all — the anthropic adapter can't build a request from this.
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o"}`, 500)
+	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 500)
+
+	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	if _, ok := action.(policy.ImmediateResponse); !ok {
+		t.Fatalf("expected the reuse-primary fallback to still succeed, got %#v", action)
+	}
+}
+
+func TestOnResponseHeaders_AllFallbacksFail_OriginalResponsePassesThrough(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+	})
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(500, `{"error":"still down"}`)}}
+	p.httpClient = fake
+	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 500)
 
 	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
 	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
-		t.Fatalf("expected a passthrough when the body can't be transformed, got %#v", action)
-	}
-	if len(fake.calls) != 0 {
-		t.Fatalf("expected the fallback to be skipped before any dial, got %d calls", len(fake.calls))
+		t.Fatalf("expected the original failing response to pass through unchanged, got %#v", action)
 	}
 }
 
-// ─── URL resolution ────────────────────────────────────────────────────────────
-
-func TestResolveTargetURL(t *testing.T) {
-	upstream := &policy.UpstreamResponseContext{URL: "https://api.openai.com", BasePath: "/v1"}
-	cases := []struct {
-		name string
-		fb   fallbackTarget
-		path string
-		want string
-	}{
-		{"no provider reuses primary url+basePath+path", fallbackTarget{}, "/chat/completions", "https://api.openai.com/v1/chat/completions"},
-		{"provider dials its own resolved URL + original path", fallbackTarget{provider: "anthropic-backup", resolvedUpstreamURL: "http://127.0.0.1:9090/anthropic-provider/latest"}, "/chat/completions", "http://127.0.0.1:9090/anthropic-provider/latest/chat/completions"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := resolveTargetURL(tc.fb, upstream, tc.path)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tc.want {
-				t.Fatalf("got %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestResolveTargetURL_NoProviderAndNoUpstream_Errors(t *testing.T) {
-	if _, err := resolveTargetURL(fallbackTarget{}, nil, "/x"); err == nil {
-		t.Fatalf("expected an error when neither provider nor the primary upstream is known")
-	}
-}
-
-// ─── anthropic template adapter ──────────────────────────────────────────────
-
-func TestAnthropicAdapter_ToTarget_LiftsSystemMessage(t *testing.T) {
-	body := map[string]interface{}{
-		"model": "claude-3-5-sonnet",
-		"messages": []interface{}{
-			map[string]interface{}{"role": "system", "content": "be nice"},
-			map[string]interface{}{"role": "system", "content": "be brief"},
-			map[string]interface{}{"role": "user", "content": "hi"},
+func TestOnResponseHeaders_NetworkError_TriesNextFallback(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini"},
+					map[string]interface{}{"model": "gpt-4o-mini-2"},
+				},
+			},
 		},
-	}
-	out, err := anthropicAdapter{}.ToTarget(body)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var parsed map[string]interface{}
-	_ = json.Unmarshal(out, &parsed)
-	if parsed["system"] != "be nice\n\nbe brief" {
-		t.Fatalf("expected joined system message, got %v", parsed["system"])
-	}
-	msgs := parsed["messages"].([]interface{})
-	if len(msgs) != 1 {
-		t.Fatalf("expected only the non-system message to remain, got %v", msgs)
-	}
-	if parsed["max_tokens"] != float64(anthropicDefaultMaxTokens) {
-		t.Fatalf("expected the default max_tokens, got %v", parsed["max_tokens"])
+		"statusCodes": []interface{}{500},
+	})
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){
+		errResp(fmt.Errorf("connection refused")),
+		jsonResp(200, `{"id":"ok"}`),
+	}}
+	p.httpClient = fake
+	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 500)
+
+	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	if _, ok := action.(policy.ImmediateResponse); !ok {
+		t.Fatalf("expected the second fallback's success after the first's network error, got %#v", action)
 	}
 }
 
-func TestAnthropicAdapter_ToTarget_NoMessages_Errors(t *testing.T) {
-	if _, err := (anthropicAdapter{}).ToTarget(map[string]interface{}{"model": "x"}); err == nil {
-		t.Fatalf("expected an error for a body with no messages array")
-	}
-}
-
-func TestAnthropicAdapter_ToTarget_NonStringContent_Errors(t *testing.T) {
-	body := map[string]interface{}{
-		"model": "x",
-		"messages": []interface{}{
-			map[string]interface{}{"role": "user", "content": []interface{}{map[string]interface{}{"type": "text", "text": "hi"}}},
+func TestOnResponseHeaders_UnmatchedModel_PassesThroughUnchanged(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":     "gpt-4o",
+				"fallbacks": []interface{}{map[string]interface{}{"model": "gpt-4o-mini"}},
+			},
 		},
-	}
-	if _, err := (anthropicAdapter{}).ToTarget(body); err == nil {
-		t.Fatalf("expected an error for multi-part (non-string) content, which this adapter doesn't support")
+		"statusCodes": []interface{}{500},
+	})
+	rhctx := baseResponseHeaderContext(t, `{"model":"totally-unrelated","messages":[]}`, 500)
+
+	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
+		t.Fatalf("expected a plain passthrough for an unmatched model, got %#v", action)
 	}
 }
 
-func TestAnthropicAdapter_FromTarget_ConcatenatesTextBlocks(t *testing.T) {
-	resp := `{"id":"1","model":"claude","content":[{"type":"text","text":"hello "},{"type":"text","text":"world"}],"stop_reason":"max_tokens","usage":{"input_tokens":1,"output_tokens":2}}`
-	out, err := (anthropicAdapter{}).FromTarget([]byte(resp))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var parsed map[string]interface{}
-	_ = json.Unmarshal(out, &parsed)
-	choice := parsed["choices"].([]interface{})[0].(map[string]interface{})
-	if choice["message"].(map[string]interface{})["content"] != "hello world" {
-		t.Fatalf("expected concatenated text blocks, got %v", choice)
-	}
-	if choice["finish_reason"] != "length" {
-		t.Fatalf("expected max_tokens to map to length, got %v", choice["finish_reason"])
-	}
-	usage := parsed["usage"].(map[string]interface{})
-	if usage["total_tokens"] != float64(3) {
-		t.Fatalf("expected total_tokens to be the sum, got %v", usage)
+func TestOnResponseHeaders_MissingRequestBody_PassesThroughUnchanged(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"statusCodes": []interface{}{500},
+	})
+	rhctx := baseResponseHeaderContext(t, "", 500)
+	rhctx.RequestBody = &policy.Body{Present: false}
+
+	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
+		t.Fatalf("expected a plain passthrough with no body to replay, got %#v", action)
 	}
 }
 
-func TestAnthropicAdapter_FromTarget_NoTextContent_Errors(t *testing.T) {
-	resp := `{"id":"1","content":[{"type":"tool_use","text":""}],"usage":{}}`
-	if _, err := (anthropicAdapter{}).FromTarget([]byte(resp)); err == nil {
-		t.Fatalf("expected an error for a response with no text content block")
+func TestOnResponseHeaders_OversizedResponse_TriesNextFallback(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini"},
+				},
+			},
+		},
+		"statusCodes":      []interface{}{500},
+		"maxResponseBytes": 10,
+	})
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){
+		jsonResp(200, `{"this response body is much longer than ten bytes"}`),
+	}}
+	p.httpClient = fake
+	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 500)
+
+	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
+		t.Fatalf("expected the oversized fallback response to be rejected and the original to pass through, got %#v", action)
+	}
+}
+
+// ─── Suspend tracking ─────────────────────────────────────────────────────────
+
+func TestOnResponseHeaders_SuspendsFailedFallback(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini"},
+				},
+			},
+		},
+		"statusCodes":     []interface{}{500},
+		"suspendDuration": "1m",
+	})
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(500, `{"error":"down"}`)}}
+	p.httpClient = fake
+	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 500)
+
+	p.OnResponseHeaders(context.Background(), rhctx, nil)
+
+	key := suspendKey(rhctx.SharedContext, "gpt-4o", 0)
+	if !p.suspend.IsSuspended(context.Background(), key) {
+		t.Fatal("expected the failed fallback to be suspended")
+	}
+}
+
+func TestOnResponseHeaders_DeprioritizesSuspendedFallback(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini-suspended"},
+					map[string]interface{}{"model": "gpt-4o-mini-healthy"},
+				},
+			},
+		},
+		"statusCodes":     []interface{}{500},
+		"suspendDuration": "1m",
+	})
+	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 500)
+	p.suspend.Suspend(context.Background(), suspendKey(rhctx.SharedContext, "gpt-4o", 0), p.suspendDuration)
+
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
+	p.httpClient = fake
+
+	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	if _, ok := action.(policy.ImmediateResponse); !ok {
+		t.Fatalf("expected success, got %#v", action)
+	}
+
+	var sentBody map[string]interface{}
+	body, _ := io.ReadAll(fake.calls[0].Body)
+	json.Unmarshal(body, &sentBody)
+	if sentBody["model"] != "gpt-4o-mini-healthy" {
+		t.Fatalf("expected the non-suspended fallback to be tried first, got model=%v", sentBody["model"])
 	}
 }

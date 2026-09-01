@@ -20,41 +20,45 @@
 // selected by matching the client's own request.body.model against a declared target.
 //
 // Mechanism (response-path retry — NOT Envoy aggregate-cluster/upstream-ext_proc): Envoy's
-// upstream ext_proc phase is alpha and has been ruled out for GA use. Every fallback attempt
-// is instead driven from OnResponseHeaders — a stable, GA downstream-phase hook with full
-// access to the original request snapshot and SharedContext — by making a direct outbound
-// call to the fallback target and, on success, returning that response via ImmediateResponse.
-// This mirrors oauth2-generator's own self-retry pattern, generalized into an N-long chain.
+// upstream ext_proc phase is alpha and has been ruled out for GA use. Every attempt this
+// policy originates itself — a target's own primary override or a fallback retry — is driven
+// from a direct outbound call and, on success, returned via ImmediateResponse. This mirrors
+// oauth2-generator's own self-retry pattern, generalized into an N-long chain.
 //
-// Cross-provider targets (a target/fallback declaring provider) never carry their own
-// url/auth/template. Every credential and wire-format conversion is sourced from the SAME
-// LlmProxy's already-configured additionalProviders entry, never re-typed here:
+// Cross-provider targets/fallbacks (declaring provider) never carry their own url/auth/
+// template. A provider reference is resolved entirely by a SELF-REDIAL: this policy dials its
+// OWN operation's externally-facing URL again (selfBaseURL + the original downstream path,
+// gateway-controller-injected — see llm_transformer.go) with the providerHeaderName header set
+// to the chosen provider id (dispatch.go). Because that's a genuinely fresh inbound request as
+// far as Envoy is concerned, it re-runs the FULL policy chain from scratch:
 //
-//   - A TARGET's own provider (the primary attempt for that target model) is handled by
-//     OnRequestBody redirecting via UpstreamName to the additionalProviders-derived
-//     UpstreamDefinition — a real, already-registered Envoy cluster, so this is a normal,
-//     GA-safe request-phase routing decision, not the blocked upstream-attempt mechanism.
-//     Setting SharedContext.Metadata["selected_provider"] alongside the redirect activates
-//     the SAME conditional auth/transformer policies gateway-controller already auto-injects
-//     for additionalProviders (see llm_transformer.go's proxyUpstreamAuthPolicy/
-//     proxyTransformerPolicy) — full auth AND template-conversion reuse, zero duplicated
-//     config, zero code here beyond the redirect itself.
-//   - A FALLBACK's own provider (a post-failure retry) can't use that trick — a response-phase
-//     retry can't set UpstreamName or re-enter the downstream chain. It instead dials the
-//     provider's own resolved loopback URL directly (resolvedUpstreamURL, injected by
-//     gateway-controller at registration time — see llm_transformer.go — never supplied by an
-//     operator). That loopback dial reaches the target provider's own fully-registered route,
-//     so its own auth applies itself with no credential handling here at all. Template
-//     conversion is the one piece that ISN'T free for a fallback: the conditional transformer
-//     policy is attached to the PROXY's own operation, which a raw response-phase dial never
-//     re-enters — so this policy still applies its own adapter (see templates.go), keyed by
-//     the SAME transformer-type string (resolvedTransformerType, e.g. "openai-to-anthropic-transformer")
-//     the platform already uses, not an ad hoc vendor name.
+//   - llm-header-router reads providerHeaderName and publishes SharedContext.Metadata
+//     ["selected_provider"] — in the request-HEADER phase, not body phase. That distinction
+//     matters: the provider's own conditional upstream-auth policy (a header-phase-only
+//     "set-headers" instance) evaluates its ExecutionCondition during the SAME header-phase
+//     pass, which completes and is sent back to Envoy before body-phase policies (this one
+//     included) ever run — so a redirect signal this policy could only ever produce in body
+//     phase (it has to see the client's "model" field first) would always be one phase too
+//     late for that gate. Publishing via a real header sidesteps the ordering problem instead
+//     of fighting it.
+//   - The matching openai-to-* translator and the provider's own conditional upstream-auth
+//     policy fire correctly as a result — full bidirectional body conversion and credential
+//     injection, done for real by the already-shipped, general-purpose policies that handle
+//     it for every other multi-provider proxy too. This policy never resolves or applies
+//     either itself, and carries no per-vendor adapter of its own.
 //
-// Consequence worth calling out explicitly: because there is no request-phase hook redirecting
-// a FALLBACK's dispatch (only a target's own primary attempt gets that), this policy cannot
-// skip a known-bad fallback ahead of time — suspend tracking below only ever deprioritizes a
-// recently-failed fallback within the walk that's already happening, never the primary.
+// upstreamDefinition references (same provider, a different backend of it — e.g. a backup
+// region) are unrelated to any of this: a target's own override still uses an in-process
+// UpstreamName redirect (no extra hop, no auth/template complexity since it's the same
+// provider), and a fallback's own reference dials its resolved URL directly, reusing the
+// original request's own credential unchanged.
+//
+// OnRequestBody's modelFailoverRedialHeader guard exists because a provider redial re-enters
+// this SAME operation, which still has this policy attached: without the guard, the redialed
+// request's own OnRequestBody pass would see the SAME unchanged client model and try to
+// redirect it all over again, forever. The guard's only job is breaking that recursion — a
+// client spoofing the header themselves just means failover doesn't apply to that one request,
+// never a routing or auth bypass (see dispatch.go).
 package modelfailover
 
 import (
@@ -62,6 +66,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -69,66 +74,49 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-// selectedProviderMetadataKey must match exactly what gateway-controller's
-// selectedProviderExecutionCondition (llm_transformer.go) compiles into every conditional
-// auth/transformer policy's CEL condition: request.Metadata['selected_provider'] == '<name>'.
-// Setting this key in SharedContext.Metadata is what activates those already-attached policy
-// instances for a target-level provider redirect.
-const selectedProviderMetadataKey = "selected_provider"
-
-// defaultMaxResponseBytes bounds a fallback dial's response body when no maxResponseBytes
-// param is configured. Mirrors the network-hardening requirement that every outbound read be
-// wrapped in a config-sourced ceiling (see go-network-service-hardening.md / file-access.md);
-// 10MiB matches the precedent set by oauth2-generator's own self-retry response cap.
+// defaultMaxResponseBytes bounds a dial's response body when no maxResponseBytes param is
+// configured. Mirrors the network-hardening requirement that every outbound read be wrapped in
+// a config-sourced ceiling (see go-network-service-hardening.md / file-access.md); 10MiB
+// matches the precedent set by oauth2-generator's own self-retry response cap.
 const defaultMaxResponseBytes = 10 << 20
 
-// defaultDialTimeout is used for a fallback dial when requestTimeout isn't configured.
+// defaultDialTimeout is used for a dial when requestTimeout isn't configured.
 const defaultDialTimeout = 10 * time.Second
+
+// noProviderAvailableBody is returned when a target's own provider override, and every one of
+// its own declared fallbacks, all fail — there is no "original" primary response to let through
+// unchanged (that's the whole reason this target declared an override in the first place), so
+// this is an honest, generic failure rather than a fabricated one.
+const noProviderAvailableBody = `{"error":{"message":"all configured providers for this model are unavailable","type":"upstream_error"}}`
 
 // fallbackTarget is one entry in a target group's own ordered fallback chain. provider and
 // upstreamDefinition are mutually exclusive; at most one is ever set.
 type fallbackTarget struct {
 	model string // model name to inject into the request body for this attempt
 
-	// provider is empty unless this fallback crosses providers. When set, it names an
-	// additionalProviders entry (id or `as` alias) on the SAME LlmProxy —
-	// resolvedUpstreamURL/resolvedTransformerType below are how that reference actually
-	// reaches this policy. Only resolvable on an LlmProxy.
+	// provider is empty unless this fallback crosses providers. When set, it names a
+	// provider id — resolved entirely via a self-redial with providerHeaderName set (see the
+	// package doc and dispatch.go's tryProviderRedial); gateway-controller only validates
+	// that this name is a real, declared provider, nothing more.
 	provider string
 
 	// upstreamDefinition is empty unless this fallback stays on the SAME provider but a
 	// DIFFERENT backend of it (e.g. a backup region) — a plain upstreamDefinition name
-	// declared on the same LlmProvider/LlmProxy. Same resolution mechanism as provider
-	// (resolvedUpstreamURL, gateway-controller-injected) but never carries a transformer:
-	// same provider means same wire format, by definition. Only resolvable on an LlmProvider
-	// (an LlmProxy has no native upstreamDefinitions of its own — see llm_transformer.go).
+	// declared on the same resource. resolvedUpstreamURL below is how this reference
+	// actually reaches this policy; never carries a translator, since same provider means
+	// same wire format by definition.
 	upstreamDefinition string
 
-	// resolvedUpstreamURL/resolvedTransformerType are populated ONLY when provider or
-	// upstreamDefinition is set, and ONLY by gateway-controller at registration time (see
-	// llm_transformer.go) — never supplied directly by an operator. resolvedUpstreamURL is
-	// the target's own base URL (e.g. "http://127.0.0.1:9090/anthropic-provider/latest" for a
-	// provider, or a plain upstream URL for an upstreamDefinition); this policy appends the
-	// operation's own relative path to it. resolvedTransformerType is only ever set for a
-	// provider (an upstreamDefinition is same-template by definition — no conversion needed).
-	resolvedUpstreamURL     string
-	resolvedTransformerType string
-
-	// resolvedAuthHeader/resolvedAuthValue carry a provider's own additionalProviders[].auth
-	// credential (api-key type only), gateway-controller-injected exactly like
-	// resolvedUpstreamURL/resolvedTransformerType above — never supplied directly by an
-	// operator. Only ever set for provider (an upstreamDefinition fallback reuses the original
-	// request's own credential unchanged, since same provider means same auth — see
-	// dispatch.go). Both empty means no api-key auth is declared for this provider (e.g. "none"
-	// or "other", the latter handled entirely by the operator's own attached policies).
-	resolvedAuthHeader string
-	resolvedAuthValue  string
+	// resolvedUpstreamURL is populated ONLY when upstreamDefinition is set, and ONLY by
+	// gateway-controller at registration time (see llm_transformer.go) — never supplied
+	// directly by an operator. It's upstreamDefinition's own resolved backend URL; this
+	// policy appends the operation's own relative path to it.
+	resolvedUpstreamURL string
 }
 
 // crossesProvider reports whether this fallback dials a genuinely different backend than the
 // operation's own default upstream — true for either provider or upstreamDefinition, false
-// for the bare "reuse the primary" case. Used to decide whether the original request's
-// credential should be stripped before replay (see dispatch.go).
+// for the bare "reuse the primary" case.
 func (fb fallbackTarget) crossesProvider() bool {
 	return fb.provider != "" || fb.upstreamDefinition != ""
 }
@@ -141,31 +129,30 @@ type targetGroup struct {
 	model string
 
 	// provider is empty unless this target's primary attempt itself crosses providers (no
-	// same-provider default makes sense for this model at all). When set, it names an
-	// additionalProviders entry — OnRequestBody redirects the PRIMARY attempt itself via
-	// UpstreamName plus SharedContext.Metadata["selected_provider"] (see the package doc).
-	// Only resolvable on an LlmProxy.
+	// same-provider default makes sense for this model at all). Resolved via the same
+	// self-redial mechanism as a fallback's own provider reference (see the package doc).
 	provider string
 
 	// upstreamDefinition is empty unless this target's primary attempt should go directly to
 	// a specific same-provider backend (a plain upstreamDefinition name) rather than the
-	// operation's own default upstream. Redirected via UpstreamName exactly like provider,
-	// but with no metadata write — there's no conditional auth/transformer policy to
-	// activate for a same-provider target. Only resolvable on an LlmProvider.
+	// operation's own default upstream. Redirected via an in-process UpstreamName redirect —
+	// same provider, so there's no auth/template complexity to route around.
 	upstreamDefinition string
 
 	fallbacks []fallbackTarget
 }
 
 // Policy holds the parsed, validated model-failover configuration consumed by OnRequestBody
-// (target-level provider redirect only) and OnResponseHeaders (the fallback retry loop).
+// (a target's own provider/upstreamDefinition override) and OnResponseHeaders (the fallback
+// retry loop after a normal primary failure).
 type Policy struct {
 	targets          []targetGroup
 	targetByModel    map[string]int // client-requested model name -> index into targets
 	statusCodes      map[int]struct{}
-	requestTimeout   time.Duration // per-fallback-dial timeout; 0 = use defaultDialTimeout
+	requestTimeout   time.Duration // per-attempt dial timeout; 0 = use defaultDialTimeout
 	suspendDuration  time.Duration // zero = suspend tracking disabled
 	maxResponseBytes int64
+	selfBaseURL      string // gateway-controller-injected; required only if any provider reference is configured
 	suspend          suspendStore
 	httpClient       retryHTTPClient
 }
@@ -179,6 +166,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 
 	targets := make([]targetGroup, 0, len(rawTargets))
 	targetByModel := make(map[string]int, len(rawTargets))
+	usesProvider := false
 	for i, raw := range rawTargets {
 		t, ok := raw.(map[string]interface{})
 		if !ok {
@@ -199,6 +187,9 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 			if err != nil {
 				return nil, err
 			}
+			if fb.provider != "" {
+				usesProvider = true
+			}
 			fallbacks = append(fallbacks, fb)
 		}
 
@@ -206,6 +197,20 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		upstreamDefinition := getStringParam(t, "upstreamDefinition")
 		if provider != "" && upstreamDefinition != "" {
 			return nil, fmt.Errorf("model-failover: targets[%d] sets both provider and upstreamDefinition — mutually exclusive", i)
+		}
+		if provider != "" {
+			usesProvider = true
+		}
+		if provider != "" || upstreamDefinition != "" {
+			// Once the target's own primary attempt is redirected, there is no primary
+			// response left for a bare "reuse the primary" fallback to reuse — require every
+			// one of its own fallbacks to cross providers too, rather than silently failing
+			// to resolve an upstream at dial time.
+			for j, fb := range fallbacks {
+				if !fb.crossesProvider() {
+					return nil, fmt.Errorf("model-failover: targets[%d] redirects its own primary attempt (provider/upstreamDefinition set) — targets[%d].fallbacks[%d] must also set provider or upstreamDefinition; there is no primary attempt left to reuse", i, i, j)
+				}
+			}
 		}
 
 		targetByModel[model] = len(targets)
@@ -235,7 +240,16 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		targetByModel:    targetByModel,
 		statusCodes:      statusCodes,
 		maxResponseBytes: defaultMaxResponseBytes,
+		selfBaseURL:      getStringParam(params, "selfBaseURL"),
 		httpClient:       newDefaultRetryHTTPClient(),
+	}
+	if usesProvider && p.selfBaseURL == "" {
+		// gateway-controller injects selfBaseURL unconditionally at registration time (see
+		// llm_transformer.go) whenever this policy is attached — reaching GetPolicy with a
+		// provider reference but no selfBaseURL means that step never ran (e.g. a hand-built
+		// params blob in a test, or a genuine registration-time regression) — fail closed
+		// rather than silently produce a provider redial with nowhere to dial.
+		return nil, fmt.Errorf("model-failover: a provider reference is configured but no selfBaseURL was provided — this must be injected by gateway-controller at registration time")
 	}
 
 	if raw := getStringParam(params, "requestTimeout"); raw != "" {
@@ -280,36 +294,23 @@ func parseFallbackTarget(raw interface{}, i, j int) (fallbackTarget, error) {
 
 	field := fmt.Sprintf("targets[%d].fallbacks[%d]", i, j)
 	result := fallbackTarget{
-		model:                   model,
-		provider:                getStringParam(fb, "provider"),
-		upstreamDefinition:      getStringParam(fb, "upstreamDefinition"),
-		resolvedUpstreamURL:     getStringParam(fb, "resolvedUpstreamURL"),
-		resolvedTransformerType: getStringParam(fb, "resolvedTransformerType"),
-		resolvedAuthHeader:      getStringParam(fb, "resolvedAuthHeader"),
-		resolvedAuthValue:       getStringParam(fb, "resolvedAuthValue"),
+		model:               model,
+		provider:            getStringParam(fb, "provider"),
+		upstreamDefinition:  getStringParam(fb, "upstreamDefinition"),
+		resolvedUpstreamURL: getStringParam(fb, "resolvedUpstreamURL"),
 	}
 
 	if result.provider != "" && result.upstreamDefinition != "" {
 		return fallbackTarget{}, fmt.Errorf("%s sets both provider and upstreamDefinition — mutually exclusive", field)
 	}
-	if (result.provider != "" || result.upstreamDefinition != "") && result.resolvedUpstreamURL == "" {
-		// gateway-controller resolves provider/upstreamDefinition -> resolvedUpstreamURL at
+	if result.upstreamDefinition != "" && result.resolvedUpstreamURL == "" {
+		// gateway-controller resolves upstreamDefinition -> resolvedUpstreamURL at
 		// registration time (see llm_transformer.go) for every fallback that declares one; an
 		// operator never sets resolvedUpstreamURL directly. Reaching GetPolicy with a
 		// reference set but nothing resolved means that registration-time step never ran
-		// (e.g. provider on an LlmProvider, or upstreamDefinition on an LlmProxy — neither has
-		// anything to resolve the reference against) — fail closed rather than silently
-		// produce a fallback with nowhere to dial.
-		name, kind := result.provider, "provider"
-		if result.upstreamDefinition != "" {
-			name, kind = result.upstreamDefinition, "upstreamDefinition"
-		}
-		return fallbackTarget{}, fmt.Errorf("%s.%s %q has no resolved upstream — %s is only resolvable against a matching declaration on this resource", field, kind, name, kind)
-	}
-	if result.resolvedTransformerType != "" {
-		if _, ok := templateAdapters[result.resolvedTransformerType]; !ok {
-			return fallbackTarget{}, fmt.Errorf("%s: transformer %q is not supported by this policy", field, result.resolvedTransformerType)
-		}
+		// (e.g. upstreamDefinition on an LlmProxy, which has no upstreamDefinitions of its
+		// own) — fail closed rather than silently produce a fallback with nowhere to dial.
+		return fallbackTarget{}, fmt.Errorf("%s.upstreamDefinition %q has no resolved upstream — upstreamDefinition is only resolvable against a matching declaration on this resource", field, result.upstreamDefinition)
 	}
 
 	return result, nil
@@ -342,11 +343,12 @@ func getStringParam(params map[string]interface{}, key string) string {
 	return ""
 }
 
-// Mode: needs the request body buffered — both to decide a target-level provider redirect in
-// OnRequestBody, and so it survives into ResponseHeaderContext.RequestBody for replay in
-// OnResponseHeaders. Never needs the response body — a failing response's body is discarded,
-// an ImmediateResponse replaces it before the kernel forwards a single byte downstream, so
-// this stays safe even when the primary's response would otherwise have been streamed.
+// Mode: needs the request body buffered — to decide a target-level provider/upstreamDefinition
+// redirect in OnRequestBody, and so it survives into ResponseHeaderContext.RequestBody for
+// replay in OnResponseHeaders. No request-HEADER phase hook: provider-selection publishing is
+// llm-header-router's job (see the package doc), not this policy's. Never needs the response
+// body — a failing response's body is discarded, an ImmediateResponse replaces it before the
+// kernel forwards a single byte downstream.
 func (p *Policy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeSkip,
@@ -373,11 +375,28 @@ func (p *Policy) dialTimeout() time.Duration {
 	return defaultDialTimeout
 }
 
-// OnRequestBody redirects a target's PRIMARY attempt to its own declared provider, if any —
-// the request-phase half of provider reuse (see the package doc). A target with no provider
-// (the common case) is left completely untouched: no mutation, no metadata write, exactly
-// today's default-routing behavior.
+// downstreamPath returns the original, pre-mutation client-facing request path (e.g.
+// "/mf-poc-proxy/chat/completions") — used to build a provider redial's own target URL, so
+// Envoy re-matches it against this SAME operation. Empty if unavailable.
+func downstreamPath(d *policy.DownstreamContext) string {
+	if d == nil || d.Request == nil {
+		return ""
+	}
+	return d.Request.Path
+}
+
+// OnRequestBody redirects a target's PRIMARY attempt to its own declared provider or
+// upstreamDefinition, if any — a target with neither (the common case) is left completely
+// untouched: no mutation, exactly today's default-routing behavior.
+//
+// The modelFailoverRedialHeader guard is checked first: it's set only on a provider redial
+// this policy originates itself (see dispatch.go), so seeing it here means this IS one of this
+// policy's own redials re-entering the operation, not a genuine client request — pass it
+// through untouched rather than trying to redirect it all over again (see the package doc).
 func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+	if rctx.Headers != nil && rctx.Headers.Has(modelFailoverRedialHeader) {
+		return policy.UpstreamRequestModifications{}
+	}
 	if rctx.Body == nil || !rctx.Body.Present {
 		return policy.UpstreamRequestModifications{}
 	}
@@ -396,21 +415,10 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 
 	switch {
 	case group.provider != "":
-		if rctx.SharedContext != nil {
-			if rctx.SharedContext.Metadata == nil {
-				rctx.SharedContext.Metadata = make(map[string]interface{})
-			}
-			// Activates gateway-controller's already-attached conditional auth/transformer
-			// policies for this provider (see llm_transformer.go's
-			// selectedProviderExecutionCondition) — this policy never resolves auth or
-			// applies a transform itself for a target-level redirect.
-			rctx.SharedContext.Metadata[selectedProviderMetadataKey] = group.provider
-		}
-		upstreamName := group.provider
-		return policy.UpstreamRequestModifications{UpstreamName: &upstreamName}
+		return p.redirectTargetProvider(ctx, rctx, group, decoded)
 
 	case group.upstreamDefinition != "":
-		// Same-provider redirect — no conditional policy to activate, so no metadata write.
+		// Same-provider redirect — plain in-process routing, no auth/template complexity.
 		upstreamName := group.upstreamDefinition
 		return policy.UpstreamRequestModifications{UpstreamName: &upstreamName}
 
@@ -419,12 +427,46 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 	}
 }
 
-// OnResponseHeaders drives the fallback retry loop. On a response whose status matches
-// statusCodes, it walks the matched target group's fallback chain — skipping any fallback
-// currently suspended — making a direct outbound call per candidate until one succeeds
-// (returned via ImmediateResponse) or the chain is exhausted (the original failing response
-// passes through unchanged). A request whose model doesn't match any declared target, or
-// whose status doesn't match statusCodes, is untouched.
+// redirectTargetProvider handles a target whose own primary attempt crosses providers: try the
+// declared provider via a self-redial, and if that fails, walk the target's own fallback chain
+// (GetPolicy already requires every one of those to cross providers too — see the package
+// doc). If nothing succeeds, there is no sensible default to fall through to (that's why this
+// target declared an override in the first place), so this returns an honest, generic failure
+// rather than fabricating or silently passing through an unrelated response.
+func (p *Policy) redirectTargetProvider(ctx context.Context, rctx *policy.RequestContext, group targetGroup, decoded map[string]interface{}) policy.RequestAction {
+	path := downstreamPath(rctx.Downstream)
+	if resp, ok := p.tryProviderRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, group.provider, group.model, decoded); ok {
+		return resp
+	}
+
+	order := p.orderedFallbackIndices(ctx, rctx.SharedContext, group)
+	for _, idx := range order {
+		fb := group.fallbacks[idx]
+		// fb always crossesProvider() here — GetPolicy rejects a bare "reuse primary"
+		// fallback under a target that itself redirects.
+		resp, ok := p.tryFallbackEntry(ctx, p.selfBaseURL, path, rctx.Path, rctx.Method, rctx.Headers, nil, fb, decoded)
+		if !ok {
+			if p.suspendDuration > 0 {
+				p.suspend.Suspend(ctx, suspendKey(rctx.SharedContext, group.model, idx), p.suspendDuration)
+			}
+			continue
+		}
+		return resp
+	}
+
+	return policy.ImmediateResponse{
+		StatusCode: http.StatusBadGateway,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Body:       []byte(noProviderAvailableBody),
+	}
+}
+
+// OnResponseHeaders drives the fallback retry loop after a NORMAL primary attempt has already
+// failed. On a response whose status matches statusCodes, it walks the matched target group's
+// fallback chain — skipping any fallback currently suspended — making a direct outbound call
+// per candidate until one succeeds (returned via ImmediateResponse) or the chain is exhausted
+// (the original failing response passes through unchanged). A request whose model doesn't
+// match any declared target, or whose status doesn't match statusCodes, is untouched.
 func (p *Policy) OnResponseHeaders(ctx context.Context, rhctx *policy.ResponseHeaderContext, _ map[string]interface{}) policy.ResponseHeaderAction {
 	if _, failing := p.statusCodes[rhctx.ResponseStatus]; !failing {
 		return policy.DownstreamResponseHeaderModifications{}
@@ -446,11 +488,12 @@ func (p *Policy) OnResponseHeaders(ctx context.Context, rhctx *policy.ResponseHe
 		return policy.DownstreamResponseHeaderModifications{}
 	}
 
+	path := downstreamPath(rhctx.Downstream)
 	order := p.orderedFallbackIndices(ctx, rhctx.SharedContext, group)
 	for _, idx := range order {
 		fb := group.fallbacks[idx]
 
-		resp, ok := p.tryFallback(ctx, rhctx, group, fb, originalBody)
+		resp, ok := p.tryFallbackEntry(ctx, p.selfBaseURL, path, rhctx.RequestPath, rhctx.RequestMethod, rhctx.RequestHeaders, rhctx.Upstream, fb, originalBody)
 		if !ok {
 			if p.suspendDuration > 0 {
 				p.suspend.Suspend(ctx, suspendKey(rhctx.SharedContext, group.model, idx), p.suspendDuration)
@@ -467,9 +510,7 @@ func (p *Policy) OnResponseHeaders(ctx context.Context, rhctx *policy.ResponseHe
 
 // orderedFallbackIndices returns the group's fallback indices in declared order, with any
 // currently-suspended index moved after every non-suspended one — still tried eventually
-// (never dropped outright), just deprioritized. Suspend tracking only ever applies to
-// fallbacks, never the primary: see the package doc for why a fallback (unlike a target's own
-// provider) can't be redirected ahead of time under this mechanism.
+// (never dropped outright), just deprioritized.
 func (p *Policy) orderedFallbackIndices(ctx context.Context, shared *policy.SharedContext, group targetGroup) []int {
 	n := len(group.fallbacks)
 	order := make([]int, 0, n)

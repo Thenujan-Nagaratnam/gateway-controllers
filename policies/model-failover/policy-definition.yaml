@@ -2,20 +2,23 @@ name: model-failover
 version: v0.1.0
 description: |
   Transparently retries a failed LLM request against an ordered fallback chain, selected by
-  matching the client's own request.body.model against a declared target. Retries are driven
-  entirely from the response path (a direct outbound call per fallback attempt) rather than
-  Envoy's native retry/aggregate-cluster mechanism.
+  matching the client's own request.body.model against a declared target. A target's own
+  primary attempt, and every fallback attempt, is driven from a direct outbound call this
+  policy makes itself rather than Envoy's native retry/aggregate-cluster mechanism.
 
   A target or fallback with neither provider nor upstreamDefinition set stays on the same
   backend the operation already uses (the common case: a different model on the same
   upstream). upstreamDefinition names a same-provider backend declared on this same resource's
-  own spec.upstreamDefinitions (e.g. a backup region) - only resolvable on an LlmProvider.
-  provider names an entry declared on the SAME LlmProxy's spec.additionalProviders - no
-  separate url/auth/template is ever configured on this policy itself, so a cross-provider
-  fallback reuses that provider's own already-configured credential and template, never
-  re-typed here - only resolvable on an LlmProxy. provider and upstreamDefinition are mutually
-  exclusive on any one target/fallback; a reference this resource can't resolve (provider on
-  an LlmProvider, or upstreamDefinition on an LlmProxy) is rejected at registration time.
+  own spec.upstreamDefinitions (e.g. a backup region) - the original request's own credential
+  is reused unchanged, since it's still the same provider.
+
+  provider names a provider id this proxy can route to via a header-based router policy (e.g.
+  llm-header-router) attached to the same operation. No separate url/auth/template is ever
+  configured on this policy itself: it resolves a provider reference by dialing this SAME
+  operation's own URL again with the router's header set to the chosen provider id, so the
+  redialed request re-runs the full policy chain and gets its credential injection and
+  request/response body translation from the same already-attached, general-purpose policies
+  that handle it for every other multi-provider proxy - never resolved or applied here.
 
   A request for a model that isn't declared as any target passes through completely untouched
   (no mutation, no retry); if that then fails, no failover applies.
@@ -47,18 +50,21 @@ parameters:
           provider:
             type: string
             description: |
-              Name of an entry in this LlmProxy's own spec.additionalProviders. Omit for the
-              common case (this target's primary attempt uses the operation's own default
-              upstream). When set, the target's PRIMARY attempt itself is redirected to that
-              provider - required when the operation's own default upstream can't serve this
-              model at all. Mutually exclusive with upstreamDefinition.
+              A provider id this proxy can route to via a header-based router policy attached
+              to the same operation. Omit for the common case (this target's primary attempt
+              uses the operation's own default upstream). When set, the target's PRIMARY
+              attempt itself is redirected there - required when the operation's own default
+              upstream can't serve this model at all. Mutually exclusive with
+              upstreamDefinition. A target that sets this must have every one of its own
+              fallbacks also set provider or upstreamDefinition - there is no primary attempt
+              left for a bare fallback to reuse once the primary itself is redirected.
           upstreamDefinition:
             type: string
             description: |
               Name of an entry in this LlmProvider's own spec.upstreamDefinitions. Omit for
               the common case (this target's primary attempt uses the operation's own default
               upstream). When set, the target's PRIMARY attempt itself is redirected there.
-              Mutually exclusive with provider.
+              Mutually exclusive with provider. Same fallback requirement as provider above.
           fallbacks:
             type: array
             x-wso2-policy-advanced-param: false
@@ -79,10 +85,10 @@ parameters:
                 provider:
                   type: string
                   description: |
-                    Name of an entry in this LlmProxy's own spec.additionalProviders. Omit for
-                    the common case (this fallback reuses the same provider as its own
-                    target - same backend, just a different model). Mutually exclusive with
-                    upstreamDefinition.
+                    A provider id this proxy can route to via a header-based router policy
+                    attached to the same operation. Omit for the common case (this fallback
+                    reuses the same provider as its own target - same backend, just a
+                    different model). Mutually exclusive with upstreamDefinition.
                 upstreamDefinition:
                   type: string
                   description: |
@@ -102,7 +108,7 @@ parameters:
     requestTimeout:
       type: string
       x-wso2-policy-advanced-param: true
-      description: Per-fallback-dial timeout (e.g. "10s"). Defaults to 10s when unset.
+      description: Per-attempt dial timeout (e.g. "10s"). Defaults to 10s when unset.
     suspendDuration:
       type: string
       x-wso2-policy-advanced-param: true
@@ -113,4 +119,4 @@ parameters:
     maxResponseBytes:
       type: integer
       x-wso2-policy-advanced-param: true
-      description: Per-fallback-dial response size ceiling in bytes. Defaults to 10MiB when unset.
+      description: Per-attempt response size ceiling in bytes. Defaults to 10MiB when unset.
