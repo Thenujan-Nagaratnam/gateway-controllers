@@ -1,0 +1,116 @@
+name: model-failover
+version: v0.1.0
+description: |
+  Transparently retries a failed LLM request against an ordered fallback chain, selected by
+  matching the client's own request.body.model against a declared target. Retries are driven
+  entirely from the response path (a direct outbound call per fallback attempt) rather than
+  Envoy's native retry/aggregate-cluster mechanism.
+
+  A target or fallback with neither provider nor upstreamDefinition set stays on the same
+  backend the operation already uses (the common case: a different model on the same
+  upstream). upstreamDefinition names a same-provider backend declared on this same resource's
+  own spec.upstreamDefinitions (e.g. a backup region) - only resolvable on an LlmProvider.
+  provider names an entry declared on the SAME LlmProxy's spec.additionalProviders - no
+  separate url/auth/template is ever configured on this policy itself, so a cross-provider
+  fallback reuses that provider's own already-configured credential and template, never
+  re-typed here - only resolvable on an LlmProxy. provider and upstreamDefinition are mutually
+  exclusive on any one target/fallback; a reference this resource can't resolve (provider on
+  an LlmProvider, or upstreamDefinition on an LlmProxy) is rejected at registration time.
+
+  A request for a model that isn't declared as any target passes through completely untouched
+  (no mutation, no retry); if that then fails, no failover applies.
+
+parameters:
+  type: object
+  additionalProperties: false
+  required:
+    - targets
+    - statusCodes
+  properties:
+    targets:
+      type: array
+      minItems: 1
+      x-wso2-policy-advanced-param: false
+      description: |
+        One entry per independently-selectable target model. The client's own
+        request.body.model must equal a target's model to select that target's whole chain.
+      items:
+        type: object
+        additionalProperties: false
+        required:
+          - model
+        properties:
+          model:
+            type: string
+            minLength: 1
+            description: The client-requested model name that selects this target.
+          provider:
+            type: string
+            description: |
+              Name of an entry in this LlmProxy's own spec.additionalProviders. Omit for the
+              common case (this target's primary attempt uses the operation's own default
+              upstream). When set, the target's PRIMARY attempt itself is redirected to that
+              provider - required when the operation's own default upstream can't serve this
+              model at all. Mutually exclusive with upstreamDefinition.
+          upstreamDefinition:
+            type: string
+            description: |
+              Name of an entry in this LlmProvider's own spec.upstreamDefinitions. Omit for
+              the common case (this target's primary attempt uses the operation's own default
+              upstream). When set, the target's PRIMARY attempt itself is redirected there.
+              Mutually exclusive with provider.
+          fallbacks:
+            type: array
+            x-wso2-policy-advanced-param: false
+            description: |
+              This target's own ordered fallback chain, tried in order (skipping any
+              currently-suspended entry) if the primary request fails. May be empty or
+              omitted: a target with no fallbacks is just routed plainly, with no failover.
+            items:
+              type: object
+              additionalProperties: false
+              required:
+                - model
+              properties:
+                model:
+                  type: string
+                  minLength: 1
+                  description: Model name injected into the request body for this fallback attempt.
+                provider:
+                  type: string
+                  description: |
+                    Name of an entry in this LlmProxy's own spec.additionalProviders. Omit for
+                    the common case (this fallback reuses the same provider as its own
+                    target - same backend, just a different model). Mutually exclusive with
+                    upstreamDefinition.
+                upstreamDefinition:
+                  type: string
+                  description: |
+                    Name of an entry in this LlmProvider's own spec.upstreamDefinitions - a
+                    same-provider backend (e.g. a backup region). Omit for the common case
+                    (this fallback reuses the same backend as its own target). Mutually
+                    exclusive with provider.
+    statusCodes:
+      type: array
+      minItems: 1
+      x-wso2-policy-advanced-param: false
+      description: Response status codes that trigger failover to the next target in whichever chain matched.
+      items:
+        type: integer
+        minimum: 100
+        maximum: 599
+    requestTimeout:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: Per-fallback-dial timeout (e.g. "10s"). Defaults to 10s when unset.
+    suspendDuration:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: |
+        How long a failed fallback is deprioritized for future requests to its own chain (e.g.
+        "30s"). Omit to disable suspend tracking entirely. Never applies to a target's own
+        primary attempt.
+    maxResponseBytes:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: Per-fallback-dial response size ceiling in bytes. Defaults to 10MiB when unset.

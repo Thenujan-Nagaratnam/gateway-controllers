@@ -36,3 +36,7 @@ policy-release-status.csv
 # Python caches
 __pycache__/
 *.pyc
+
+backup/**
+**/e2e/**
+test/**
