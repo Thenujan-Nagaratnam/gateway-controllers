@@ -158,15 +158,17 @@ func TestGetPolicy_DuplicateTargetModel_Errors(t *testing.T) {
 	}
 }
 
-func TestGetPolicy_TargetLevelProvider_RequiresSelfBaseURL(t *testing.T) {
-	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+func TestGetPolicy_TargetLevelProvider_NoSelfBaseURL_DefaultsRatherThanErrors(t *testing.T) {
+	// This policy is standalone — gateway-controller never injects selfBaseURL (see the
+	// package doc) — so an omitted selfBaseURL must default, never fail registration.
+	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{"model": "claude-direct", "provider": "anthropic-backup"},
 		},
 		"statusCodes": []interface{}{500},
 	})
-	if err == nil {
-		t.Fatal("expected an error when a provider reference is configured with no selfBaseURL")
+	if p.selfBaseURL != defaultSelfBaseURL {
+		t.Fatalf("expected selfBaseURL to default to %q, got %q", defaultSelfBaseURL, p.selfBaseURL)
 	}
 }
 
@@ -196,13 +198,13 @@ func TestGetPolicy_TargetProviderAndUpstreamDefinition_MutuallyExclusive(t *test
 	}
 }
 
-func TestGetPolicy_FallbackProviderAndUpstreamDefinition_MutuallyExclusive(t *testing.T) {
+func TestGetPolicy_FallbackProviderAndBackendURL_MutuallyExclusive(t *testing.T) {
 	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
 				"model": "gpt-4o",
 				"fallbacks": []interface{}{
-					map[string]interface{}{"model": "x", "provider": "a", "upstreamDefinition": "b"},
+					map[string]interface{}{"model": "x", "provider": "a", "backendURL": "http://b.internal"},
 				},
 			},
 		},
@@ -210,30 +212,33 @@ func TestGetPolicy_FallbackProviderAndUpstreamDefinition_MutuallyExclusive(t *te
 		"selfBaseURL": testSelfBaseURL,
 	})
 	if err == nil {
-		t.Fatal("expected an error when both provider and upstreamDefinition are set on a fallback")
+		t.Fatal("expected an error when both provider and backendURL are set on a fallback")
 	}
 }
 
-func TestGetPolicy_FallbackUpstreamDefinition_RequiresResolvedURL(t *testing.T) {
-	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+func TestGetPolicy_FallbackBackendURL_ParsesDirectlyNoResolution(t *testing.T) {
+	// backendURL is the operator-provided raw URL itself — no gateway-controller resolution
+	// step exists for it at all, unlike the old upstreamDefinition-by-reference design.
+	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
 				"model": "gpt-4o",
 				"fallbacks": []interface{}{
-					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "backend-b"},
+					map[string]interface{}{"model": "gpt-4o-mini", "backendURL": "http://backend-b.internal:9090"},
 				},
 			},
 		},
 		"statusCodes": []interface{}{500},
 	})
-	if err == nil {
-		t.Fatal("expected an error when upstreamDefinition has no resolvedUpstreamURL")
+	fb := p.targets[0].fallbacks[0]
+	if fb.backendURL != "http://backend-b.internal:9090" {
+		t.Fatalf("expected backendURL to be taken as-is, got %+v", fb)
 	}
 }
 
-func TestGetPolicy_FallbackProvider_DoesNotRequireResolvedURL(t *testing.T) {
-	// Unlike upstreamDefinition, a fallback-level provider reference resolves entirely via
-	// self-redial — it never needs a gateway-controller-resolved URL of its own.
+func TestGetPolicy_FallbackProvider_NoBackendURL(t *testing.T) {
+	// A fallback-level provider reference resolves entirely via self-redial — it never
+	// carries a backendURL of its own.
 	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
@@ -247,8 +252,8 @@ func TestGetPolicy_FallbackProvider_DoesNotRequireResolvedURL(t *testing.T) {
 		"selfBaseURL": testSelfBaseURL,
 	})
 	fb := p.targets[0].fallbacks[0]
-	if fb.provider != "anthropic-backup" || fb.resolvedUpstreamURL != "" {
-		t.Fatalf("expected a bare provider reference with no resolvedUpstreamURL, got %+v", fb)
+	if fb.provider != "anthropic-backup" || fb.backendURL != "" {
+		t.Fatalf("expected a bare provider reference with no backendURL, got %+v", fb)
 	}
 }
 
@@ -400,8 +405,8 @@ func TestOnRequestBody_TargetProvider_SuccessfulRedial(t *testing.T) {
 	if req.Header.Get(internalLoopbackHeader) != "1" {
 		t.Fatalf("expected the internal loopback marker to be set")
 	}
-	if req.Header.Get("Authorization") != "" {
-		t.Fatalf("expected the original credential to be stripped on a provider redial, got %q", req.Header.Get("Authorization"))
+	if req.Header.Get("Authorization") != "Bearer original-token" {
+		t.Fatalf("expected the original credential to ride along on the redial (needed for the operation's own downstream auth), got %q", req.Header.Get("Authorization"))
 	}
 
 	var sentBody map[string]interface{}
@@ -513,8 +518,8 @@ func TestOnResponseHeaders_ReusePrimaryFallback_DialsSameUpstream(t *testing.T) 
 		t.Fatalf("expected success, got %#v", action)
 	}
 	req := fake.calls[0]
-	if req.URL.String() != "https://api.openai.com/v1/chat/completions" {
-		t.Fatalf("expected a dial to the primary's own resolved upstream, got %s", req.URL.String())
+	if req.URL.String() != "https://api.openai.com/chat/completions" {
+		t.Fatalf("expected a dial to the primary's own resolved upstream at the operation-relative path (not the full downstream path), got %s", req.URL.String())
 	}
 	if req.Header.Get("Authorization") != "Bearer original-token" {
 		t.Fatalf("expected the original credential to be reused unchanged, got %q", req.Header.Get("Authorization"))
@@ -524,15 +529,14 @@ func TestOnResponseHeaders_ReusePrimaryFallback_DialsSameUpstream(t *testing.T) 
 	}
 }
 
-func TestOnResponseHeaders_UpstreamDefinitionFallback_DialsResolvedURLWithOriginalCredential(t *testing.T) {
+func TestOnResponseHeaders_BackendURLFallback_DialsItWithOriginalCredential(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
 				"model": "gpt-4o",
 				"fallbacks": []interface{}{
 					map[string]interface{}{
-						"model": "gpt-4o-mini", "upstreamDefinition": "backend-b",
-						"resolvedUpstreamURL": "http://backend-b.internal:9090",
+						"model": "gpt-4o-mini", "backendURL": "http://backend-b.internal:9090",
 					},
 				},
 			},
@@ -548,8 +552,8 @@ func TestOnResponseHeaders_UpstreamDefinitionFallback_DialsResolvedURLWithOrigin
 		t.Fatalf("expected success, got %#v", action)
 	}
 	req := fake.calls[0]
-	if req.URL.String() != "http://backend-b.internal:9090/v1/chat/completions" {
-		t.Fatalf("expected a dial to the resolved upstreamDefinition URL, got %s", req.URL.String())
+	if req.URL.String() != "http://backend-b.internal:9090/chat/completions" {
+		t.Fatalf("expected a dial to backendURL at the operation-relative path (not the full downstream path), got %s", req.URL.String())
 	}
 	if req.Header.Get("Authorization") != "Bearer original-token" {
 		t.Fatalf("expected the original credential to be reused unchanged for a same-provider fallback, got %q", req.Header.Get("Authorization"))
@@ -589,8 +593,8 @@ func TestOnResponseHeaders_ProviderFallback_SelfRedialsWithProviderHeader(t *tes
 	if req.Header.Get(internalLoopbackHeader) != "1" {
 		t.Fatalf("expected the internal loopback marker to be set on a provider redial")
 	}
-	if req.Header.Get("Authorization") != "" {
-		t.Fatalf("expected the original credential to be stripped on a provider redial, got %q", req.Header.Get("Authorization"))
+	if req.Header.Get("Authorization") != "Bearer original-token" {
+		t.Fatalf("expected the original credential to ride along on the redial (needed for the operation's own downstream auth), got %q", req.Header.Get("Authorization"))
 	}
 
 	var sentBody map[string]interface{}
@@ -604,9 +608,9 @@ func TestOnResponseHeaders_ProviderFallback_SelfRedialsWithProviderHeader(t *tes
 }
 
 func TestOnResponseHeaders_ProviderFallback_NoSelfBaseURL_SkipsToNextFallback(t *testing.T) {
-	// A defensive path: if selfBaseURL is somehow empty at dial time (should never happen once
-	// GetPolicy's own validation is in place), the redial must fail closed rather than dial an
-	// invalid URL, and the walk continues to the next candidate.
+	// A defensive path: GetPolicy always defaults selfBaseURL, but if it's somehow empty at
+	// dial time anyway, the redial must fail closed rather than dial an invalid URL, and the
+	// walk continues to the next candidate.
 	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
