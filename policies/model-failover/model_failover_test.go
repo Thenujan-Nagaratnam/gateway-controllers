@@ -218,6 +218,45 @@ func TestGetPolicy_FallbackProvider_ParsesCorrectly(t *testing.T) {
 	}
 }
 
+func TestGetPolicy_FallbackUpstreamDefinition_ParsesCorrectly(t *testing.T) {
+	// A fallback-level upstreamDefinition (same provider, different backend) resolves via a
+	// self-redial carrying modelFailoverUpstreamDefHeader — never a raw URL, never resolved by
+	// this policy itself.
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o", "upstreamDefinition": "backend-b"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+	})
+	fb := p.targets[0].fallbacks[0]
+	if fb.upstreamDefinition != "backend-b" || fb.provider != "" {
+		t.Fatalf("expected upstreamDefinition to be parsed with no provider set, got %+v", fb)
+	}
+}
+
+func TestGetPolicy_FallbackProviderAndUpstreamDefinition_MutuallyExclusive(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "x", "provider": "a", "upstreamDefinition": "backend-b"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	if err == nil {
+		t.Fatal("expected an error when both provider and upstreamDefinition are set on a fallback")
+	}
+}
+
 func TestGetPolicy_TargetRedirectsOwnPrimary_RequiresFallbacksToCrossProvider(t *testing.T) {
 	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
 		"targets": []interface{}{
@@ -256,6 +295,27 @@ func TestGetPolicy_TargetRedirectsOwnPrimary_CrossingFallback_Succeeds(t *testin
 	}
 }
 
+func TestGetPolicy_TargetRedirectsOwnPrimary_UpstreamDefinitionFallback_Succeeds(t *testing.T) {
+	// upstreamDefinition also has an explicit, well-defined redirect target of its own — same
+	// acceptance as a crossing (provider) fallback under a target that redirects its own primary.
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model":    "claude-direct",
+				"provider": "anthropic-backup",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "claude-direct-retry", "upstreamDefinition": "backend-b"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	if len(p.targets[0].fallbacks) != 1 {
+		t.Fatalf("expected the upstreamDefinition fallback to be accepted, got %+v", p.targets[0])
+	}
+}
+
 // ─── OnRequestBody ────────────────────────────────────────────────────────────
 
 func TestOnRequestBody_ModelFailoverRedialHeader_PassesThroughUnchanged(t *testing.T) {
@@ -278,6 +338,28 @@ func TestOnRequestBody_ModelFailoverRedialHeader_PassesThroughUnchanged(t *testi
 	mods, ok := action.(policy.UpstreamRequestModifications)
 	if !ok || mods.UpstreamName != nil {
 		t.Fatalf("expected a plain passthrough with no redirect, got %#v", action)
+	}
+}
+
+func TestOnRequestBody_RedialWithUpstreamDefHeader_AppliesUpstreamNameRedirect(t *testing.T) {
+	// A same-provider fallback's own upstreamDefinition has no pre-dial moment to apply its
+	// redirect directly (the primary already failed by the time a fallback runs) — it rides the
+	// self-redial and applies the swap here instead, on the redial's own fresh pass. This is the
+	// one deliberate exception to the redial guard's usual blanket passthrough.
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"statusCodes": []interface{}{500},
+	})
+	rctx := baseRequestContext(t, `{"model":"gpt-4o","messages":[]}`)
+	rctx.Headers = policy.NewHeaders(map[string][]string{
+		modelFailoverRedialHeader:      {"1"},
+		modelFailoverUpstreamDefHeader: {"backend-b"},
+	})
+
+	action := p.OnRequestBody(context.Background(), rctx, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok || mods.UpstreamName == nil || *mods.UpstreamName != "backend-b" {
+		t.Fatalf("expected an UpstreamName redirect to backend-b, got %#v", action)
 	}
 }
 
@@ -592,6 +674,42 @@ func TestOnResponseHeaders_ProviderFallback_SelfRedialsWithProviderHeader(t *tes
 	}
 	if sentBody["model"] != "claude-3-5-sonnet" {
 		t.Fatalf("expected model to be rewritten to the fallback's own model, got %v", sentBody["model"])
+	}
+}
+
+func TestOnResponseHeaders_UpstreamDefinitionFallback_SelfRedialsWithUpstreamDefHeader(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini", "upstreamDefinition": "backend-b"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
+	p.httpClient = fake
+	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 500)
+
+	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	if _, ok := action.(policy.ImmediateResponse); !ok {
+		t.Fatalf("expected success, got %#v", action)
+	}
+	req := fake.calls[0]
+	if req.URL.String() != testSelfBaseURL+"/mf-proxy/chat/completions" {
+		t.Fatalf("expected a self-redial to the operation's own downstream path, got %s", req.URL.String())
+	}
+	if got := req.Header.Get(modelFailoverUpstreamDefHeader); got != "backend-b" {
+		t.Fatalf("expected %s to be set to the fallback's upstreamDefinition, got %q", modelFailoverUpstreamDefHeader, got)
+	}
+	if req.Header.Get(providerHeaderName) != "" {
+		t.Fatalf("expected no provider header on an upstreamDefinition redial")
+	}
+	if req.Header.Get("Authorization") != "Bearer original-token" {
+		t.Fatalf("expected the original credential to be reused unchanged for a same-provider fallback, got %q", req.Header.Get("Authorization"))
 	}
 }
 

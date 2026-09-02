@@ -14,20 +14,25 @@ Transparently retries a failed LLM request against an ordered fallback chain. Fu
   operation's default upstream can't serve that model at all — see "Target-level override"
   below.
 
-## Two kinds of fallback/override, and how each dials
+## Three kinds of fallback/override, and how each dials
 
-Every `target`/`fallback` entry sets at most `provider`, or (target-only) `upstreamDefinition`.
-Every dial except an `upstreamDefinition`-redirected primary is a **self-redial** — including
-the plain "reuse primary" case with neither field set:
+Every `target`/`fallback` entry sets at most one of `provider` or `upstreamDefinition`. Every
+dial except a target's own `upstreamDefinition`-redirected primary is a **self-redial** —
+including the plain "reuse primary" case with neither field set:
 
 - **None set — reuse the primary's own backend.** Still a self-redial (see below), just with no
-  provider-selection header — the redialed request falls straight through to the operation's
-  own default upstream, which is the same backend the primary already used. Original credential
+  selection header at all — the redialed request falls straight through to the operation's own
+  default upstream, which is the same backend the primary already used. Original credential
   reused unchanged.
-- **`upstreamDefinition: <name>`** (target-level only) — redirects the primary attempt via an
-  in-process Envoy `UpstreamName` swap to an already-declared `spec.upstreamDefinitions` entry.
-  No extra hop, no self-redial; Envoy's own routing resolves the name at runtime within the
-  SAME request, so this policy needs nothing pre-resolved.
+- **`upstreamDefinition: <name>`** (target *or* fallback) — a same-provider, different backend
+  (e.g. a backup region), named against an already-declared `spec.upstreamDefinitions` entry,
+  never a raw URL. At **target level**, it redirects the primary attempt directly via an
+  in-process Envoy `UpstreamName` swap — no extra hop, no self-redial, since this happens before
+  any dial at all. At **fallback level**, there's no pre-dial moment left (the primary already
+  failed by the time a fallback runs), so it rides a self-redial carrying the name in
+  `x-wso2-model-failover-upstream-definition`; the redialed request's own `OnRequestBody` reads
+  that header and applies the SAME `UpstreamName` redirect on its own fresh pass. Either way,
+  Envoy's own routing resolves the name at runtime — this policy never sees a URL.
 - **`provider: <id>`** (target- or fallback-level) — crosses providers. Never carries its own
   url/auth/template. Resolved entirely at runtime via a self-redial with the provider-selection
   header set.
@@ -36,7 +41,9 @@ the plain "reuse primary" case with neither field set:
 
 - The policy dials **this same operation's own externally-facing URL again**
   (`selfBaseURL` + the original downstream path). If the fallback/override declares `provider`,
-  an `x-provider: <id>` header is set too; a plain "reuse primary" fallback omits it.
+  an `x-provider: <id>` header is set too; if it declares `upstreamDefinition`,
+  `x-wso2-model-failover-upstream-definition: <name>` is set instead; a plain "reuse primary"
+  fallback sets neither.
 - From Envoy's point of view this is a genuinely fresh inbound request, so it re-runs the
   **entire policy chain** from scratch — not something this policy simulates itself. This is
   deliberate even for the same-provider case: a raw direct dial (considered and dropped) would
@@ -60,12 +67,12 @@ the plain "reuse primary" case with neither field set:
   `model` field first. A signal produced in body phase is always one phase too late for a
   header-phase-only gate to see. Publishing the selection via a real header (which *is*
   available at header-phase time) sidesteps that ordering problem instead of fighting it.
-- **Why a bare "reuse primary" fallback can safely self-redial with no provider header:**
+- **Why a bare "reuse primary" fallback can safely self-redial with no selection header:**
   `GetPolicy` requires every fallback under a target that redirects its OWN primary (`provider`
-  or `upstreamDefinition` set) to also cross providers — there's no bare fallback in that case.
-  So whenever a bare fallback exists, the target's own primary is guaranteed to already be the
-  operation's plain default upstream, which is exactly where a no-provider-header self-redial
-  lands.
+  or `upstreamDefinition` set) to also set `provider` or `upstreamDefinition` itself — there's no
+  bare fallback in that case. So whenever a bare fallback exists, the target's own primary is
+  guaranteed to already be the operation's plain default upstream, which is exactly where a
+  no-header self-redial lands.
 
 ## Recursion guard
 
@@ -80,6 +87,12 @@ the plain "reuse primary" case with neither field set:
   guard would have silently swallowed all real traffic — found via live testing, not review.
 - A client spoofing the redial header themselves just means failover doesn't apply to that one
   request — never a routing or auth bypass.
+- **One narrow, deliberate exception in `OnRequestBody`:** a redial also carrying
+  `x-wso2-model-failover-upstream-definition` gets exactly one thing applied — the `UpstreamName`
+  redirect that header names — before falling through to the same blanket passthrough as any
+  other redial. This never re-triggers target-matching (the guard's actual recursion concern),
+  so it can't recurse; it's just where a fallback's own `upstreamDefinition` redirect gets applied
+  now that reuse-primary is a self-redial too.
 - **Why `OnResponseHeaders` needs the same guard, not just `OnRequestBody`:** if a redial's own
   response also fails, and its model happens to also be declared as its own independent
   `targets[]` entry (or a cycle of them), `OnResponseHeaders` would otherwise walk *that*

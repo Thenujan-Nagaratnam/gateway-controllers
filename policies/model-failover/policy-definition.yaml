@@ -17,11 +17,15 @@ description: |
   still a self-redial, just with no provider-selection header set, so the redialed request falls
   straight through to the operation's own default upstream.
 
-  upstreamDefinition (target-level only) names a same-provider backend declared on this same
-  resource's own spec.upstreamDefinitions (e.g. a backup region) - passed straight through as an
-  in-process UpstreamName redirect, resolved by Envoy's own routing at runtime, never by this
-  policy. The original request's own credential is reused unchanged, since it's still the same
-  provider.
+  upstreamDefinition names a same-provider backend declared on this same resource's own
+  spec.upstreamDefinitions (e.g. a backup region) - never a raw URL, always resolved by Envoy's
+  own routing at runtime, never by this policy. At target level it's a bare in-process
+  UpstreamName redirect applied before any dial (no self-redial needed, per above). At fallback
+  level there's no pre-dial moment left to apply that redirect directly - the primary has already
+  failed by the time a fallback runs - so it rides the self-redial too, carrying the chosen name
+  in a header this policy's own request-phase hook reads on the redial's own fresh pass and
+  applies as the same in-process UpstreamName redirect. Either way the original request's own
+  credential is reused unchanged, since it's still the same provider.
 
   provider names a provider id this proxy can route to via a header-based router policy (e.g.
   llm-header-router) attached to the SAME operation - the operator's own responsibility, same
@@ -71,8 +75,8 @@ parameters:
               attempt itself is redirected there - required when the operation's own default
               upstream can't serve this model at all. Mutually exclusive with
               upstreamDefinition. A target that sets this must have every one of its own
-              fallbacks also set provider - there is no primary attempt left for a bare
-              fallback to reuse once the primary itself is redirected.
+              fallbacks also set provider or upstreamDefinition - there is no primary attempt
+              left for a bare fallback to reuse once the primary itself is redirected.
           upstreamDefinition:
             type: string
             description: |
@@ -103,7 +107,16 @@ parameters:
                     A provider id this proxy can route to via a header-based router policy
                     attached to the same operation. Omit for the common case (this fallback
                     reuses the same provider as its own target - same backend, just a
-                    different model).
+                    different model). Mutually exclusive with upstreamDefinition.
+                upstreamDefinition:
+                  type: string
+                  description: |
+                    Name of an entry in this same resource's own spec.upstreamDefinitions -
+                    never a raw URL, always resolved by Envoy's own routing. Use when this
+                    fallback should try a same-provider backend other than the one the primary
+                    already used (e.g. a backup region). Omit for the common case (this
+                    fallback reuses the same backend as its own target). Mutually exclusive
+                    with provider.
     statusCodes:
       type: array
       minItems: 1

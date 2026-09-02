@@ -59,6 +59,14 @@ const modelFailoverRedialHeader = "x-wso2-model-failover-redial"
 // resolves or applies auth/template conversion itself — see the package doc.
 const providerHeaderName = "x-provider"
 
+// modelFailoverUpstreamDefHeader carries a fallback's upstreamDefinition name on a same-provider
+// self-redial. Unlike providerHeaderName (read by an operator-attached selector policy), this
+// header is read ONLY by this policy's own OnRequestBody guard branch, on the redial's own
+// (fresh, independent) pass — when present, it applies an in-process Envoy UpstreamName redirect
+// to the named entry instead of the usual blanket passthrough a bare redial gets. Mutually
+// exclusive with providerHeaderName on any single redial; trySelfRedial never sets both.
+const modelFailoverUpstreamDefHeader = "x-wso2-model-failover-upstream-definition"
+
 // retryHTTPClient abstracts the outbound call a dial makes, so tests can substitute a fake
 // transport instead of hitting the network. *http.Client satisfies this directly.
 type retryHTTPClient interface {
@@ -163,14 +171,24 @@ func (p *Policy) doDial(ctx context.Context, targetURL, method string, src *poli
 // "reuse primary" fallback is just as much a self-redial as a cross-provider one: a raw direct
 // dial would silently skip every other attached policy's processing for that specific attempt,
 // which is invisible and surprising for anything relying on per-request behavior — rate limits,
-// audit logs, PII masking). providerID is empty for a same-provider "reuse primary" fallback: no
-// providerHeaderName is set, so the redialed request just falls through to the operation's own
-// default upstream — GetPolicy's own validation guarantees that's always correct, since a target
-// that redirects its own primary requires every one of its own fallbacks to set a provider too
-// (there being no "default upstream" left to correctly fall through to in that case). The
-// modelFailoverRedialHeader guard prevents this redial from recursing back into any
-// target/fallback processing on its own re-entry (see OnRequestBody and OnResponseHeaders).
-func (p *Policy) trySelfRedial(ctx context.Context, selfBaseURL, downstreamPath, method string, headers *policy.Headers, providerID, model string, originalBody map[string]interface{}) (policy.ImmediateResponse, bool) {
+// audit logs, PII masking). providerID and upstreamDefName are mutually exclusive; at most one
+// is ever set:
+//   - Both empty (a same-provider "reuse primary" fallback): no selection header at all, so the
+//     redialed request just falls through to the operation's own default upstream — GetPolicy's
+//     own validation guarantees that's always correct, since a target that redirects its own
+//     primary requires every one of its own fallbacks to set provider or upstreamDefinition too
+//     (there being no "default upstream" left to correctly fall through to in that case).
+//   - providerID set: providerHeaderName is set, read by an operator-attached selector policy
+//     (e.g. llm-header-router) elsewhere in the chain.
+//   - upstreamDefName set (a same-provider, different-backend fallback): modelFailoverUpstreamDefHeader
+//     is set instead, read ONLY by this policy's own OnRequestBody guard branch on the redial's
+//     own pass, which applies an in-process Envoy UpstreamName redirect to that name.
+//
+// The modelFailoverRedialHeader guard prevents this redial from recursing back into any
+// target/fallback MATCHING logic on its own re-entry (see OnRequestBody and OnResponseHeaders) —
+// it does not prevent OnRequestBody from acting on modelFailoverUpstreamDefHeader, which is a
+// narrower, deliberate exception to that guard (see OnRequestBody's own doc comment).
+func (p *Policy) trySelfRedial(ctx context.Context, selfBaseURL, downstreamPath, method string, headers *policy.Headers, providerID, upstreamDefName, model string, originalBody map[string]interface{}) (policy.ImmediateResponse, bool) {
 	if selfBaseURL == "" || downstreamPath == "" {
 		slog.WarnContext(ctx, "ModelFailover: no self base URL/downstream path available, cannot redial", "provider", providerID)
 		return policy.ImmediateResponse{}, false
@@ -181,9 +199,13 @@ func (p *Policy) trySelfRedial(ctx context.Context, selfBaseURL, downstreamPath,
 		modelFailoverRedialHeader: "1",
 	}
 	logField := "reuse-primary"
-	if providerID != "" {
+	switch {
+	case providerID != "":
 		extra[providerHeaderName] = providerID
 		logField = "provider:" + providerID
+	case upstreamDefName != "":
+		extra[modelFailoverUpstreamDefHeader] = upstreamDefName
+		logField = "upstreamDefinition:" + upstreamDefName
 	}
 	// Credentials are NOT stripped here (stripCredentials=false), deliberately: this redial
 	// re-enters the SAME operation as a genuinely fresh downstream request, so if that
@@ -197,8 +219,9 @@ func (p *Policy) trySelfRedial(ctx context.Context, selfBaseURL, downstreamPath,
 	// set a credential — there the client's own credential could reach that backend unchanged.
 	// That falls on the operator's own multi-provider configuration, the same as it would for
 	// any other caller of that provider, not something unique to a redial. For a same-provider
-	// "reuse primary" redial the credential is simply the same one that already worked, reused
-	// unchanged — no auth policy needs to run differently the second time.
+	// redial — "reuse primary" or upstreamDefinition, credential-wise identical — the credential
+	// is simply the same one that already worked, reused unchanged; no auth policy needs to run
+	// differently just because the backend moved to a different same-provider instance.
 	return p.doDial(ctx, targetURL, method, headers, extra, model, originalBody, logField)
 }
 

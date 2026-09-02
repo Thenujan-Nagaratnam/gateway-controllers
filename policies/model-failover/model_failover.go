@@ -28,9 +28,12 @@
 // every OTHER attached policy's processing for that one attempt — rate limiting, analytics,
 // any request/response transformation — which is invisible and surprising for anything relying
 // on per-request behavior. On success the attempt's response is returned via ImmediateResponse.
-// The one exception is upstreamDefinition (target-level primary override only): a bare in-
-// process Envoy UpstreamName swap, since that's resolved by Envoy's own routing within the SAME
-// request, never a separate dial at all.
+// The one exception is a TARGET's own upstreamDefinition-redirected primary attempt: a bare
+// in-process Envoy UpstreamName swap, since that happens before any dial at all (OnRequestBody,
+// pre-primary) and needs no self-redial. A FALLBACK's own upstreamDefinition (same-provider,
+// different backend) can't use that same shortcut — the primary has already been dialed and
+// failed by the time a fallback runs — so it rides the self-redial too, distinguished from a
+// provider fallback by which header it sets (see modelFailoverUpstreamDefHeader in dispatch.go).
 //
 // This policy is entirely standalone — gateway-controller has no awareness of it, injects no
 // params for it, and validates nothing about its config. Everything below is a runtime
@@ -66,11 +69,16 @@
 //     model-failover neither knows nor cares how that selector or those provider ids came to
 //     exist.
 //
-// Same-provider, different-backend routing (e.g. a backup region) is unrelated to any of this,
-// and stays fully decoupled from gateway-controller in a different way: a target's own
-// upstreamDefinition override is a bare name, used directly as an in-process UpstreamName
-// redirect (no extra hop, no auth/template complexity since it's the same provider) — Envoy's
-// own routing resolves it at runtime, so this policy needs nothing resolved ahead of time.
+// Same-provider, different-backend routing (e.g. a backup region) is unrelated to cross-provider
+// routing, and stays fully decoupled from gateway-controller in the same way at both levels: a
+// bare name, used as an in-process Envoy UpstreamName redirect (no auth/template complexity
+// since it's the same provider) — Envoy's own routing resolves it at runtime against this same
+// resource's own already-declared spec.upstreamDefinitions, so this policy needs nothing
+// resolved ahead of time and never sees a raw URL. At target level that redirect applies
+// directly to the primary attempt (OnRequestBody, pre-dial). At fallback level there is no
+// primary attempt left to redirect — the self-redial carries the chosen name in
+// modelFailoverUpstreamDefHeader instead, and the redialed request's own OnRequestBody applies
+// the SAME UpstreamName redirect on its own (fresh, independent) pass.
 //
 // OnRequestBody's modelFailoverRedialHeader guard exists because a self-redial re-enters this
 // SAME operation, which still has this policy attached: without the guard, the redialed
@@ -121,7 +129,8 @@ const noProviderAvailableBody = `{"error":{"message":"all configured providers f
 // into — see the package doc for why this snapshot exists at all.
 const originalBodyMetadataKey = "model-failover:original-body"
 
-// fallbackTarget is one entry in a target group's own ordered fallback chain.
+// fallbackTarget is one entry in a target group's own ordered fallback chain. provider and
+// upstreamDefinition are mutually exclusive; at most one is ever set.
 type fallbackTarget struct {
 	model string // model name to inject into the request body for this attempt
 
@@ -130,12 +139,22 @@ type fallbackTarget struct {
 	// package doc and dispatch.go's trySelfRedial). Purely opaque to this policy: it's
 	// whatever id the operator's own attached selector (e.g. llm-header-router) expects.
 	provider string
+
+	// upstreamDefinition is empty unless this fallback stays on the SAME provider but a
+	// DIFFERENT backend of it (e.g. a backup region) — a bare name resolved against this same
+	// resource's own spec.upstreamDefinitions by Envoy's own routing, never a raw URL. Applied
+	// via the self-redial carrying modelFailoverUpstreamDefHeader (see the package doc and
+	// dispatch.go's trySelfRedial) — unlike the target-level case, there's no pre-dial moment
+	// left for a fallback to apply this directly.
+	upstreamDefinition string
 }
 
-// crossesProvider reports whether this fallback dials a genuinely different backend than the
-// operation's own default upstream, as opposed to the bare "reuse the primary" case.
-func (fb fallbackTarget) crossesProvider() bool {
-	return fb.provider != ""
+// hasExplicitOverride reports whether this fallback has a well-defined redirect target of its
+// own (provider or upstreamDefinition) — one that's correct regardless of what the target's own
+// primary attempt did — as opposed to the bare "reuse the primary" case, which is only correct
+// when the primary was never itself redirected (see GetPolicy's own validation).
+func (fb fallbackTarget) hasExplicitOverride() bool {
+	return fb.provider != "" || fb.upstreamDefinition != ""
 }
 
 // targetGroup is one independently-selectable target: model is the client-requested value
@@ -214,11 +233,11 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		if provider != "" || upstreamDefinition != "" {
 			// Once the target's own primary attempt is redirected, there is no primary
 			// response left for a bare "reuse the primary" fallback to reuse — require every
-			// one of its own fallbacks to cross providers too, rather than silently failing
-			// to resolve an upstream at dial time.
+			// one of its own fallbacks to have an explicit redirect target of their own too,
+			// rather than silently falling through to the wrong (plain default) upstream.
 			for j, fb := range fallbacks {
-				if !fb.crossesProvider() {
-					return nil, fmt.Errorf("model-failover: targets[%d] redirects its own primary attempt (provider/upstreamDefinition set) — targets[%d].fallbacks[%d] must also set provider; there is no primary attempt left to reuse", i, i, j)
+				if !fb.hasExplicitOverride() {
+					return nil, fmt.Errorf("model-failover: targets[%d] redirects its own primary attempt (provider/upstreamDefinition set) — targets[%d].fallbacks[%d] must also set provider or upstreamDefinition; there is no primary attempt left to reuse", i, i, j)
 				}
 			}
 		}
@@ -304,8 +323,12 @@ func parseFallbackTarget(raw interface{}, i, j int) (fallbackTarget, error) {
 	}
 
 	result := fallbackTarget{
-		model:    model,
-		provider: getStringParam(fb, "provider"),
+		model:              model,
+		provider:           getStringParam(fb, "provider"),
+		upstreamDefinition: getStringParam(fb, "upstreamDefinition"),
+	}
+	if result.provider != "" && result.upstreamDefinition != "" {
+		return fallbackTarget{}, fmt.Errorf("model-failover: targets[%d].fallbacks[%d] sets both provider and upstreamDefinition — mutually exclusive", i, j)
 	}
 
 	return result, nil
@@ -402,9 +425,19 @@ func downstreamHeaders(d *policy.DownstreamContext) *policy.Headers {
 // The modelFailoverRedialHeader guard is checked first: it's set on every self-redial this
 // policy originates itself (see dispatch.go), so seeing it here means this IS one of this
 // policy's own redials re-entering the operation, not a genuine client request — pass it
-// through untouched rather than trying to redirect it all over again (see the package doc).
+// through untouched rather than trying to redirect it all over again (see the package doc). The
+// one exception is modelFailoverUpstreamDefHeader: a same-provider FALLBACK's own
+// upstreamDefinition redirect has no pre-dial moment of its own to apply the in-process
+// UpstreamName swap (the primary already failed by the time a fallback runs — see the package
+// doc), so it rides the self-redial and applies the swap here instead, on the redial's own
+// fresh pass. This is a narrow, deliberate carve-out from the guard's usual blanket passthrough
+// — it never re-triggers target-matching, so it can't recurse.
 func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	if rctx.Headers != nil && rctx.Headers.Has(modelFailoverRedialHeader) {
+		if vals := rctx.Headers.Get(modelFailoverUpstreamDefHeader); len(vals) > 0 && vals[0] != "" {
+			upstreamName := vals[0]
+			return policy.UpstreamRequestModifications{UpstreamName: &upstreamName}
+		}
 		return policy.UpstreamRequestModifications{}
 	}
 	if rctx.Body == nil || !rctx.Body.Present {
@@ -445,16 +478,16 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 // rather than fabricating or silently passing through an unrelated response.
 func (p *Policy) redirectTargetProvider(ctx context.Context, rctx *policy.RequestContext, group targetGroup, decoded map[string]interface{}) policy.RequestAction {
 	path := downstreamPath(rctx.Downstream)
-	if resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, group.provider, group.model, decoded); ok {
+	if resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, group.provider, "", group.model, decoded); ok {
 		return resp
 	}
 
 	order := p.orderedFallbackIndices(ctx, rctx.SharedContext, group)
 	for _, idx := range order {
 		fb := group.fallbacks[idx]
-		// fb always crossesProvider() here — GetPolicy rejects a bare "reuse primary"
+		// fb always hasExplicitOverride() here — GetPolicy rejects a bare "reuse primary"
 		// fallback under a target that itself redirects.
-		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, fb.provider, fb.model, decoded)
+		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, fb.provider, fb.upstreamDefinition, fb.model, decoded)
 		if !ok {
 			if p.suspendDuration > 0 {
 				p.suspend.Suspend(ctx, suspendKey(rctx.SharedContext, group.model, idx), p.suspendDuration)
@@ -516,7 +549,7 @@ func (p *Policy) OnResponseHeaders(ctx context.Context, rhctx *policy.ResponseHe
 	for _, idx := range order {
 		fb := group.fallbacks[idx]
 
-		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rhctx.RequestMethod, rhctx.RequestHeaders, fb.provider, fb.model, originalBody)
+		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rhctx.RequestMethod, rhctx.RequestHeaders, fb.provider, fb.upstreamDefinition, fb.model, originalBody)
 		if !ok {
 			if p.suspendDuration > 0 {
 				p.suspend.Suspend(ctx, suspendKey(rhctx.SharedContext, group.model, idx), p.suspendDuration)
