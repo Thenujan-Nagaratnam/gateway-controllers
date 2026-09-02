@@ -497,6 +497,57 @@ func TestOnResponseHeaders_NonFailingStatus_PassesThroughUnchanged(t *testing.T)
 	}
 }
 
+// TestOnResponseHeaders_RedialHeaderPresent_SkipsFallbackWalkEvenIfModelMatchesAnotherTarget
+// guards against a redial's own failing response driving a SECOND, nested fallback walk. Here
+// the redialed request's own model ("claude-3-5-sonnet") happens to also be declared as its own
+// independent target with a further fallback of its own — without the modelFailoverRedialHeader
+// check in OnResponseHeaders, this response would trigger that target's own fallback chain too,
+// and if any hop in a real config cycled back to an already-tried model, it would recurse
+// indefinitely. The fix is symmetric with the existing OnRequestBody guard: a redial's outcome
+// is decided once, by the dial that originated it, never by a nested walk from inside its own
+// response processing.
+func TestOnResponseHeaders_RedialHeaderPresent_SkipsFallbackWalkEvenIfModelMatchesAnotherTarget(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "claude-3-5-sonnet", "provider": "anthropic"},
+				},
+			},
+			map[string]interface{}{
+				"model": "claude-3-5-sonnet",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o", "provider": "openai"},
+				},
+			},
+		},
+		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
+	})
+	// No responses queued: if OnResponseHeaders attempted any dial at all, fakeHTTPClient.Do
+	// would return an error, and tryFallbackEntry would treat that as a failed attempt rather
+	// than panicking — so this test also asserts zero calls were made, not just no crash.
+	fake := &fakeHTTPClient{}
+	p.httpClient = fake
+
+	rhctx := baseResponseHeaderContext(t, `{"model":"claude-3-5-sonnet","messages":[]}`, 500)
+	rhctx.RequestHeaders = policy.NewHeaders(map[string][]string{
+		"authorization":           {"Bearer original-token"},
+		"content-type":            {"application/json"},
+		modelFailoverRedialHeader: {"1"},
+		providerHeaderName:        {"anthropic"},
+	})
+
+	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
+		t.Fatalf("expected a plain passthrough for a redial's own response, got %#v", action)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("expected no fallback dials for a redial's own failing response, got %d calls", len(fake.calls))
+	}
+}
+
 func TestOnResponseHeaders_ReusePrimaryFallback_DialsSameUpstream(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{

@@ -111,6 +111,12 @@ const defaultSelfBaseURL = "http://127.0.0.1:8080"
 // this is an honest, generic failure rather than a fabricated one.
 const noProviderAvailableBody = `{"error":{"message":"all configured providers for this model are unavailable","type":"upstream_error"}}`
 
+// originalBodyMetadataKey is where OnRequestBody stashes the request body it already decoded,
+// for OnResponseHeaders to reuse later instead of re-reading rhctx.RequestBody. Namespaced
+// (not a bare "body") since SharedContext.Metadata is a chain-wide bag any policy can write
+// into — see the package doc for why this snapshot exists at all.
+const originalBodyMetadataKey = "model-failover:original-body"
+
 // fallbackTarget is one entry in a target group's own ordered fallback chain. provider and
 // backendURL are mutually exclusive; at most one is ever set.
 type fallbackTarget struct {
@@ -386,6 +392,20 @@ func downstreamPath(d *policy.DownstreamContext) string {
 	return d.Request.Path
 }
 
+// downstreamHeaders returns the client's own request headers as a snapshot captured by the
+// kernel BEFORE any policy's header-phase hook ran — unlike rctx.Headers/rhctx.RequestHeaders,
+// which are the SAME live object every policy's own header-phase mutations apply to, this one
+// is frozen at arrival and never mutated afterward. Used everywhere this policy replays the
+// client's own request (a provider redial, a fallback dial), so a header-phase policy's own
+// mutation (e.g. an upstream-auth policy on the PRIMARY's own dispatch) is never accidentally
+// carried into a redial/fallback meant for a completely different backend. nil if unavailable.
+func downstreamHeaders(d *policy.DownstreamContext) *policy.Headers {
+	if d == nil || d.Request == nil {
+		return nil
+	}
+	return d.Request.Headers
+}
+
 // operationPath returns the operation-relative path (e.g. "/chat/completions") — deliberately
 // NOT the client's full downstream path (that includes this proxy's own context prefix, e.g.
 // "/mf-poc-proxy/chat/completions", per SharedContext.OperationPath's own kernel-side
@@ -481,7 +501,19 @@ func (p *Policy) redirectTargetProvider(ctx context.Context, rctx *policy.Reques
 // per candidate until one succeeds (returned via ImmediateResponse) or the chain is exhausted
 // (the original failing response passes through unchanged). A request whose model doesn't
 // match any declared target, or whose status doesn't match statusCodes, is untouched.
+//
+// The modelFailoverRedialHeader guard is checked first, mirroring OnRequestBody: this response
+// belongs to one of this policy's own provider redials, not the original client request. If a
+// fallback's own model happens to coincide with an independently-declared target (or a cycle of
+// them), skipping the walk here is what stops that from recursing — a redial's own failure is
+// decided once, by the tryProviderRedial/doDial call that originated it (which independently
+// checks p.statusCodes itself against the raw response), never by a second, nested fallback walk
+// triggered from inside the redial's own response processing. Without this, "whichever request
+// happens to be redialed" would drive further failover instead of only ever the original one.
 func (p *Policy) OnResponseHeaders(ctx context.Context, rhctx *policy.ResponseHeaderContext, _ map[string]interface{}) policy.ResponseHeaderAction {
+	if rhctx.RequestHeaders != nil && rhctx.RequestHeaders.Has(modelFailoverRedialHeader) {
+		return policy.DownstreamResponseHeaderModifications{}
+	}
 	if _, failing := p.statusCodes[rhctx.ResponseStatus]; !failing {
 		return policy.DownstreamResponseHeaderModifications{}
 	}
