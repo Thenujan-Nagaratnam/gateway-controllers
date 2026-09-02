@@ -198,47 +198,8 @@ func TestGetPolicy_TargetProviderAndUpstreamDefinition_MutuallyExclusive(t *test
 	}
 }
 
-func TestGetPolicy_FallbackProviderAndBackendURL_MutuallyExclusive(t *testing.T) {
-	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
-		"targets": []interface{}{
-			map[string]interface{}{
-				"model": "gpt-4o",
-				"fallbacks": []interface{}{
-					map[string]interface{}{"model": "x", "provider": "a", "backendURL": "http://b.internal"},
-				},
-			},
-		},
-		"statusCodes": []interface{}{500},
-		"selfBaseURL": testSelfBaseURL,
-	})
-	if err == nil {
-		t.Fatal("expected an error when both provider and backendURL are set on a fallback")
-	}
-}
-
-func TestGetPolicy_FallbackBackendURL_ParsesDirectlyNoResolution(t *testing.T) {
-	// backendURL is the operator-provided raw URL itself — no gateway-controller resolution
-	// step exists for it at all, unlike the old upstreamDefinition-by-reference design.
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{
-			map[string]interface{}{
-				"model": "gpt-4o",
-				"fallbacks": []interface{}{
-					map[string]interface{}{"model": "gpt-4o-mini", "backendURL": "http://backend-b.internal:9090"},
-				},
-			},
-		},
-		"statusCodes": []interface{}{500},
-	})
-	fb := p.targets[0].fallbacks[0]
-	if fb.backendURL != "http://backend-b.internal:9090" {
-		t.Fatalf("expected backendURL to be taken as-is, got %+v", fb)
-	}
-}
-
-func TestGetPolicy_FallbackProvider_NoBackendURL(t *testing.T) {
-	// A fallback-level provider reference resolves entirely via self-redial — it never
-	// carries a backendURL of its own.
+func TestGetPolicy_FallbackProvider_ParsesCorrectly(t *testing.T) {
+	// A fallback-level provider reference resolves entirely via self-redial.
 	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
@@ -252,8 +213,8 @@ func TestGetPolicy_FallbackProvider_NoBackendURL(t *testing.T) {
 		"selfBaseURL": testSelfBaseURL,
 	})
 	fb := p.targets[0].fallbacks[0]
-	if fb.provider != "anthropic-backup" || fb.backendURL != "" {
-		t.Fatalf("expected a bare provider reference with no backendURL, got %+v", fb)
+	if fb.provider != "anthropic-backup" {
+		t.Fatalf("expected the provider reference to be parsed, got %+v", fb)
 	}
 }
 
@@ -577,37 +538,6 @@ func TestOnResponseHeaders_ReusePrimaryFallback_DialsSameUpstream(t *testing.T) 
 	}
 	if req.Header.Get(providerHeaderName) != "" {
 		t.Fatalf("expected no provider header on a reuse-primary dial")
-	}
-}
-
-func TestOnResponseHeaders_BackendURLFallback_DialsItWithOriginalCredential(t *testing.T) {
-	p := newTestPolicy(t, map[string]interface{}{
-		"targets": []interface{}{
-			map[string]interface{}{
-				"model": "gpt-4o",
-				"fallbacks": []interface{}{
-					map[string]interface{}{
-						"model": "gpt-4o-mini", "backendURL": "http://backend-b.internal:9090",
-					},
-				},
-			},
-		},
-		"statusCodes": []interface{}{500},
-	})
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
-	p.httpClient = fake
-	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 500)
-
-	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if _, ok := action.(policy.ImmediateResponse); !ok {
-		t.Fatalf("expected success, got %#v", action)
-	}
-	req := fake.calls[0]
-	if req.URL.String() != "http://backend-b.internal:9090/chat/completions" {
-		t.Fatalf("expected a dial to backendURL at the operation-relative path (not the full downstream path), got %s", req.URL.String())
-	}
-	if req.Header.Get("Authorization") != "Bearer original-token" {
-		t.Fatalf("expected the original credential to be reused unchanged for a same-provider fallback, got %q", req.Header.Get("Authorization"))
 	}
 }
 

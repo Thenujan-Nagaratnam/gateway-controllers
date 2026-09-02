@@ -6,15 +6,13 @@ description: |
   primary attempt, and every fallback attempt, is driven from a direct outbound call this
   policy makes itself rather than Envoy's native retry/aggregate-cluster mechanism.
 
-  A target or fallback with none of provider/upstreamDefinition/backendURL set stays on the
-  same backend the operation already uses (the common case: a different model on the same
-  upstream). upstreamDefinition (target-level only) names a same-provider backend declared on
-  this same resource's own spec.upstreamDefinitions (e.g. a backup region) - passed straight
-  through as an in-process UpstreamName redirect, resolved by Envoy's own routing at runtime,
-  never by this policy. backendURL (fallback-level only) is the operator-provided raw URL of a
-  same-provider backend to dial directly - no reference, no resolution, just the real URL typed
-  into this policy's own config. Either way the original request's own credential is reused
-  unchanged, since it's still the same provider.
+  A target or fallback with neither provider nor upstreamDefinition set stays on the same
+  backend the operation already uses (the common case: a different model on the same upstream).
+  upstreamDefinition (target-level only) names a same-provider backend declared on this same
+  resource's own spec.upstreamDefinitions (e.g. a backup region) - passed straight through as an
+  in-process UpstreamName redirect, resolved by Envoy's own routing at runtime, never by this
+  policy. The original request's own credential is reused unchanged, since it's still the same
+  provider.
 
   provider names a provider id this proxy can route to via a header-based router policy (e.g.
   llm-header-router) attached to the SAME operation - the operator's own responsibility, same
@@ -64,8 +62,8 @@ parameters:
               attempt itself is redirected there - required when the operation's own default
               upstream can't serve this model at all. Mutually exclusive with
               upstreamDefinition. A target that sets this must have every one of its own
-              fallbacks also set provider or backendURL - there is no primary attempt left for
-              a bare fallback to reuse once the primary itself is redirected.
+              fallbacks also set provider - there is no primary attempt left for a bare
+              fallback to reuse once the primary itself is redirected.
           upstreamDefinition:
             type: string
             description: |
@@ -96,15 +94,7 @@ parameters:
                     A provider id this proxy can route to via a header-based router policy
                     attached to the same operation. Omit for the common case (this fallback
                     reuses the same provider as its own target - same backend, just a
-                    different model). Mutually exclusive with backendURL.
-                backendURL:
-                  type: string
-                  description: |
-                    Base URL (scheme://host[:port], no path) of a same-provider backend to dial
-                    directly for this fallback (e.g. a backup region) - the real URL, typed
-                    directly here; not a reference to anything declared elsewhere. Omit for the
-                    common case (this fallback reuses the same backend as its own target).
-                    Mutually exclusive with provider.
+                    different model).
     statusCodes:
       type: array
       minItems: 1

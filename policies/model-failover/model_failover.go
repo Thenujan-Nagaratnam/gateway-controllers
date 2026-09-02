@@ -63,10 +63,7 @@
 // and stays fully decoupled from gateway-controller in a different way: a target's own
 // upstreamDefinition override is a bare name, used directly as an in-process UpstreamName
 // redirect (no extra hop, no auth/template complexity since it's the same provider) — Envoy's
-// own routing resolves it at runtime, so this policy needs nothing resolved ahead of time. A
-// fallback's own backendURL is simpler still: the operator types the real URL directly into
-// this policy's own params, and the fallback dials it directly, reusing the original request's
-// own credential unchanged.
+// own routing resolves it at runtime, so this policy needs nothing resolved ahead of time.
 //
 // OnRequestBody's modelFailoverRedialHeader guard exists because a provider redial re-enters
 // this SAME operation, which still has this policy attached: without the guard, the redialed
@@ -117,8 +114,7 @@ const noProviderAvailableBody = `{"error":{"message":"all configured providers f
 // into — see the package doc for why this snapshot exists at all.
 const originalBodyMetadataKey = "model-failover:original-body"
 
-// fallbackTarget is one entry in a target group's own ordered fallback chain. provider and
-// backendURL are mutually exclusive; at most one is ever set.
+// fallbackTarget is one entry in a target group's own ordered fallback chain.
 type fallbackTarget struct {
 	model string // model name to inject into the request body for this attempt
 
@@ -127,21 +123,12 @@ type fallbackTarget struct {
 	// package doc and dispatch.go's tryProviderRedial). Purely opaque to this policy: it's
 	// whatever id the operator's own attached selector (e.g. llm-header-router) expects.
 	provider string
-
-	// backendURL is empty unless this fallback stays on the SAME provider but a DIFFERENT
-	// backend of it (e.g. a backup region) — the operator-provided base URL to dial directly
-	// (scheme://host[:port], no path; this policy appends the operation's own relative path
-	// to it). Never carries a translator, since same provider means same wire format by
-	// definition. No gateway-controller involvement: the operator types the real URL here
-	// directly, same as any other policy param.
-	backendURL string
 }
 
 // crossesProvider reports whether this fallback dials a genuinely different backend than the
-// operation's own default upstream — true for either provider or backendURL, false for the
-// bare "reuse the primary" case.
+// operation's own default upstream, as opposed to the bare "reuse the primary" case.
 func (fb fallbackTarget) crossesProvider() bool {
-	return fb.provider != "" || fb.backendURL != ""
+	return fb.provider != ""
 }
 
 // targetGroup is one independently-selectable target: model is the client-requested value
@@ -224,7 +211,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 			// to resolve an upstream at dial time.
 			for j, fb := range fallbacks {
 				if !fb.crossesProvider() {
-					return nil, fmt.Errorf("model-failover: targets[%d] redirects its own primary attempt (provider/upstreamDefinition set) — targets[%d].fallbacks[%d] must also set provider or backendURL; there is no primary attempt left to reuse", i, i, j)
+					return nil, fmt.Errorf("model-failover: targets[%d] redirects its own primary attempt (provider/upstreamDefinition set) — targets[%d].fallbacks[%d] must also set provider; there is no primary attempt left to reuse", i, i, j)
 				}
 			}
 		}
@@ -309,15 +296,9 @@ func parseFallbackTarget(raw interface{}, i, j int) (fallbackTarget, error) {
 		return fallbackTarget{}, fmt.Errorf("model-failover: targets[%d].fallbacks[%d].model is required", i, j)
 	}
 
-	field := fmt.Sprintf("targets[%d].fallbacks[%d]", i, j)
 	result := fallbackTarget{
-		model:      model,
-		provider:   getStringParam(fb, "provider"),
-		backendURL: getStringParam(fb, "backendURL"),
-	}
-
-	if result.provider != "" && result.backendURL != "" {
-		return fallbackTarget{}, fmt.Errorf("%s sets both provider and backendURL — mutually exclusive", field)
+		model:    model,
+		provider: getStringParam(fb, "provider"),
 	}
 
 	return result, nil
@@ -409,9 +390,9 @@ func downstreamHeaders(d *policy.DownstreamContext) *policy.Headers {
 // operationPath returns the operation-relative path (e.g. "/chat/completions") — deliberately
 // NOT the client's full downstream path (that includes this proxy's own context prefix, e.g.
 // "/mf-poc-proxy/chat/completions", per SharedContext.OperationPath's own kernel-side
-// derivation from route metadata rather than the raw :path header). Used for a backendURL or
-// reuse-primary dial, which targets a raw backend URL directly and needs just the operation's
-// own relative path appended to it, not the client-facing one. Empty if unavailable.
+// derivation from route metadata rather than the raw :path header). Used for a reuse-primary
+// dial, which targets a raw backend URL directly and needs just the operation's own relative
+// path appended to it, not the client-facing one. Empty if unavailable.
 func operationPath(shared *policy.SharedContext) string {
 	if shared == nil {
 		return ""

@@ -14,10 +14,10 @@ Transparently retries a failed LLM request against an ordered fallback chain. Fu
   operation's default upstream can't serve that model at all — see "Target-level override"
   below.
 
-## Three kinds of fallback/override, three different mechanisms
+## Two kinds of fallback/override, two different mechanisms
 
-Every `target`/`fallback` entry sets at most one of `provider`, `upstreamDefinition` (target
-only), or `backendURL` (fallback only). Which one is set decides how the dial happens:
+Every `target`/`fallback` entry sets at most one of `provider` or `upstreamDefinition` (target
+only). Which one is set decides how the dial happens:
 
 - **None set — reuse the primary's own backend.** The fallback just retries the same upstream
   the primary already resolved to, with a different `model` in the body. Original credential
@@ -26,9 +26,6 @@ only), or `backendURL` (fallback only). Which one is set decides how the dial ha
   in-process Envoy `UpstreamName` swap to an already-declared `spec.upstreamDefinitions` entry.
   No extra network hop; Envoy's own routing resolves the name at runtime, so this policy needs
   nothing pre-resolved.
-- **`backendURL: <url>`** (fallback-level only) — the operator types the real backend URL
-  directly into this policy's own config. Dialed directly, same provider, original credential
-  reused unchanged, no body conversion.
 - **`provider: <id>`** (target- or fallback-level) — the only one that crosses providers. Never
   carries its own url/auth/template. Resolved entirely at runtime via a **self-redial** — see
   below.
@@ -99,10 +96,10 @@ only), or `backendURL` (fallback only). Which one is set decides how the dial ha
 
 ## Path handling
 
-- A raw dial (`backendURL`, or reusing the primary's own backend) appends
-  `SharedContext.OperationPath` (the operation-relative path, e.g. `/chat/completions`) to the
-  target URL — **not** the client's full downstream path, which includes this proxy's own
-  context prefix (e.g. `/mf-poc-proxy/chat/completions`) and would be wrong on a real backend.
+- A raw dial reusing the primary's own backend appends `SharedContext.OperationPath` (the
+  operation-relative path, e.g. `/chat/completions`) to the target URL — **not** the client's
+  full downstream path, which includes this proxy's own context prefix (e.g.
+  `/mf-poc-proxy/chat/completions`) and would be wrong on a real backend.
 - A provider self-redial appends the **full downstream path** instead (via
   `Downstream.Request.Path`), since it needs Envoy to re-match the *same* operation, not some
   operation-relative fragment.

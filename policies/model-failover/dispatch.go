@@ -187,23 +187,9 @@ func (p *Policy) tryProviderRedial(ctx context.Context, selfBaseURL, downstreamP
 	return p.doDial(ctx, targetURL, method, headers, extra, model, originalBody, "provider:"+providerID)
 }
 
-// tryBackendURLDial makes one direct outbound attempt at fb's own operator-provided backendURL
-// (same provider, a different backend of it, e.g. a backup region). Unlike a provider redial
-// this never crosses providers, so the original request's own credential is reused unchanged
-// and no translator conversion applies.
-func (p *Policy) tryBackendURLDial(ctx context.Context, operationPath, method string, headers *policy.Headers, fb fallbackTarget, originalBody map[string]interface{}) (policy.ImmediateResponse, bool) {
-	targetURL, err := joinURL(fb.backendURL, "", operationPath)
-	if err != nil {
-		slog.WarnContext(ctx, "ModelFailover: could not resolve fallback URL, skipping", "model", fb.model, "error", err)
-		return policy.ImmediateResponse{}, false
-	}
-	return p.doDial(ctx, targetURL, method, headers, nil, fb.model, originalBody, "backendURL:"+fb.backendURL)
-}
-
 // tryReusePrimaryDial makes one direct outbound attempt at the SAME backend the primary attempt
-// itself already resolved to (fb declares neither provider nor backendURL) — only meaningful
-// from OnResponseHeaders, where an actual primary attempt already happened and upstream
-// reflects it.
+// itself already resolved to (fb declares no provider) — only meaningful from OnResponseHeaders,
+// where an actual primary attempt already happened and upstream reflects it.
 func (p *Policy) tryReusePrimaryDial(ctx context.Context, upstream *policy.UpstreamResponseContext, operationPath, method string, headers *policy.Headers, fb fallbackTarget, originalBody map[string]interface{}) (policy.ImmediateResponse, bool) {
 	if upstream == nil || upstream.URL == "" {
 		slog.WarnContext(ctx, "ModelFailover: primary upstream is unknown, cannot reuse it for fallback", "model", fb.model)
@@ -222,8 +208,6 @@ func (p *Policy) tryFallbackEntry(ctx context.Context, selfBaseURL, downstreamPa
 	switch {
 	case fb.provider != "":
 		return p.tryProviderRedial(ctx, selfBaseURL, downstreamPath, method, headers, fb.provider, fb.model, originalBody)
-	case fb.backendURL != "":
-		return p.tryBackendURLDial(ctx, operationPath, method, headers, fb, originalBody)
 	default:
 		return p.tryReusePrimaryDial(ctx, upstream, operationPath, method, headers, fb, originalBody)
 	}
