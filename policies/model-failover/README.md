@@ -189,6 +189,15 @@ including the plain "reuse primary" case with neither field set:
   backoff-and-retry against the *same* backend (respecting `Retry-After`) than by immediately
   paying for a cross-provider fallback attempt — include it only if that trade-off is the one
   you actually want.
+- **Include `502`/`503`/`504` if any fallback might be genuinely unreachable** (a dead port, a
+  backend that's down at the network level, an `upstreamDefinition` pointing somewhere
+  misconfigured). Since every fallback is a self-redial (see above), a connection failure is no
+  longer something *this policy* observes directly as a Go-level network error — it's **Envoy**
+  that dials the real backend and can't reach it, and Envoy returns its own gateway-error status
+  for that, not a Go error this policy would otherwise treat as an unconditional failure. If that
+  status isn't in `statusCodes`, Envoy's own error response is returned to the client as if it
+  were a legitimate answer, and the fallback walk stops there instead of trying the next
+  candidate.
 
 ## Suspend tracking
 
