@@ -2,12 +2,21 @@ name: model-failover
 version: v0.1.0
 description: |
   Transparently retries a failed LLM request against an ordered fallback chain, selected by
-  matching the client's own request.body.model against a declared target. A target's own
-  primary attempt, and every fallback attempt, is driven from a direct outbound call this
-  policy makes itself rather than Envoy's native retry/aggregate-cluster mechanism.
+  matching the client's own request.body.model against a declared target. Every fallback
+  attempt (same-provider or cross-provider), and a target's own provider-redirected primary
+  attempt, is a SELF-REDIAL: this policy dials this same operation's own externally-facing URL
+  again, so Envoy treats it as a genuinely fresh request and re-runs the FULL policy chain -
+  rate limiting, analytics, any request/response transformation, and so on - rather than this
+  policy making a raw direct call to a backend itself and silently skipping everything else
+  attached to the operation. The one exception is a target's own upstreamDefinition-redirected
+  primary attempt, which is a bare in-process Envoy UpstreamName swap within the SAME request,
+  since it never needs a separate dial at all.
 
   A target or fallback with neither provider nor upstreamDefinition set stays on the same
-  backend the operation already uses (the common case: a different model on the same upstream).
+  backend the operation already uses (the common case: a different model on the same upstream) -
+  still a self-redial, just with no provider-selection header set, so the redialed request falls
+  straight through to the operation's own default upstream.
+
   upstreamDefinition (target-level only) names a same-provider backend declared on this same
   resource's own spec.upstreamDefinitions (e.g. a backup region) - passed straight through as an
   in-process UpstreamName redirect, resolved by Envoy's own routing at runtime, never by this
@@ -142,8 +151,10 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: true
       description: |
-        Base URL (scheme://host:port, no path) this policy dials back to for a provider redial
-        - the operation's own externally-facing address as reachable from within the gateway
-        process itself. Defaults to http://127.0.0.1:8080, the router's own default listener
-        address. Only needs setting explicitly if the deployment changes router.listener_port
-        away from its default. Irrelevant if no target/fallback ever declares provider.
+        Base URL (scheme://host:port, no path) this policy dials back to for a self-redial -
+        the operation's own externally-facing address as reachable from within the gateway
+        process itself. Used by every fallback and provider-redirected primary attempt, not
+        only cross-provider ones - a same-provider "reuse primary" fallback is a self-redial
+        too. Defaults to http://127.0.0.1:8080, the router's own default listener address. Only
+        needs setting explicitly if the deployment changes router.listener_port away from its
+        default.

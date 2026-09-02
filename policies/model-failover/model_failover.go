@@ -20,10 +20,17 @@
 // selected by matching the client's own request.body.model against a declared target.
 //
 // Mechanism (response-path retry — NOT Envoy aggregate-cluster/upstream-ext_proc): Envoy's
-// upstream ext_proc phase is alpha and has been ruled out for GA use. Every attempt this
-// policy originates itself — a target's own primary override or a fallback retry — is driven
-// from a direct outbound call and, on success, returned via ImmediateResponse. This mirrors
-// oauth2-generator's own self-retry pattern, generalized into an N-long chain.
+// upstream ext_proc phase is alpha and has been ruled out for GA use. Every fallback/override
+// attempt this policy originates itself — cross-provider or same-provider — is a SELF-REDIAL
+// (see below): this operation's own externally-facing URL, dialed again, so the attempt runs
+// through the full policy chain like any other request rather than as a raw direct call this
+// policy makes itself. A raw direct dial was considered and dropped: it would silently skip
+// every OTHER attached policy's processing for that one attempt — rate limiting, analytics,
+// any request/response transformation — which is invisible and surprising for anything relying
+// on per-request behavior. On success the attempt's response is returned via ImmediateResponse.
+// The one exception is upstreamDefinition (target-level primary override only): a bare in-
+// process Envoy UpstreamName swap, since that's resolved by Envoy's own routing within the SAME
+// request, never a separate dial at all.
 //
 // This policy is entirely standalone — gateway-controller has no awareness of it, injects no
 // params for it, and validates nothing about its config. Everything below is a runtime
@@ -65,8 +72,8 @@
 // redirect (no extra hop, no auth/template complexity since it's the same provider) — Envoy's
 // own routing resolves it at runtime, so this policy needs nothing resolved ahead of time.
 //
-// OnRequestBody's modelFailoverRedialHeader guard exists because a provider redial re-enters
-// this SAME operation, which still has this policy attached: without the guard, the redialed
+// OnRequestBody's modelFailoverRedialHeader guard exists because a self-redial re-enters this
+// SAME operation, which still has this policy attached: without the guard, the redialed
 // request's own OnRequestBody pass would see the SAME unchanged client model and try to
 // redirect it all over again, forever. The guard's only job is breaking that recursion — a
 // client spoofing the header themselves just means failover doesn't apply to that one request,
@@ -95,7 +102,7 @@ const defaultMaxResponseBytes = 10 << 20
 // defaultDialTimeout is used for a dial when requestTimeout isn't configured.
 const defaultDialTimeout = 10 * time.Second
 
-// defaultSelfBaseURL is used for a provider redial when the operator doesn't set selfBaseURL
+// defaultSelfBaseURL is used for a self-redial when the operator doesn't set selfBaseURL
 // explicitly — the router's own default listener address (router.listener_port's own default).
 // This policy is standalone: gateway-controller never injects this value (see the package
 // doc), so a deployment that changes the listener port away from its default must set
@@ -120,7 +127,7 @@ type fallbackTarget struct {
 
 	// provider is empty unless this fallback crosses providers. When set, it names a
 	// provider id — resolved entirely via a self-redial with providerHeaderName set (see the
-	// package doc and dispatch.go's tryProviderRedial). Purely opaque to this policy: it's
+	// package doc and dispatch.go's trySelfRedial). Purely opaque to this policy: it's
 	// whatever id the operator's own attached selector (e.g. llm-header-router) expects.
 	provider string
 }
@@ -364,7 +371,7 @@ func (p *Policy) dialTimeout() time.Duration {
 }
 
 // downstreamPath returns the original, pre-mutation client-facing request path (e.g.
-// "/mf-poc-proxy/chat/completions") — used to build a provider redial's own target URL, so
+// "/mf-poc-proxy/chat/completions") — used to build a self-redial's own target URL, so
 // Envoy re-matches it against this SAME operation. Empty if unavailable.
 func downstreamPath(d *policy.DownstreamContext) string {
 	if d == nil || d.Request == nil {
@@ -377,9 +384,10 @@ func downstreamPath(d *policy.DownstreamContext) string {
 // kernel BEFORE any policy's header-phase hook ran — unlike rctx.Headers/rhctx.RequestHeaders,
 // which are the SAME live object every policy's own header-phase mutations apply to, this one
 // is frozen at arrival and never mutated afterward. Used everywhere this policy replays the
-// client's own request (a provider redial, a fallback dial), so a header-phase policy's own
-// mutation (e.g. an upstream-auth policy on the PRIMARY's own dispatch) is never accidentally
-// carried into a redial/fallback meant for a completely different backend. nil if unavailable.
+// client's own request (every fallback/override attempt is a self-redial — see the package
+// doc), so a header-phase policy's own mutation (e.g. an upstream-auth policy on the PRIMARY's
+// own dispatch) is never accidentally carried into a redial meant for a completely different
+// backend. nil if unavailable.
 func downstreamHeaders(d *policy.DownstreamContext) *policy.Headers {
 	if d == nil || d.Request == nil {
 		return nil
@@ -387,25 +395,12 @@ func downstreamHeaders(d *policy.DownstreamContext) *policy.Headers {
 	return d.Request.Headers
 }
 
-// operationPath returns the operation-relative path (e.g. "/chat/completions") — deliberately
-// NOT the client's full downstream path (that includes this proxy's own context prefix, e.g.
-// "/mf-poc-proxy/chat/completions", per SharedContext.OperationPath's own kernel-side
-// derivation from route metadata rather than the raw :path header). Used for a reuse-primary
-// dial, which targets a raw backend URL directly and needs just the operation's own relative
-// path appended to it, not the client-facing one. Empty if unavailable.
-func operationPath(shared *policy.SharedContext) string {
-	if shared == nil {
-		return ""
-	}
-	return shared.OperationPath
-}
-
 // OnRequestBody redirects a target's PRIMARY attempt to its own declared provider or
 // upstreamDefinition, if any — a target with neither (the common case) is left completely
 // untouched: no mutation, exactly today's default-routing behavior.
 //
-// The modelFailoverRedialHeader guard is checked first: it's set only on a provider redial
-// this policy originates itself (see dispatch.go), so seeing it here means this IS one of this
+// The modelFailoverRedialHeader guard is checked first: it's set on every self-redial this
+// policy originates itself (see dispatch.go), so seeing it here means this IS one of this
 // policy's own redials re-entering the operation, not a genuine client request — pass it
 // through untouched rather than trying to redirect it all over again (see the package doc).
 func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
@@ -450,7 +445,7 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 // rather than fabricating or silently passing through an unrelated response.
 func (p *Policy) redirectTargetProvider(ctx context.Context, rctx *policy.RequestContext, group targetGroup, decoded map[string]interface{}) policy.RequestAction {
 	path := downstreamPath(rctx.Downstream)
-	if resp, ok := p.tryProviderRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, group.provider, group.model, decoded); ok {
+	if resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, group.provider, group.model, decoded); ok {
 		return resp
 	}
 
@@ -459,7 +454,7 @@ func (p *Policy) redirectTargetProvider(ctx context.Context, rctx *policy.Reques
 		fb := group.fallbacks[idx]
 		// fb always crossesProvider() here — GetPolicy rejects a bare "reuse primary"
 		// fallback under a target that itself redirects.
-		resp, ok := p.tryFallbackEntry(ctx, p.selfBaseURL, path, operationPath(rctx.SharedContext), rctx.Method, rctx.Headers, nil, fb, decoded)
+		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, fb.provider, fb.model, decoded)
 		if !ok {
 			if p.suspendDuration > 0 {
 				p.suspend.Suspend(ctx, suspendKey(rctx.SharedContext, group.model, idx), p.suspendDuration)
@@ -478,16 +473,17 @@ func (p *Policy) redirectTargetProvider(ctx context.Context, rctx *policy.Reques
 
 // OnResponseHeaders drives the fallback retry loop after a NORMAL primary attempt has already
 // failed. On a response whose status matches statusCodes, it walks the matched target group's
-// fallback chain — skipping any fallback currently suspended — making a direct outbound call
-// per candidate until one succeeds (returned via ImmediateResponse) or the chain is exhausted
-// (the original failing response passes through unchanged). A request whose model doesn't
-// match any declared target, or whose status doesn't match statusCodes, is untouched.
+// fallback chain — skipping any fallback currently suspended — making a self-redial attempt per
+// candidate (see trySelfRedial in dispatch.go) until one succeeds (returned via ImmediateResponse)
+// or the chain is exhausted (the original failing response passes through unchanged). A request
+// whose model doesn't match any declared target, or whose status doesn't match statusCodes, is
+// untouched.
 //
 // The modelFailoverRedialHeader guard is checked first, mirroring OnRequestBody: this response
-// belongs to one of this policy's own provider redials, not the original client request. If a
+// belongs to one of this policy's own redials, not the original client request. If a
 // fallback's own model happens to coincide with an independently-declared target (or a cycle of
 // them), skipping the walk here is what stops that from recursing — a redial's own failure is
-// decided once, by the tryProviderRedial/doDial call that originated it (which independently
+// decided once, by the trySelfRedial/doDial call that originated it (which independently
 // checks p.statusCodes itself against the raw response), never by a second, nested fallback walk
 // triggered from inside the redial's own response processing. Without this, "whichever request
 // happens to be redialed" would drive further failover instead of only ever the original one.
@@ -520,7 +516,7 @@ func (p *Policy) OnResponseHeaders(ctx context.Context, rhctx *policy.ResponseHe
 	for _, idx := range order {
 		fb := group.fallbacks[idx]
 
-		resp, ok := p.tryFallbackEntry(ctx, p.selfBaseURL, path, operationPath(rhctx.SharedContext), rhctx.RequestMethod, rhctx.RequestHeaders, rhctx.Upstream, fb, originalBody)
+		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rhctx.RequestMethod, rhctx.RequestHeaders, fb.provider, fb.model, originalBody)
 		if !ok {
 			if p.suspendDuration > 0 {
 				p.suspend.Suspend(ctx, suspendKey(rhctx.SharedContext, group.model, idx), p.suspendDuration)

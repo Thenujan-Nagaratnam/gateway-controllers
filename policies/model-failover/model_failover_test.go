@@ -509,7 +509,7 @@ func TestOnResponseHeaders_RedialHeaderPresent_SkipsFallbackWalkEvenIfModelMatch
 	}
 }
 
-func TestOnResponseHeaders_ReusePrimaryFallback_DialsSameUpstream(t *testing.T) {
+func TestOnResponseHeaders_ReusePrimaryFallback_SelfRedialsWithNoProviderHeader(t *testing.T) {
 	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
@@ -520,6 +520,7 @@ func TestOnResponseHeaders_ReusePrimaryFallback_DialsSameUpstream(t *testing.T) 
 			},
 		},
 		"statusCodes": []interface{}{500},
+		"selfBaseURL": testSelfBaseURL,
 	})
 	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
 	p.httpClient = fake
@@ -530,14 +531,20 @@ func TestOnResponseHeaders_ReusePrimaryFallback_DialsSameUpstream(t *testing.T) 
 		t.Fatalf("expected success, got %#v", action)
 	}
 	req := fake.calls[0]
-	if req.URL.String() != "https://api.openai.com/chat/completions" {
-		t.Fatalf("expected a dial to the primary's own resolved upstream at the operation-relative path (not the full downstream path), got %s", req.URL.String())
+	// A reuse-primary fallback is a self-redial like any other now — dialed at selfBaseURL +
+	// the full downstream path, NOT the primary's own resolved upstream (no raw dial exists
+	// anymore for this case; see dispatch.go's trySelfRedial).
+	if req.URL.String() != testSelfBaseURL+"/mf-proxy/chat/completions" {
+		t.Fatalf("expected a self-redial at selfBaseURL + the downstream path, got %s", req.URL.String())
 	}
 	if req.Header.Get("Authorization") != "Bearer original-token" {
 		t.Fatalf("expected the original credential to be reused unchanged, got %q", req.Header.Get("Authorization"))
 	}
 	if req.Header.Get(providerHeaderName) != "" {
-		t.Fatalf("expected no provider header on a reuse-primary dial")
+		t.Fatalf("expected no provider header on a reuse-primary self-redial")
+	}
+	if req.Header.Get(modelFailoverRedialHeader) != "1" {
+		t.Fatalf("expected the recursion-guard header to be set on a reuse-primary self-redial too")
 	}
 }
 
@@ -588,10 +595,11 @@ func TestOnResponseHeaders_ProviderFallback_SelfRedialsWithProviderHeader(t *tes
 	}
 }
 
-func TestOnResponseHeaders_ProviderFallback_NoSelfBaseURL_SkipsToNextFallback(t *testing.T) {
+func TestOnResponseHeaders_NoSelfBaseURL_AllFallbacksFailClosed(t *testing.T) {
 	// A defensive path: GetPolicy always defaults selfBaseURL, but if it's somehow empty at
-	// dial time anyway, the redial must fail closed rather than dial an invalid URL, and the
-	// walk continues to the next candidate.
+	// dial time anyway, every fallback is now a self-redial (there is no raw-dial mechanism
+	// left as a fallback that doesn't need it), so the whole chain must fail closed and let
+	// the original failing response through — never dial an invalid URL.
 	p := newTestPolicy(t, map[string]interface{}{
 		"targets": []interface{}{
 			map[string]interface{}{
@@ -604,13 +612,16 @@ func TestOnResponseHeaders_ProviderFallback_NoSelfBaseURL_SkipsToNextFallback(t 
 		"statusCodes": []interface{}{500},
 	})
 	p.selfBaseURL = "" // simulate the defensive case directly, bypassing GetPolicy's own guard
-	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
+	fake := &fakeHTTPClient{}
 	p.httpClient = fake
 	rhctx := baseResponseHeaderContext(t, `{"model":"gpt-4o","messages":[]}`, 500)
 
 	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
-	if _, ok := action.(policy.ImmediateResponse); !ok {
-		t.Fatalf("expected the reuse-primary fallback to still succeed, got %#v", action)
+	if _, ok := action.(policy.DownstreamResponseHeaderModifications); !ok {
+		t.Fatalf("expected the original failing response to pass through unchanged, got %#v", action)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("expected no dial attempts with an empty selfBaseURL, got %d", len(fake.calls))
 	}
 }
 

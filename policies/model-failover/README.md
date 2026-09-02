@@ -14,50 +14,64 @@ Transparently retries a failed LLM request against an ordered fallback chain. Fu
   operation's default upstream can't serve that model at all — see "Target-level override"
   below.
 
-## Two kinds of fallback/override, two different mechanisms
+## Two kinds of fallback/override, and how each dials
 
-Every `target`/`fallback` entry sets at most one of `provider` or `upstreamDefinition` (target
-only). Which one is set decides how the dial happens:
+Every `target`/`fallback` entry sets at most `provider`, or (target-only) `upstreamDefinition`.
+Every dial except an `upstreamDefinition`-redirected primary is a **self-redial** — including
+the plain "reuse primary" case with neither field set:
 
-- **None set — reuse the primary's own backend.** The fallback just retries the same upstream
-  the primary already resolved to, with a different `model` in the body. Original credential
+- **None set — reuse the primary's own backend.** Still a self-redial (see below), just with no
+  provider-selection header — the redialed request falls straight through to the operation's
+  own default upstream, which is the same backend the primary already used. Original credential
   reused unchanged.
 - **`upstreamDefinition: <name>`** (target-level only) — redirects the primary attempt via an
   in-process Envoy `UpstreamName` swap to an already-declared `spec.upstreamDefinitions` entry.
-  No extra network hop; Envoy's own routing resolves the name at runtime, so this policy needs
-  nothing pre-resolved.
-- **`provider: <id>`** (target- or fallback-level) — the only one that crosses providers. Never
-  carries its own url/auth/template. Resolved entirely at runtime via a **self-redial** — see
-  below.
+  No extra hop, no self-redial; Envoy's own routing resolves the name at runtime within the
+  SAME request, so this policy needs nothing pre-resolved.
+- **`provider: <id>`** (target- or fallback-level) — crosses providers. Never carries its own
+  url/auth/template. Resolved entirely at runtime via a self-redial with the provider-selection
+  header set.
 
-## The self-redial mechanism (for `provider`)
+## The self-redial mechanism
 
 - The policy dials **this same operation's own externally-facing URL again**
-  (`selfBaseURL` + the original downstream path) with an `x-provider: <id>` header set.
+  (`selfBaseURL` + the original downstream path). If the fallback/override declares `provider`,
+  an `x-provider: <id>` header is set too; a plain "reuse primary" fallback omits it.
 - From Envoy's point of view this is a genuinely fresh inbound request, so it re-runs the
-  **entire policy chain** from scratch — not something this policy simulates itself.
-- That only does something useful if the operator has attached a header-based provider
-  selector policy (e.g. `llm-header-router`) to the same operation, reading `x-provider` and
-  publishing `SharedContext.Metadata["selected_provider"]`. Without one attached, a `provider`
-  reference silently reaches the operation's own default upstream, unchanged.
+  **entire policy chain** from scratch — not something this policy simulates itself. This is
+  deliberate even for the same-provider case: a raw direct dial (considered and dropped) would
+  silently skip every OTHER attached policy's processing for that one attempt — rate limiting,
+  analytics, any request/response transformation — which is invisible and surprising for
+  anything relying on per-request behavior.
+- For a `provider` reference, this only does something useful if the operator has attached a
+  header-based provider selector policy (e.g. `llm-header-router`) to the same operation,
+  reading `x-provider` and publishing `SharedContext.Metadata["selected_provider"]`. Without one
+  attached, a `provider` reference silently reaches the operation's own default upstream,
+  unchanged.
 - Once published, the provider's own already-attached conditional policies fire for real: the
   matching translator (full bidirectional body conversion) and the upstream-auth policy
   (credential injection) — both already-shipped, general-purpose policies used for any other
   multi-provider proxy. This policy never resolves or applies either itself, and carries no
   per-vendor adapter of its own.
-- **Why a self-redial and not a request-phase redirect:** the auth policy is a
+- **Why a self-redial and not a request-phase redirect (for `provider`):** the auth policy is a
   request-**header**-phase-only policy. The kernel runs every policy's header-phase hook to
   completion for the *whole* chain before any policy's body-phase hook runs at all. This policy
   can only ever decide "redirect to provider X" in body phase — it has to see the client's
   `model` field first. A signal produced in body phase is always one phase too late for a
   header-phase-only gate to see. Publishing the selection via a real header (which *is*
   available at header-phase time) sidesteps that ordering problem instead of fighting it.
+- **Why a bare "reuse primary" fallback can safely self-redial with no provider header:**
+  `GetPolicy` requires every fallback under a target that redirects its OWN primary (`provider`
+  or `upstreamDefinition` set) to also cross providers — there's no bare fallback in that case.
+  So whenever a bare fallback exists, the target's own primary is guaranteed to already be the
+  operation's plain default upstream, which is exactly where a no-provider-header self-redial
+  lands.
 
 ## Recursion guard
 
-- A provider self-redial re-enters the *same* operation, which still has this policy attached.
-  Without a guard, the redialed request's own `OnRequestBody` would see the same unchanged
-  client model and try to redirect it all over again, forever.
+- A self-redial re-enters the *same* operation, which still has this policy attached. Without a
+  guard, the redialed request's own `OnRequestBody` would see the same unchanged client model
+  and try to redirect it all over again, forever.
 - Guarded by a dedicated header, `x-wso2-model-failover-redial`, set only on this policy's own
   redial and checked first in **both** `OnRequestBody` and `OnResponseHeaders`.
 - Deliberately **not** the pre-existing `x-wso2-internal-loopback` header: gateway-controller's
@@ -72,7 +86,7 @@ only). Which one is set decides how the dial happens:
   target's own fallback chain too — a nested failover triggered by a redial, not by the
   original client request. A cyclic config (fallback A's model is target B, whose fallback's
   model is target A again) would recurse indefinitely with nothing to stop it. The guard makes
-  a redial's outcome decided exactly once, by the `tryProviderRedial`/`doDial` call that
+  a redial's outcome decided exactly once, by the `trySelfRedial`/`doDial` call that
   originated it (which independently checks `statusCodes` against the raw response) — never by
   a second, nested walk from inside the redial's own response processing. Only the original,
   non-redialed request's own failure ever drives a fallback walk.
@@ -96,13 +110,13 @@ only). Which one is set decides how the dial happens:
 
 ## Path handling
 
-- A raw dial reusing the primary's own backend appends `SharedContext.OperationPath` (the
-  operation-relative path, e.g. `/chat/completions`) to the target URL — **not** the client's
-  full downstream path, which includes this proxy's own context prefix (e.g.
-  `/mf-poc-proxy/chat/completions`) and would be wrong on a real backend.
-- A provider self-redial appends the **full downstream path** instead (via
-  `Downstream.Request.Path`), since it needs Envoy to re-match the *same* operation, not some
-  operation-relative fragment.
+- Every self-redial (any fallback, or a target's own `provider`-redirected primary) dials
+  `selfBaseURL` + the client's **full downstream path** (via `Downstream.Request.Path`, e.g.
+  `/mf-poc-proxy/chat/completions`) — not `SharedContext.OperationPath`, since it needs Envoy to
+  re-match the *same* operation, not some operation-relative fragment.
+- There is no raw-URL dial anywhere in this policy anymore — the only other routing mechanism is
+  `upstreamDefinition`'s in-process `UpstreamName` swap, which needs no path handling of its own
+  at all (Envoy's own routing resolves it within the same request).
 
 ## What gateway-controller does and doesn't do
 
