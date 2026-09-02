@@ -109,7 +109,26 @@ parameters:
       type: array
       minItems: 1
       x-wso2-policy-advanced-param: false
-      description: Response status codes that trigger failover to the next target in whichever chain matched.
+      description: |
+        Response status codes that trigger failover to the next target in whichever chain
+        matched. Mandatory, no default: which codes actually signal a model/capacity problem
+        varies significantly by provider, so a single built-in default would either miss a real
+        outage signal or trigger a wasteful cross-provider retry on what was really a
+        client-caused error. Commonly relevant codes per provider (verify against that
+        provider's own current docs before relying on this):
+          - OpenAI: 429 (rate limit/quota), 500, 503 (engine overloaded)
+          - Anthropic: 404 (unknown/stale model), 429, 500, 529 (overloaded - Anthropic-specific,
+            not the standard 503)
+          - AWS Bedrock: 404 (ResourceNotFoundException), 408 (ModelTimeoutException), 424
+            (ModelErrorException - Bedrock-specific), 429 (ThrottlingException AND
+            ModelNotReadyException), 500, 503. Quota-exceeded is 400 here, not 429 - decide
+            deliberately whether to include it.
+          - Azure OpenAI: 404 (deployment not found), 429, 500, 503
+          - Google Gemini: 404 (NOT_FOUND), 429 (RESOURCE_EXHAUSTED), 500, 503 (UNAVAILABLE)
+          - Mistral: 429, 500, 502, 503, 504
+        429 in particular deserves a deliberate decision rather than a reflexive include: it may
+        be better served by backoff-and-retry against the SAME backend (respecting Retry-After)
+        than by paying for a cross-provider fallback attempt.
       items:
         type: integer
         minimum: 100

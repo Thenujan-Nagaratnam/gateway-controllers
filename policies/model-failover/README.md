@@ -117,6 +117,37 @@ only), or `backendURL` (fallback only). Which one is set decides how the dial ha
   `provider` references to actually reach anywhere — the same way any other multi-provider
   proxy is wired up on this platform.
 
+## Choosing `statusCodes`
+
+- Mandatory, no default. Every example in this doc uses `[500]` for brevity, but that alone is
+  a dangerously narrow assumption — real providers signal a model/capacity problem through a
+  much wider, and inconsistent, set of codes.
+- Researched directly against each provider's own current docs (2026-09):
+  - **OpenAI**: `429` (rate limit/quota), `500`, `503` (engine overloaded).
+  - **Anthropic**: `404` (unknown/stale model), `429`, `500`, `529` (overloaded —
+    Anthropic-specific; not the standard `503`).
+  - **AWS Bedrock**: `404` (`ResourceNotFoundException`), `408` (`ModelTimeoutException`), `424`
+    (`ModelErrorException` — Bedrock-specific, HTTP's rarely-used Failed Dependency code),
+    `429` (`ThrottlingException` **and** `ModelNotReadyException`), `500`, `503`. Quota-exceeded
+    is `400` here (`ServiceQuotaExceededException`), not `429` — decide deliberately whether to
+    include it.
+  - **Azure OpenAI**: `404` (deployment not found), `429`, `500`, `503`.
+  - **Google Gemini**: `404` (`NOT_FOUND`), `429` (`RESOURCE_EXHAUSTED`), `500`, `503`
+    (`UNAVAILABLE`).
+  - **Mistral**: `429`, `500`, `502`, `503`, `504`.
+- **Why there's no built-in default.** The set that actually matters is genuinely
+  provider-specific — Anthropic's `529` and Bedrock's `424` don't exist anywhere else, and
+  Bedrock alone puts quota-exceeded on `400` where every other provider here uses `429`. A single
+  hardcoded default would have to either omit a real provider's outage signal or be broad enough
+  to start treating a plain client-caused `4xx` as a trigger for an expensive cross-provider
+  fallback. Since a fallback chain commonly spans more than one provider at once, no fixed list
+  is correct for every member of that chain simultaneously — only the operator configuring that
+  specific chain knows which codes belong.
+- **`429` deserves a deliberate decision, not a reflexive include.** It may be better served by
+  backoff-and-retry against the *same* backend (respecting `Retry-After`) than by immediately
+  paying for a cross-provider fallback attempt — include it only if that trade-off is the one
+  you actually want.
+
 ## Suspend tracking
 
 - Optional (`suspendDuration`), in-memory only, never shared across replicas.
