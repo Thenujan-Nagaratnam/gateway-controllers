@@ -45,11 +45,11 @@ including the plain "reuse primary" case with neither field set:
   `x-wso2-model-failover-upstream-definition: <name>` is set instead; a plain "reuse primary"
   fallback sets neither.
 - From Envoy's point of view this is a genuinely fresh inbound request, so it re-runs the
-  **entire policy chain** from scratch — not something this policy simulates itself. This is
-  deliberate even for the same-provider case: a raw direct dial (considered and dropped) would
-  silently skip every OTHER attached policy's processing for that one attempt — rate limiting,
-  analytics, any request/response transformation — which is invisible and surprising for
-  anything relying on per-request behavior.
+  **entire policy chain** from scratch — not something this policy simulates itself. This
+  matters even for the same-provider case: a raw direct dial would silently skip every OTHER
+  attached policy's processing for that one attempt — rate limiting, analytics, any
+  request/response transformation — which is invisible and surprising for anything relying on
+  per-request behavior.
 - For a `provider` reference, this only does something useful if the operator has attached a
   header-based provider selector policy (e.g. `llm-header-router`) to the same operation,
   reading `x-provider` and publishing `SharedContext.Metadata["selected_provider"]`. Without one
@@ -84,15 +84,15 @@ including the plain "reuse primary" case with neither field set:
 - Deliberately **not** the pre-existing `x-wso2-internal-loopback` header: gateway-controller's
   own loopback-marker policy stamps that one unconditionally on *every* request through an
   `additionalProviders` proxy, including a client's genuine first request. Using it as the
-  guard would have silently swallowed all real traffic — found via live testing, not review.
+  guard would silently swallow all real traffic.
 - A client spoofing the redial header themselves just means failover doesn't apply to that one
   request — never a routing or auth bypass.
 - **One narrow, deliberate exception in `OnRequestBody`:** a redial also carrying
   `x-wso2-model-failover-upstream-definition` gets exactly one thing applied — the `UpstreamName`
   redirect that header names — before falling through to the same blanket passthrough as any
   other redial. This never re-triggers target-matching (the guard's actual recursion concern),
-  so it can't recurse; it's just where a fallback's own `upstreamDefinition` redirect gets applied
-  now that reuse-primary is a self-redial too.
+  so it can't recurse; it's just where a fallback's own `upstreamDefinition` redirect gets
+  applied, since reuse-primary is a self-redial too.
 - **Why `OnResponseHeaders` needs the same guard, not just `OnRequestBody`:** if a redial's own
   response also fails, and its model happens to also be declared as its own independent
   `targets[]` entry (or a cycle of them), `OnResponseHeaders` would otherwise walk *that*
@@ -127,7 +127,7 @@ including the plain "reuse primary" case with neither field set:
   `selfBaseURL` + the client's **full downstream path** (via `Downstream.Request.Path`, e.g.
   `/mf-poc-proxy/chat/completions`) — not `SharedContext.OperationPath`, since it needs Envoy to
   re-match the *same* operation, not some operation-relative fragment.
-- There is no raw-URL dial anywhere in this policy anymore — the only other routing mechanism is
+- There is no raw-URL dial anywhere in this policy — the only other routing mechanism is
   `upstreamDefinition`'s in-process `UpstreamName` swap, which needs no path handling of its own
   at all (Envoy's own routing resolves it within the same request).
 

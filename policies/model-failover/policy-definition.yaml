@@ -23,8 +23,8 @@ parameters:
       minItems: 1
       x-wso2-policy-advanced-param: false
       description: |
-        One entry per independently-selectable target model. The client's own
-        request.body.model must equal a target's model to select that target's whole chain.
+        One entry per independently-selectable target model, matched against the client's
+        own request.body.model.
       items:
         type: object
         additionalProperties: false
@@ -38,28 +38,19 @@ parameters:
           provider:
             type: string
             description: |
-              A provider id this proxy can route to via a header-based router policy attached
-              to the same operation. Omit for the common case (this target's primary attempt
-              uses the operation's own default upstream). When set, the target's PRIMARY
-              attempt itself is redirected there - required when the operation's own default
-              upstream can't serve this model at all. Mutually exclusive with
-              upstreamDefinition. A target that sets this must have every one of its own
-              fallbacks also set provider or upstreamDefinition - there is no primary attempt
-              left for a bare fallback to reuse once the primary itself is redirected.
+              Provider id to redirect this target's PRIMARY attempt to. Mutually exclusive
+              with upstreamDefinition; requires every fallback to set one too.
           upstreamDefinition:
             type: string
             description: |
-              Name of an entry in this LlmProvider's own spec.upstreamDefinitions. Omit for
-              the common case (this target's primary attempt uses the operation's own default
-              upstream). When set, the target's PRIMARY attempt itself is redirected there.
-              Mutually exclusive with provider. Same fallback requirement as provider above.
+              spec.upstreamDefinitions entry to redirect this target's PRIMARY attempt to.
+              Mutually exclusive with provider; same fallback requirement.
           fallbacks:
             type: array
             x-wso2-policy-advanced-param: false
             description: |
-              This target's own ordered fallback chain, tried in order (skipping any
-              currently-suspended entry) if the primary request fails. May be empty or
-              omitted: a target with no fallbacks is just routed plainly, with no failover.
+              This target's own ordered fallback chain, tried in order if the primary
+              request fails. Omit for no failover.
             items:
               type: object
               additionalProperties: false
@@ -73,43 +64,20 @@ parameters:
                 provider:
                   type: string
                   description: |
-                    A provider id this proxy can route to via a header-based router policy
-                    attached to the same operation. Omit for the common case (this fallback
-                    reuses the same provider as its own target - same backend, just a
-                    different model). Mutually exclusive with upstreamDefinition.
+                    Provider id this fallback should cross to. Omit to reuse the target's own
+                    provider. Mutually exclusive with upstreamDefinition.
                 upstreamDefinition:
                   type: string
                   description: |
-                    Name of an entry in this same resource's own spec.upstreamDefinitions -
-                    never a raw URL, always resolved by Envoy's own routing. Use when this
-                    fallback should try a same-provider backend other than the one the primary
-                    already used (e.g. a backup region). Omit for the common case (this
-                    fallback reuses the same backend as its own target). Mutually exclusive
-                    with provider.
+                    spec.upstreamDefinitions entry this fallback should use instead of the
+                    target's own backend. Mutually exclusive with provider.
     statusCodes:
       type: array
       minItems: 1
       x-wso2-policy-advanced-param: false
       description: |
-        Response status codes that trigger failover to the next target in whichever chain
-        matched. Mandatory, no default: which codes actually signal a model/capacity problem
-        varies significantly by provider, so a single built-in default would either miss a real
-        outage signal or trigger a wasteful cross-provider retry on what was really a
-        client-caused error. Commonly relevant codes per provider (verify against that
-        provider's own current docs before relying on this):
-          - OpenAI: 429 (rate limit/quota), 500, 503 (engine overloaded)
-          - Anthropic: 404 (unknown/stale model), 429, 500, 529 (overloaded - Anthropic-specific,
-            not the standard 503)
-          - AWS Bedrock: 404 (ResourceNotFoundException), 408 (ModelTimeoutException), 424
-            (ModelErrorException - Bedrock-specific), 429 (ThrottlingException AND
-            ModelNotReadyException), 500, 503. Quota-exceeded is 400 here, not 429 - decide
-            deliberately whether to include it.
-          - Azure OpenAI: 404 (deployment not found), 429, 500, 503
-          - Google Gemini: 404 (NOT_FOUND), 429 (RESOURCE_EXHAUSTED), 500, 503 (UNAVAILABLE)
-          - Mistral: 429, 500, 502, 503, 504
-        429 in particular deserves a deliberate decision rather than a reflexive include: it may
-        be better served by backoff-and-retry against the SAME backend (respecting Retry-After)
-        than by paying for a cross-provider fallback attempt.
+        Response status codes that trigger failover. Mandatory, no default - the right set
+        varies significantly by provider (see README).
       items:
         type: integer
         minimum: 100
@@ -122,9 +90,8 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: true
       description: |
-        How long a failed fallback is deprioritized for future requests to its own chain (e.g.
-        "30s"). Omit to disable suspend tracking entirely. Never applies to a target's own
-        primary attempt.
+        How long a failed fallback is deprioritized (e.g. "30s"). Omit to disable; never
+        applies to a target's own primary attempt.
     maxResponseBytes:
       type: integer
       x-wso2-policy-advanced-param: true
@@ -133,10 +100,5 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: true
       description: |
-        Base URL (scheme://host:port, no path) this policy dials back to for a self-redial -
-        the operation's own externally-facing address as reachable from within the gateway
-        process itself. Used by every fallback and provider-redirected primary attempt, not
-        only cross-provider ones - a same-provider "reuse primary" fallback is a self-redial
-        too. Defaults to http://127.0.0.1:8080, the router's own default listener address. Only
-        needs setting explicitly if the deployment changes router.listener_port away from its
-        default.
+        Base URL this policy dials back to for a self-redial. Defaults to
+        http://127.0.0.1:8080, the router's own default listener address.

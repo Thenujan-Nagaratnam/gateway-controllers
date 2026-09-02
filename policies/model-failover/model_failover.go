@@ -19,15 +19,14 @@
 // against an ordered fallback chain — one independently-selectable chain per target model,
 // selected by matching the client's own request.body.model against a declared target.
 //
-// Mechanism (response-path retry — NOT Envoy aggregate-cluster/upstream-ext_proc): Envoy's
-// upstream ext_proc phase is alpha and has been ruled out for GA use. Every fallback/override
-// attempt this policy originates itself — cross-provider or same-provider — is a SELF-REDIAL
-// (see below): this operation's own externally-facing URL, dialed again, so the attempt runs
-// through the full policy chain like any other request rather than as a raw direct call this
-// policy makes itself. A raw direct dial was considered and dropped: it would silently skip
-// every OTHER attached policy's processing for that one attempt — rate limiting, analytics,
-// any request/response transformation — which is invisible and surprising for anything relying
-// on per-request behavior. On success the attempt's response is returned via ImmediateResponse.
+// Mechanism (response-path retry — NOT Envoy aggregate-cluster/upstream-ext_proc): every
+// fallback/override attempt this policy originates itself — cross-provider or same-provider —
+// is a SELF-REDIAL (see below): this operation's own externally-facing URL, dialed again, so
+// the attempt runs through the full policy chain like any other request. A raw direct call
+// would silently skip every OTHER attached policy's processing for that one attempt — rate
+// limiting, analytics, any request/response transformation — which is invisible and surprising
+// for anything relying on per-request behavior. On success the attempt's response is returned
+// via ImmediateResponse.
 // The one exception is a TARGET's own upstreamDefinition-redirected primary attempt: a bare
 // in-process Envoy UpstreamName swap, since that happens before any dial at all (OnRequestBody,
 // pre-primary) and needs no self-redial. A FALLBACK's own upstreamDefinition (same-provider,
@@ -304,8 +303,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		p.maxResponseBytes = int64(n)
 	}
 
-	// Suspend tracking is in-memory only, permanently — there is no Redis-backed option (a
-	// cross-replica store was considered and deliberately dropped from scope).
+	// Suspend tracking is in-memory only, permanently — no cross-replica (Redis-backed) option.
 	p.suspend = newMemorySuspendStore()
 
 	return p, nil
@@ -601,8 +599,8 @@ func suspendKey(shared *policy.SharedContext, groupModel string, fallbackIndex i
 
 // suspendStore tracks which (route, target group, fallback index) tuples recently failed.
 // The in-memory implementation here is the ONLY implementation this policy has, permanently —
-// cross-replica (Redis-backed) suspend sharing was considered and deliberately dropped from
-// scope. The interface still earns its keep as a seam for tests.
+// no cross-replica (Redis-backed) sharing. The interface still earns its keep as a seam for
+// tests.
 type suspendStore interface {
 	IsSuspended(ctx context.Context, key string) bool
 	Suspend(ctx context.Context, key string, ttl time.Duration)
