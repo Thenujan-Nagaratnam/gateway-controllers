@@ -17,7 +17,8 @@
 
 // Package modelfailover provides a policy that transparently retries a failed LLM request
 // against an ordered fallback chain — one independently-selectable chain per target model,
-// selected by matching the client's own request.body.model against a declared target.
+// selected by matching the client's own model identifier (located per requestModel, see
+// requestmodel.go) against a declared target.
 //
 // Mechanism (response-path retry — NOT Envoy aggregate-cluster/upstream-ext_proc): every
 // fallback/override attempt this policy originates itself — cross-provider or same-provider —
@@ -89,7 +90,6 @@ package modelfailover
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -188,12 +188,18 @@ type Policy struct {
 	suspendDuration  time.Duration // zero = suspend tracking disabled
 	maxResponseBytes int64
 	selfBaseURL      string // operator-configurable; defaults to defaultSelfBaseURL if unset
+	requestModel     requestModelConfig
 	suspend          suspendStore
 	httpClient       retryHTTPClient
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
 func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (policy.Policy, error) {
+	requestModelCfg, err := parseRequestModelConfig(params)
+	if err != nil {
+		return nil, err
+	}
+
 	rawTargets, ok := params["targets"].([]interface{})
 	if !ok || len(rawTargets) == 0 {
 		return nil, fmt.Errorf("model-failover requires a non-empty 'targets' list")
@@ -278,6 +284,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		statusCodes:      statusCodes,
 		maxResponseBytes: defaultMaxResponseBytes,
 		selfBaseURL:      selfBaseURL,
+		requestModel:     requestModelCfg,
 		httpClient:       newDefaultRetryHTTPClient(),
 	}
 
@@ -442,13 +449,12 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 		return policy.UpstreamRequestModifications{}
 	}
 
-	var decoded map[string]interface{}
-	if err := json.Unmarshal(rctx.Body.Content, &decoded); err != nil {
-		slog.WarnContext(ctx, "ModelFailover: request body is not valid JSON, failing open (no redirect)", "error", err)
+	requestedModel, err := extractRequestedModel(p.requestModel, rctx.Body.Content, rctx.Headers, rctx.Path)
+	if err != nil {
+		slog.WarnContext(ctx, "ModelFailover: could not extract request model, failing open (no redirect)", "error", err)
 		return policy.UpstreamRequestModifications{}
 	}
 
-	requestedModel, _ := decoded["model"].(string)
 	group, matched := p.groupByModel(requestedModel)
 	if !matched {
 		return policy.UpstreamRequestModifications{}
@@ -456,7 +462,7 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 
 	switch {
 	case group.provider != "":
-		return p.redirectTargetProvider(ctx, rctx, group, decoded)
+		return p.redirectTargetProvider(ctx, rctx, group)
 
 	case group.upstreamDefinition != "":
 		// Same-provider redirect — plain in-process routing, no auth/template complexity.
@@ -470,13 +476,13 @@ func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext,
 
 // redirectTargetProvider handles a target whose own primary attempt crosses providers: try the
 // declared provider via a self-redial, and if that fails, walk the target's own fallback chain
-// (GetPolicy already requires every one of those to cross providers too — see the package
-// doc). If nothing succeeds, there is no sensible default to fall through to (that's why this
-// target declared an override in the first place), so this returns an honest, generic failure
-// rather than fabricating or silently passing through an unrelated response.
-func (p *Policy) redirectTargetProvider(ctx context.Context, rctx *policy.RequestContext, group targetGroup, decoded map[string]interface{}) policy.RequestAction {
+// (GetPolicy already requires every one of those to have an explicit redirect target too — see
+// the package doc). If nothing succeeds, there is no sensible default to fall through to (that's
+// why this target declared an override in the first place), so this returns an honest, generic
+// failure rather than fabricating or silently passing through an unrelated response.
+func (p *Policy) redirectTargetProvider(ctx context.Context, rctx *policy.RequestContext, group targetGroup) policy.RequestAction {
 	path := downstreamPath(rctx.Downstream)
-	if resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, group.provider, "", group.model, decoded); ok {
+	if resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, group.provider, "", rctx.Body.Content, group.model); ok {
 		return resp
 	}
 
@@ -485,7 +491,7 @@ func (p *Policy) redirectTargetProvider(ctx context.Context, rctx *policy.Reques
 		fb := group.fallbacks[idx]
 		// fb always hasExplicitOverride() here — GetPolicy rejects a bare "reuse primary"
 		// fallback under a target that itself redirects.
-		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, fb.provider, fb.upstreamDefinition, fb.model, decoded)
+		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, fb.provider, fb.upstreamDefinition, rctx.Body.Content, fb.model)
 		if !ok {
 			if p.suspendDuration > 0 {
 				p.suspend.Suspend(ctx, suspendKey(rctx.SharedContext, group.model, idx), p.suspendDuration)
@@ -530,13 +536,12 @@ func (p *Policy) OnResponseHeaders(ctx context.Context, rhctx *policy.ResponseHe
 		return policy.DownstreamResponseHeaderModifications{}
 	}
 
-	var originalBody map[string]interface{}
-	if err := json.Unmarshal(rhctx.RequestBody.Content, &originalBody); err != nil || originalBody == nil {
-		slog.WarnContext(ctx, "ModelFailover: request body is not a JSON object, cannot select a target", "error", err)
+	requestedModel, err := extractRequestedModel(p.requestModel, rhctx.RequestBody.Content, rhctx.RequestHeaders, rhctx.RequestPath)
+	if err != nil {
+		slog.WarnContext(ctx, "ModelFailover: could not extract request model, cannot select a target", "error", err)
 		return policy.DownstreamResponseHeaderModifications{}
 	}
 
-	requestedModel, _ := originalBody["model"].(string)
 	group, matched := p.groupByModel(requestedModel)
 	if !matched || len(group.fallbacks) == 0 {
 		return policy.DownstreamResponseHeaderModifications{}
@@ -547,7 +552,7 @@ func (p *Policy) OnResponseHeaders(ctx context.Context, rhctx *policy.ResponseHe
 	for _, idx := range order {
 		fb := group.fallbacks[idx]
 
-		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rhctx.RequestMethod, rhctx.RequestHeaders, fb.provider, fb.upstreamDefinition, fb.model, originalBody)
+		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rhctx.RequestMethod, rhctx.RequestHeaders, fb.provider, fb.upstreamDefinition, rhctx.RequestBody.Content, fb.model)
 		if !ok {
 			if p.suspendDuration > 0 {
 				p.suspend.Suspend(ctx, suspendKey(rhctx.SharedContext, group.model, idx), p.suspendDuration)

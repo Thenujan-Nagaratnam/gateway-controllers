@@ -102,8 +102,16 @@ func baseRequestContext(t *testing.T, requestBody string) *policy.RequestContext
 	}
 }
 
+// defaultTestRequestModel mirrors what gateway-controller actually injects for every current
+// built-in LLM provider template — payload location, $.model identifier. Tests exercising a
+// different location set "requestModel" explicitly, overriding this default.
+var defaultTestRequestModel = map[string]interface{}{"location": "payload", "identifier": "$.model"}
+
 func newTestPolicy(t *testing.T, params map[string]interface{}) *Policy {
 	t.Helper()
+	if _, ok := params["requestModel"]; !ok {
+		params["requestModel"] = defaultTestRequestModel
+	}
 	p, err := GetPolicy(policy.PolicyMetadata{}, params)
 	if err != nil {
 		t.Fatalf("GetPolicy: unexpected error: %v", err)
@@ -127,9 +135,31 @@ func TestGetPolicy_ValidMinimalConfig(t *testing.T) {
 	}
 }
 
+func TestGetPolicy_MissingRequestModel_Errors(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"targets":     []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"statusCodes": []interface{}{500},
+	})
+	if err == nil {
+		t.Fatal("expected an error for missing requestModel — gateway-controller injects it unconditionally, so its absence means something is fundamentally wrong")
+	}
+}
+
+func TestGetPolicy_InvalidRequestModelLocation_Errors(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"targets":      []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"statusCodes":  []interface{}{500},
+		"requestModel": map[string]interface{}{"location": "cookie", "identifier": "$.model"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unrecognized requestModel.location")
+	}
+}
+
 func TestGetPolicy_MissingTargets_Errors(t *testing.T) {
 	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
-		"statusCodes": []interface{}{500},
+		"statusCodes":  []interface{}{500},
+		"requestModel": defaultTestRequestModel,
 	})
 	if err == nil {
 		t.Fatal("expected an error for missing targets")
@@ -138,7 +168,8 @@ func TestGetPolicy_MissingTargets_Errors(t *testing.T) {
 
 func TestGetPolicy_MissingStatusCodes_Errors(t *testing.T) {
 	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
-		"targets": []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"targets":      []interface{}{map[string]interface{}{"model": "gpt-4o"}},
+		"requestModel": defaultTestRequestModel,
 	})
 	if err == nil {
 		t.Fatal("expected an error for missing statusCodes")
@@ -151,7 +182,8 @@ func TestGetPolicy_DuplicateTargetModel_Errors(t *testing.T) {
 			map[string]interface{}{"model": "gpt-4o"},
 			map[string]interface{}{"model": "gpt-4o"},
 		},
-		"statusCodes": []interface{}{500},
+		"statusCodes":  []interface{}{500},
+		"requestModel": defaultTestRequestModel,
 	})
 	if err == nil {
 		t.Fatal("expected an error for a duplicated target model")
@@ -190,8 +222,9 @@ func TestGetPolicy_TargetProviderAndUpstreamDefinition_MutuallyExclusive(t *test
 		"targets": []interface{}{
 			map[string]interface{}{"model": "gpt-4o", "provider": "a", "upstreamDefinition": "b"},
 		},
-		"statusCodes": []interface{}{500},
-		"selfBaseURL": testSelfBaseURL,
+		"statusCodes":  []interface{}{500},
+		"selfBaseURL":  testSelfBaseURL,
+		"requestModel": defaultTestRequestModel,
 	})
 	if err == nil {
 		t.Fatal("expected an error when both provider and upstreamDefinition are set on a target")
@@ -249,8 +282,9 @@ func TestGetPolicy_FallbackProviderAndUpstreamDefinition_MutuallyExclusive(t *te
 				},
 			},
 		},
-		"statusCodes": []interface{}{500},
-		"selfBaseURL": testSelfBaseURL,
+		"statusCodes":  []interface{}{500},
+		"selfBaseURL":  testSelfBaseURL,
+		"requestModel": defaultTestRequestModel,
 	})
 	if err == nil {
 		t.Fatal("expected an error when both provider and upstreamDefinition are set on a fallback")
@@ -268,8 +302,9 @@ func TestGetPolicy_TargetRedirectsOwnPrimary_RequiresFallbacksToCrossProvider(t 
 				},
 			},
 		},
-		"statusCodes": []interface{}{500},
-		"selfBaseURL": testSelfBaseURL,
+		"statusCodes":  []interface{}{500},
+		"selfBaseURL":  testSelfBaseURL,
+		"requestModel": defaultTestRequestModel,
 	})
 	if err == nil {
 		t.Fatal("expected an error: a target that redirects its own primary attempt has no primary left for a bare fallback to reuse")
@@ -313,6 +348,174 @@ func TestGetPolicy_TargetRedirectsOwnPrimary_UpstreamDefinitionFallback_Succeeds
 	})
 	if len(p.targets[0].fallbacks) != 1 {
 		t.Fatalf("expected the upstreamDefinition fallback to be accepted, got %+v", p.targets[0])
+	}
+}
+
+// ─── requestModel: extraction (matching the client's own model) ──────────────
+
+func TestExtractRequestedModel_Payload(t *testing.T) {
+	cfg := requestModelConfig{Location: "payload", Identifier: "$.model"}
+	got, err := extractRequestedModel(cfg, []byte(`{"model":"gpt-4o","messages":[]}`), nil, "")
+	if err != nil || got != "gpt-4o" {
+		t.Fatalf("expected gpt-4o, got %q err=%v", got, err)
+	}
+}
+
+func TestExtractRequestedModel_Header(t *testing.T) {
+	cfg := requestModelConfig{Location: "header", Identifier: "x-model"}
+	headers := policy.NewHeaders(map[string][]string{"x-model": {"gpt-4o"}})
+	got, err := extractRequestedModel(cfg, nil, headers, "")
+	if err != nil || got != "gpt-4o" {
+		t.Fatalf("expected gpt-4o, got %q err=%v", got, err)
+	}
+}
+
+func TestExtractRequestedModel_Header_Missing_Errors(t *testing.T) {
+	cfg := requestModelConfig{Location: "header", Identifier: "x-model"}
+	_, err := extractRequestedModel(cfg, nil, policy.NewHeaders(nil), "")
+	if err == nil {
+		t.Fatal("expected an error when the header is absent")
+	}
+}
+
+func TestExtractRequestedModel_QueryParam(t *testing.T) {
+	cfg := requestModelConfig{Location: "queryParam", Identifier: "model"}
+	got, err := extractRequestedModel(cfg, nil, nil, "/v1/chat/completions?model=gpt-4o&foo=bar")
+	if err != nil || got != "gpt-4o" {
+		t.Fatalf("expected gpt-4o, got %q err=%v", got, err)
+	}
+}
+
+func TestExtractRequestedModel_PathParam(t *testing.T) {
+	cfg := requestModelConfig{Location: "pathParam", Identifier: `/models/([^/]+)/chat`}
+	got, err := extractRequestedModel(cfg, nil, nil, "/v1/models/gpt-4o/chat/completions")
+	if err != nil || got != "gpt-4o" {
+		t.Fatalf("expected gpt-4o, got %q err=%v", got, err)
+	}
+}
+
+func TestExtractRequestedModel_PathParam_NoMatch_Errors(t *testing.T) {
+	cfg := requestModelConfig{Location: "pathParam", Identifier: `/models/([^/]+)/chat`}
+	_, err := extractRequestedModel(cfg, nil, nil, "/v1/chat/completions")
+	if err == nil {
+		t.Fatal("expected an error when the path doesn't match the pattern")
+	}
+}
+
+// ─── requestModel: fallback injection (rewriting the model for a redial) ─────
+
+func TestBuildFallbackRequest_Payload(t *testing.T) {
+	cfg := requestModelConfig{Location: "payload", Identifier: "$.model"}
+	path, body, headers, err := buildFallbackRequest(cfg, "/chat/completions", []byte(`{"model":"gpt-4o","messages":[]}`), "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "/chat/completions" {
+		t.Fatalf("expected path unchanged, got %q", path)
+	}
+	if headers != nil {
+		t.Fatalf("expected no extra headers, got %v", headers)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	if decoded["model"] != "gpt-4o-mini" {
+		t.Fatalf("expected model rewritten to gpt-4o-mini, got %v", decoded["model"])
+	}
+}
+
+func TestBuildFallbackRequest_Header(t *testing.T) {
+	cfg := requestModelConfig{Location: "header", Identifier: "x-model"}
+	path, body, headers, err := buildFallbackRequest(cfg, "/chat/completions", []byte(`{"unrelated":true}`), "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "/chat/completions" {
+		t.Fatalf("expected path unchanged, got %q", path)
+	}
+	if string(body) != `{"unrelated":true}` {
+		t.Fatalf("expected body unchanged, got %s", body)
+	}
+	if headers["x-model"] != "gpt-4o-mini" {
+		t.Fatalf("expected x-model header set to gpt-4o-mini, got %v", headers)
+	}
+}
+
+func TestBuildFallbackRequest_QueryParam(t *testing.T) {
+	cfg := requestModelConfig{Location: "queryParam", Identifier: "model"}
+	path, body, headers, err := buildFallbackRequest(cfg, "/chat/completions?model=gpt-4o", []byte(`{}`), "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "/chat/completions?model=gpt-4o-mini" {
+		t.Fatalf("expected model query param rewritten, got %q", path)
+	}
+	if headers != nil {
+		t.Fatalf("expected no extra headers, got %v", headers)
+	}
+	if string(body) != "{}" {
+		t.Fatalf("expected body unchanged, got %s", body)
+	}
+}
+
+func TestBuildFallbackRequest_PathParam(t *testing.T) {
+	cfg := requestModelConfig{Location: "pathParam", Identifier: `/models/([^/]+)/chat`}
+	path, _, _, err := buildFallbackRequest(cfg, "/v1/models/gpt-4o/chat/completions", []byte(`{}`), "gpt-4o-mini")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "/v1/models/gpt-4o-mini/chat/completions" {
+		t.Fatalf("expected path param rewritten, got %q", path)
+	}
+}
+
+func TestBuildFallbackRequest_PathParam_NoMatch_Errors(t *testing.T) {
+	cfg := requestModelConfig{Location: "pathParam", Identifier: `/models/([^/]+)/chat`}
+	_, _, _, err := buildFallbackRequest(cfg, "/v1/chat/completions", []byte(`{}`), "gpt-4o-mini")
+	if err == nil {
+		t.Fatal("expected an error when the path doesn't match the pattern")
+	}
+}
+
+// TestOnResponseHeaders_HeaderLocationRequestModel_MatchesAndRewrites is the one full,
+// end-to-end proof that a non-payload requestModel.location works through the real dispatch
+// path, not just the isolated helpers above: matching reads the model from a header, and the
+// fallback's own self-redial carries the rewritten model in that SAME header, with the JSON body
+// passed through untouched throughout.
+func TestOnResponseHeaders_HeaderLocationRequestModel_MatchesAndRewrites(t *testing.T) {
+	p := newTestPolicy(t, map[string]interface{}{
+		"targets": []interface{}{
+			map[string]interface{}{
+				"model": "gpt-4o",
+				"fallbacks": []interface{}{
+					map[string]interface{}{"model": "gpt-4o-mini"},
+				},
+			},
+		},
+		"statusCodes":  []interface{}{500},
+		"selfBaseURL":  testSelfBaseURL,
+		"requestModel": map[string]interface{}{"location": "header", "identifier": "x-model"},
+	})
+	fake := &fakeHTTPClient{resps: []func(*http.Request) (*http.Response, error){jsonResp(200, `{"id":"ok"}`)}}
+	p.httpClient = fake
+	rhctx := baseResponseHeaderContext(t, `{"messages":[]}`, 500)
+	rhctx.RequestHeaders = policy.NewHeaders(map[string][]string{
+		"authorization": {"Bearer original-token"},
+		"x-model":       {"gpt-4o"},
+	})
+
+	action := p.OnResponseHeaders(context.Background(), rhctx, nil)
+	if _, ok := action.(policy.ImmediateResponse); !ok {
+		t.Fatalf("expected success, got %#v", action)
+	}
+	req := fake.calls[0]
+	if req.Header.Get("x-model") != "gpt-4o-mini" {
+		t.Fatalf("expected x-model header rewritten to gpt-4o-mini, got %q", req.Header.Get("x-model"))
+	}
+	body, _ := io.ReadAll(req.Body)
+	if string(body) != `{"messages":[]}` {
+		t.Fatalf("expected the JSON body to pass through unchanged for a header-location model, got %s", body)
 	}
 }
 

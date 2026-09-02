@@ -5,14 +5,32 @@ Transparently retries a failed LLM request against an ordered fallback chain. Fu
 
 ## What it does
 
-- Selects a target chain by matching the client's own `request.body.model` against a declared
-  `targets[].model`. A request for a model that isn't declared passes through completely
-  untouched — no mutation, no retry.
+- Selects a target chain by matching the client's own model identifier — located per
+  `requestModel` (see below) — against a declared `targets[].model`. A request for a model
+  that isn't declared passes through completely untouched — no mutation, no retry.
 - On a response whose status is in `statusCodes`, walks that target's `fallbacks[]` in order
   (skipping any currently-suspended entry) until one succeeds or the chain is exhausted.
 - A target can also redirect its own **primary** attempt (not just its fallbacks) if the
   operation's default upstream can't serve that model at all — see "Target-level override"
   below.
+
+## Locating the model: `requestModel`
+
+- `requestModel: {location, identifier}` is a **systemParameter** — gateway-controller injects
+  it unconditionally from the LlmProvider/LlmProxy's own template (openai, anthropic, etc.), the
+  same convention `model-round-robin`/`model-weighted-round-robin` already use. It is never
+  something an operator sets directly on this policy.
+- Four locations, matching those sibling policies exactly: `payload` (JSONPath into the JSON
+  body, e.g. `$.model`), `header`, `queryParam`, `pathParam` (a regex whose first capture group
+  is the model segment, e.g. `/models/([^/]+)`).
+- Used on **both** sides: reading the client's own model to match a target (`OnRequestBody`/
+  `OnResponseHeaders`), and rewriting it to a fallback's own model before a self-redial
+  (`buildFallbackRequest` in `requestmodel.go`) — for any location other than the one holding
+  the model, the request passes through completely unchanged (e.g. a `header`-location config
+  never touches the JSON body at all).
+- Every current built-in template uses `{location: payload, identifier: $.model}` — this policy
+  supports all four locations so a future template using a different shape doesn't silently
+  mismatch, same as its sibling policies.
 
 ## Three kinds of fallback/override, and how each dials
 

@@ -24,7 +24,7 @@ parameters:
       x-wso2-policy-advanced-param: false
       description: |
         One entry per independently-selectable target model, matched against the client's
-        own request.body.model.
+        own model identifier (see requestModel).
       items:
         type: object
         additionalProperties: false
@@ -60,7 +60,7 @@ parameters:
                 model:
                   type: string
                   minLength: 1
-                  description: Model name injected into the request body for this fallback attempt.
+                  description: Model name to use for this fallback attempt.
                 provider:
                   type: string
                   description: |
@@ -102,3 +102,7 @@ parameters:
       description: |
         Base URL this policy dials back to for a self-redial. Defaults to
         http://127.0.0.1:8080, the router's own default listener address.
+
+systemParameters:
+  type: object
+  properties: {}

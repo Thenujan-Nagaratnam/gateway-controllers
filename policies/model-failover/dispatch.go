@@ -20,7 +20,6 @@ package modelfailover
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -100,25 +99,13 @@ var hopByHopHeaders = map[string]struct{}{
 	"host":                {},
 }
 
-// doDial builds and executes one outbound POST-shaped attempt at targetURL, cloning src's
-// headers (always stripping hop-by-hop headers; credentials are always carried through
-// unchanged — see trySelfRedial's own doc comment for why), then applying extraHeaders,
-// with model swapped into a shallow clone of originalBody. It reports (response, true) on a
-// non-failing status or (zero value, false) on any failure — network error, oversized/
-// unreadable response body, or a response status still in p.statusCodes. logField is attached
-// to warning logs only, to distinguish call sites.
-func (p *Policy) doDial(ctx context.Context, targetURL, method string, src *policy.Headers, extraHeaders map[string]string, model string, originalBody map[string]interface{}, logField string) (policy.ImmediateResponse, bool) {
-	clone := make(map[string]interface{}, len(originalBody))
-	for k, v := range originalBody {
-		clone[k] = v
-	}
-	clone["model"] = model
-	bodyBytes, err := json.Marshal(clone)
-	if err != nil {
-		slog.WarnContext(ctx, "ModelFailover: could not build request body, skipping", "target", logField, "error", err)
-		return policy.ImmediateResponse{}, false
-	}
-
+// doDial builds and executes one outbound POST-shaped attempt at targetURL with bodyBytes as the
+// request body, cloning src's headers (always stripping hop-by-hop headers; credentials are
+// always carried through unchanged — see trySelfRedial's own doc comment for why), then applying
+// extraHeaders. It reports (response, true) on a non-failing status or (zero value, false) on any
+// failure — network error, oversized/unreadable response body, or a response status still in
+// p.statusCodes. logField is attached to warning logs only, to distinguish call sites.
+func (p *Policy) doDial(ctx context.Context, targetURL, method string, src *policy.Headers, extraHeaders map[string]string, bodyBytes []byte, logField string) (policy.ImmediateResponse, bool) {
 	if method == "" {
 		method = http.MethodPost
 	}
@@ -188,15 +175,25 @@ func (p *Policy) doDial(ctx context.Context, targetURL, method string, src *poli
 // target/fallback MATCHING logic on its own re-entry (see OnRequestBody and OnResponseHeaders) —
 // it does not prevent OnRequestBody from acting on modelFailoverUpstreamDefHeader, which is a
 // narrower, deliberate exception to that guard (see OnRequestBody's own doc comment).
-func (p *Policy) trySelfRedial(ctx context.Context, selfBaseURL, downstreamPath, method string, headers *policy.Headers, providerID, upstreamDefName, model string, originalBody map[string]interface{}) (policy.ImmediateResponse, bool) {
+func (p *Policy) trySelfRedial(ctx context.Context, selfBaseURL, downstreamPath, method string, headers *policy.Headers, providerID, upstreamDefName string, originalBody []byte, model string) (policy.ImmediateResponse, bool) {
 	if selfBaseURL == "" || downstreamPath == "" {
 		slog.WarnContext(ctx, "ModelFailover: no self base URL/downstream path available, cannot redial", "provider", providerID)
 		return policy.ImmediateResponse{}, false
 	}
-	targetURL := strings.TrimSuffix(selfBaseURL, "/") + downstreamPath
+
+	finalPath, finalBody, modelHeaders, err := buildFallbackRequest(p.requestModel, downstreamPath, originalBody, model)
+	if err != nil {
+		slog.WarnContext(ctx, "ModelFailover: could not build fallback request, skipping", "model", model, "error", err)
+		return policy.ImmediateResponse{}, false
+	}
+
+	targetURL := strings.TrimSuffix(selfBaseURL, "/") + finalPath
 	extra := map[string]string{
 		internalLoopbackHeader:    "1",
 		modelFailoverRedialHeader: "1",
+	}
+	for name, value := range modelHeaders {
+		extra[name] = value
 	}
 	logField := "reuse-primary"
 	switch {
@@ -222,7 +219,7 @@ func (p *Policy) trySelfRedial(ctx context.Context, selfBaseURL, downstreamPath,
 	// redial — "reuse primary" or upstreamDefinition, credential-wise identical — the credential
 	// is simply the same one that already worked, reused unchanged; no auth policy needs to run
 	// differently just because the backend moved to a different same-provider instance.
-	return p.doDial(ctx, targetURL, method, headers, extra, model, originalBody, logField)
+	return p.doDial(ctx, targetURL, method, headers, extra, finalBody, logField)
 }
 
 // cloneRequestHeaders copies every header from src into dst except hop-by-hop headers and
