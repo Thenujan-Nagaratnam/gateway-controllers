@@ -1,46 +1,15 @@
 name: model-failover
 version: v0.1.0
 description: |
-  Transparently retries a failed LLM request against an ordered fallback chain, selected by
-  matching the client's own request.body.model against a declared target. Every fallback
-  attempt (same-provider or cross-provider), and a target's own provider-redirected primary
-  attempt, is a SELF-REDIAL: this policy dials this same operation's own externally-facing URL
-  again, so Envoy treats it as a genuinely fresh request and re-runs the FULL policy chain -
-  rate limiting, analytics, any request/response transformation, and so on - rather than this
-  policy making a raw direct call to a backend itself and silently skipping everything else
-  attached to the operation. The one exception is a target's own upstreamDefinition-redirected
-  primary attempt, which is a bare in-process Envoy UpstreamName swap within the SAME request,
-  since it never needs a separate dial at all.
-
-  A target or fallback with neither provider nor upstreamDefinition set stays on the same
-  backend the operation already uses (the common case: a different model on the same upstream) -
-  still a self-redial, just with no provider-selection header set, so the redialed request falls
-  straight through to the operation's own default upstream.
-
-  upstreamDefinition names a same-provider backend declared on this same resource's own
-  spec.upstreamDefinitions (e.g. a backup region) - never a raw URL, always resolved by Envoy's
-  own routing at runtime, never by this policy. At target level it's a bare in-process
-  UpstreamName redirect applied before any dial (no self-redial needed, per above). At fallback
-  level there's no pre-dial moment left to apply that redirect directly - the primary has already
-  failed by the time a fallback runs - so it rides the self-redial too, carrying the chosen name
-  in a header this policy's own request-phase hook reads on the redial's own fresh pass and
-  applies as the same in-process UpstreamName redirect. Either way the original request's own
-  credential is reused unchanged, since it's still the same provider.
-
-  provider names a provider id this proxy can route to via a header-based router policy (e.g.
-  llm-header-router) attached to the SAME operation - the operator's own responsibility, same
-  as wiring up any other multi-provider proxy; this policy has no awareness of how that router
-  or its provider ids are configured. No separate url/auth/template is ever configured on this
-  policy itself: it resolves a provider reference by dialing this same operation's own URL
-  again (see selfBaseURL) with the router's header set to the chosen provider id, so the
-  redialed request re-runs the full policy chain and gets its credential injection and
-  request/response body translation from whatever already-attached, general-purpose policies
-  the operator configured for multi-provider routing - never resolved or applied here. If no
-  such router is attached, a provider reference silently reaches the operation's own default
-  upstream unchanged.
-
-  A request for a model that isn't declared as any target passes through completely untouched
-  (no mutation, no retry); if that then fails, no failover applies.
+  Keeps an LLM-backed operation responding when its usual model, backend, or provider fails.
+  The operator declares an ordered chain of fallback models per target model - on the same
+  backend, on a different same-provider backend (e.g. a backup region), or on an entirely
+  different provider - and this policy automatically retries against that chain when a
+  response comes back with a configured failure status, so a model/provider outage doesn't
+  reach the client and app developers don't need to build their own retry-and-fallback logic.
+  A target can also redirect its own primary attempt the same way, for a model the operation's
+  default upstream can't serve at all. A request for an undeclared model passes through
+  untouched.
 
 parameters:
   type: object
