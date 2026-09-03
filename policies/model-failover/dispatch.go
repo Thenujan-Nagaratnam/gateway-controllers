@@ -67,17 +67,17 @@ const providerHeaderName = "x-provider"
 const modelFailoverUpstreamDefHeader = "x-wso2-model-failover-upstream-definition"
 
 // retryHTTPClient abstracts the outbound call a dial makes, so tests can substitute a fake
-// transport instead of hitting the network. *http.Client satisfies this directly.
+// transport instead of hitting the network. *http.Client satisfies this directly — in
+// production this is always utils.SharedHTTPClient() (see GetPolicy), never a client built by
+// this package itself, so a self-redial gets the same pooled connections, timeouts, and
+// SSRF-guard dial behavior every other policy's outbound call gets, tuned from one place
+// (the policy-engine's own [policy_engine.http_client] config) instead of reimplementing them
+// here. No client-level Timeout is relied on either way: every call site wraps ctx with
+// context.WithTimeout using the policy's own configured (or default) per-attempt timeout, which
+// is what actually bounds latency here — see go-network-service-hardening.md on explicit,
+// non-zero timeouts for every outbound call.
 type retryHTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
-}
-
-func newDefaultRetryHTTPClient() retryHTTPClient {
-	// No client-level Timeout: every call site wraps ctx with context.WithTimeout using the
-	// policy's own configured (or default) per-attempt timeout, which is what actually
-	// bounds latency here — see go-network-service-hardening.md on explicit, non-zero
-	// timeouts for every outbound call.
-	return &http.Client{}
 }
 
 // hopByHopHeaders (RFC 7230 §6.1) and connection-specific headers must never be blindly

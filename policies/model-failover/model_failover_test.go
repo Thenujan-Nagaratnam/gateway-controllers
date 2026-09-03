@@ -23,11 +23,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	utils "github.com/wso2/api-platform/sdk/core/utils"
 )
+
+// TestMain installs a shared HTTP client before any test runs — GetPolicy now requires
+// utils.SharedHTTPClient() to be non-nil (see model_failover.go), mirroring how the policy
+// engine installs it once at real startup. Its transport is never exercised: every test that
+// gets past construction overrides p.httpClient with a fakeHTTPClient before making any
+// request.
+func TestMain(m *testing.M) {
+	utils.SetSharedHTTPClient(&http.Client{})
+	os.Exit(m.Run())
+}
 
 // ─── test doubles ────────────────────────────────────────────────────────────
 

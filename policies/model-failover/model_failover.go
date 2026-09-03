@@ -98,6 +98,7 @@ import (
 	"time"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	utils "github.com/wso2/api-platform/sdk/core/utils"
 )
 
 // defaultMaxResponseBytes bounds a dial's response body when no maxResponseBytes param is
@@ -278,6 +279,15 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		selfBaseURL = defaultSelfBaseURL
 	}
 
+	// The process-wide client built once at policy-engine startup (pooling, timeouts, TLS,
+	// SSRF-guard dial behavior — see utils.SharedHTTPClient's own doc). A nil return means the
+	// engine hasn't installed one yet, which is a configuration error, not something to paper
+	// over with a locally-built http.Client that would bypass those hardened defaults.
+	httpClient := utils.SharedHTTPClient()
+	if httpClient == nil {
+		return nil, fmt.Errorf("model-failover: shared outbound HTTP client not initialized")
+	}
+
 	p := &Policy{
 		targets:          targets,
 		targetByModel:    targetByModel,
@@ -285,7 +295,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		maxResponseBytes: defaultMaxResponseBytes,
 		selfBaseURL:      selfBaseURL,
 		requestModel:     requestModelCfg,
-		httpClient:       newDefaultRetryHTTPClient(),
+		httpClient:       httpClient,
 	}
 
 	if raw := getStringParam(params, "requestTimeout"); raw != "" {
