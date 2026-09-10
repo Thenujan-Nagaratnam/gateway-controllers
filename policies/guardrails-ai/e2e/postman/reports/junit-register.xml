@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="guardrails-ai e2e" tests="12" time="10.905">
+  <testsuite name="00 - Health Checks / mock-guardrails-server healthz" id="111f654f-1804-4e4f-9d4c-747b604fa21b" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="0.025"/>
+  <testsuite name="00 - Health Checks / mock-echo-llm healthz" id="11c2f09e-7a83-4456-8104-ac43785f3c71" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="0.005"/>
+  <testsuite name="00 - Health Checks / controller admin health" id="8d5d28d6-a801-4352-9aab-b19883003bcb" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="0.009"/>
+  <testsuite name="00 - Health Checks / gateway reachable" id="159780aa-1c22-4122-aa9d-82fee4fcb7da" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="0.042"/>
+  <testsuite name="01 - Register / Register LlmProvider (echo backend)" id="bfdb8f4c-c407-4290-8c6a-9ae61f637e9f" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="1.027"/>
+  <testsuite name="01 - Register / Register LlmProxy gr2-main" id="8ce2effe-7b8c-4ebf-bdce-049427695fcd" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="1.587"/>
+  <testsuite name="01 - Register / Register LlmProxy gr2-response-only" id="30e0577e-6d10-4284-af0c-0772ef600b5f" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="0.975"/>
+  <testsuite name="01 - Register / Register LlmProxy gr2-size-block" id="a9f34f58-abbb-4b45-84f5-36423e6cce55" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="1.988"/>
+  <testsuite name="01 - Register / Register LlmProxy gr2-size-passthrough" id="dd4359f4-cddb-4af2-90bc-5a917e5159ff" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="0.891"/>
+  <testsuite name="01 - Register / Register LlmProxy gr2-timeout-block" id="c8d89fe7-ded4-44a7-abbe-d0aec133a893" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="1.676"/>
+  <testsuite name="01 - Register / Register LlmProxy gr2-timeout-passthrough" id="0e5bbab7-b4a0-4f6a-a3bd-5057e48459f6" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="0.987"/>
+  <testsuite name="01 - Register / Register LlmProxy gr2-custom-jsonpath" id="2843f7ae-a719-43fb-875f-612d5d14770f" timestamp="2026-09-10T10:37:50.494Z" tests="0" failures="0" errors="0" time="1.693"/>
+</testsuites>

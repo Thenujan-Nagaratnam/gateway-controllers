@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="byo-guardrail e2e" tests="8" time="5.731">
+  <testsuite name="00 - Health Checks / mock-byo-guardrail-server healthz" id="4401a131-7e98-4afa-896e-9d66ef7f9e31" timestamp="2026-09-10T10:39:32.227Z" tests="0" failures="0" errors="0" time="0.017"/>
+  <testsuite name="00 - Health Checks / mock-echo-llm healthz" id="2c4f3325-319d-44a3-9f45-4d3e2ca8a1c9" timestamp="2026-09-10T10:39:32.227Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="00 - Health Checks / controller admin health" id="1388f17e-934b-40c8-9b3f-f726454eb33a" timestamp="2026-09-10T10:39:32.227Z" tests="0" failures="0" errors="0" time="0.005"/>
+  <testsuite name="01 - Register / Register LlmProvider (echo backend)" id="e6266326-83b7-4744-9d7a-19d8a2ffb579" timestamp="2026-09-10T10:39:32.227Z" tests="0" failures="0" errors="0" time="0.973"/>
+  <testsuite name="01 - Register / Register LlmProxy byo-main (default Bearer auth)" id="456cfe9b-15d5-4125-9a5d-31ea9878d187" timestamp="2026-09-10T10:39:32.227Z" tests="0" failures="0" errors="0" time="1.075"/>
+  <testsuite name="01 - Register / Register LlmProxy byo-custom-auth (x-api-key, no prefix)" id="9ea9082d-13ec-4159-823d-c8a92cff9eb9" timestamp="2026-09-10T10:39:32.227Z" tests="0" failures="0" errors="0" time="0.986"/>
+  <testsuite name="01 - Register / Register LlmProxy byo-size (low maxResponseBytes)" id="513835a5-dd1f-42d6-bfc3-70ff6cf509d7" timestamp="2026-09-10T10:39:32.227Z" tests="0" failures="0" errors="0" time="0.989"/>
+  <testsuite name="01 - Register / Register LlmProxy byo-timeout (short requestTimeout)" id="2ed4f3d1-17b8-4c2a-9ca8-4aa2c495493c" timestamp="2026-09-10T10:39:32.227Z" tests="0" failures="0" errors="0" time="1.683"/>
+</testsuites>

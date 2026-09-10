@@ -164,6 +164,41 @@ func TestGetPolicy_EndpointWrongType(t *testing.T) {
 	}
 }
 
+func TestGetPolicy_EndpointEmpty(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"guardrailsApiEndpoint": "",
+		"guardName":             "my-guard",
+		"request":               map[string]interface{}{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "'guardrailsApiEndpoint' cannot be empty") {
+		t.Fatalf("expected empty endpoint error, got %v", err)
+	}
+}
+
+func TestGetPolicy_EndpointBadScheme(t *testing.T) {
+	for _, ep := range []string{"ftp://guardrails:8000", "file:///etc/passwd", "guardrails:8000"} {
+		_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+			"guardrailsApiEndpoint": ep,
+			"guardName":             "my-guard",
+			"request":               map[string]interface{}{},
+		})
+		if err == nil || !strings.Contains(err.Error(), "http or https scheme") {
+			t.Fatalf("endpoint %q: expected scheme error, got %v", ep, err)
+		}
+	}
+}
+
+func TestGetPolicy_EndpointWithUserinfo(t *testing.T) {
+	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"guardrailsApiEndpoint": "http://user:pass@guardrails:8000",
+		"guardName":             "my-guard",
+		"request":               map[string]interface{}{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "userinfo") {
+		t.Fatalf("expected userinfo error, got %v", err)
+	}
+}
+
 func TestGetPolicy_MissingGuardName(t *testing.T) {
 	_, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
 		"guardrailsApiEndpoint": "http://localhost:8000",

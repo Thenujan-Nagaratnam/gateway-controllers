@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="headroom-compressor e2e" tests="22" time="3.407">
+  <testsuite name="02 - Old repetitive message gets compressed, recent ones untouched / Reset echo mock" id="41925a1e-5355-4cfd-bc20-893a6b35c6f4" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.014"/>
+  <testsuite name="02 - Old repetitive message gets compressed, recent ones untouched / Send request with old repetitive + recent short messages (hc-main)" id="30de2cbe-9965-4cf9-8702-dbb21dedd074" timestamp="2026-09-10T12:53:14.710Z" tests="1" failures="0" errors="0" time="0.125">
+    <testcase name="status is 200" time="0.125" classname="02OldRepetitiveMessageGetsCompressedRecentOnesUntouchedSendRequestWithOldRepetitiveRecentShortMessagesHcMain"/>
+  </testsuite>
+  <testsuite name="02 - Old repetitive message gets compressed, recent ones untouched / Verify backend received compressed old message, unchanged recent ones" id="f514ba42-1829-4ab9-92d7-eaa6bbab65e0" timestamp="2026-09-10T12:53:14.710Z" tests="2" failures="0" errors="0" time="0.004">
+    <testcase name="old repetitive message was substantially compressed" time="0.004" classname="02OldRepetitiveMessageGetsCompressedRecentOnesUntouchedVerifyBackendReceivedCompressedOldMessageUnchangedRecentOnes"/>
+    <testcase name="most recent message is untouched" time="0.004" classname="02OldRepetitiveMessageGetsCompressedRecentOnesUntouchedVerifyBackendReceivedCompressedOldMessageUnchangedRecentOnes"/>
+  </testsuite>
+  <testsuite name="03 - Short ordinary message is left unchanged / Reset echo mock" id="8f9d3682-b17a-407c-bab4-8e4fb533cd2a" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="03 - Short ordinary message is left unchanged / Send short message (hc-main)" id="3d472479-d013-49ce-99ba-59eea6802b23" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.016"/>
+  <testsuite name="03 - Short ordinary message is left unchanged / Verify backend received it byte-for-byte" id="c43fc36f-5d35-4c7c-b55b-90cbe6dd9573" timestamp="2026-09-10T12:53:14.710Z" tests="1" failures="0" errors="0" time="0.001">
+    <testcase name="short message unchanged" time="0.001" classname="03ShortOrdinaryMessageIsLeftUnchangedVerifyBackendReceivedItByteForByte"/>
+  </testsuite>
+  <testsuite name="04 - No model available anywhere skips compression entirely / Reset echo mock" id="bf8e27c9-590d-4871-bdae-6a74122e1e2b" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="04 - No model available anywhere skips compression entirely / Send request with no model field (hc-main)" id="eec73bdf-d1d7-477e-a83d-584ff9336aea" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.075"/>
+  <testsuite name="04 - No model available anywhere skips compression entirely / Verify backend received the repetitive message untouched" id="90ed8ba5-cbbd-47f8-a2fd-d6b4ce6f900a" timestamp="2026-09-10T12:53:14.710Z" tests="1" failures="0" errors="0" time="0.004">
+    <testcase name="message left uncompressed with no model available" time="0.004" classname="04NoModelAvailableAnywhereSkipsCompressionEntirelyVerifyBackendReceivedTheRepetitiveMessageUntouched"/>
+  </testsuite>
+  <testsuite name="05 - compressUserMessages true vs false / Reset echo mock" id="0382fdf5-dd29-4df9-999a-8bb71149940b" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="05 - compressUserMessages true vs false / Send old repetitive USER message (hc-main, compressUserMessages=false)" id="67bb4d9e-19c5-461a-b239-e963bc8a38b3" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.017"/>
+  <testsuite name="05 - compressUserMessages true vs false / Verify user message left uncompressed" id="b08d58f1-51c4-4d69-8633-cf2d80012d8c" timestamp="2026-09-10T12:53:14.710Z" tests="1" failures="0" errors="0" time="0.004">
+    <testcase name="user message untouched when compressUserMessages=false" time="0.004" classname="05CompressUserMessagesTrueVsFalseVerifyUserMessageLeftUncompressed"/>
+  </testsuite>
+  <testsuite name="05 - compressUserMessages true vs false / Reset echo mock" id="c572e7f1-9c0c-4f9c-9c5e-86869d89e4ab" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="05 - compressUserMessages true vs false / Send old repetitive USER message (hc-compress-user, compressUserMessages=true)" id="003f2e8c-18cb-4541-b32a-4fc3e8dac15e" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.018"/>
+  <testsuite name="05 - compressUserMessages true vs false / Verify user message was compressed" id="d7a1f6e2-1b09-4246-93b6-f53de18c1b6d" timestamp="2026-09-10T12:53:14.710Z" tests="1" failures="0" errors="0" time="0.002">
+    <testcase name="user message compressed when compressUserMessages=true" time="0.002" classname="05CompressUserMessagesTrueVsFalseVerifyUserMessageWasCompressed"/>
+  </testsuite>
+  <testsuite name="06 - Malformed JSON body still passes through / Reset echo mock" id="cf399b62-42e6-4d9d-8a29-5762c512f5e5" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="06 - Malformed JSON body still passes through / Send non-JSON body (hc-main)" id="85653799-9bb8-4259-ba45-95f73d8453ca" timestamp="2026-09-10T12:53:14.710Z" tests="1" failures="0" errors="0" time="0.013">
+    <testcase name="request is not blocked" time="0.013" classname="06MalformedJsonBodyStillPassesThroughSendNonJsonBodyHcMain"/>
+  </testsuite>
+  <testsuite name="07 - Response body is never modified (request-only policy) / Reset echo mock" id="01044dac-428a-477a-8a04-d56f85f09894" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="07 - Response body is never modified (request-only policy) / Send short message and capture the echoed response" id="e0238bc9-5d5a-4eda-9844-56ccb8ebbbf0" timestamp="2026-09-10T12:53:14.710Z" tests="1" failures="0" errors="0" time="0.016">
+    <testcase name="response content matches what backend echoed, unmodified" time="0.016" classname="07ResponseBodyIsNeverModifiedRequestOnlyPolicySendShortMessageAndCaptureTheEchoedResponse"/>
+  </testsuite>
+  <testsuite name="08 - Cleanup / Delete hc-main" id="c012417f-ed92-413f-b35f-c1543bd9eeb1" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="1.009"/>
+  <testsuite name="08 - Cleanup / Delete hc-compress-user" id="9f28c179-4d4f-4905-947b-15953ac1960e" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="0.990"/>
+  <testsuite name="08 - Cleanup / Delete headroom-compressor-e2e-provider" id="e89d10fc-d8bb-4d08-9054-8607d762c911" timestamp="2026-09-10T12:53:14.710Z" tests="0" failures="0" errors="0" time="1.084"/>
+</testsuites>

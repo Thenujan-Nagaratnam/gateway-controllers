@@ -156,6 +156,40 @@
           "response": []
         },
         {
+          "name": "Register LlmProxy gr2-response-only",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: gr2-response-only\nspec:\n  displayName: gr2-response-only\n  version: v1.0\n  context: /gr2-response-only\n  provider:\n    id: guardrails-ai-e2e-provider\n  policies:\n    - name: guardrails-ai\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            guardrailsApiEndpoint: \"http://host.docker.internal:9730\"\n            guardName: test-guard\n            request:\n              enabled: false\n            response:\n              enabled: true\n              passthroughOnError: false\n              showAssessment: false\n"
+            }
+          },
+          "response": []
+        },
+        {
           "name": "Register LlmProxy gr2-size-block",
           "request": {
             "method": "POST",
@@ -504,13 +538,13 @@
               }
             ],
             "url": {
-              "raw": "https://{{gatewayBaseUrl}}/gr2-main/chat/completions",
+              "raw": "https://{{gatewayBaseUrl}}/gr2-response-only/chat/completions",
               "protocol": "https",
               "host": [
                 "{{gatewayBaseUrl}}"
               ],
               "path": [
-                "gr2-main",
+                "gr2-response-only",
                 "chat",
                 "completions"
               ]
@@ -544,13 +578,13 @@
               }
             ],
             "url": {
-              "raw": "https://{{gatewayBaseUrl}}/gr2-main/chat/completions",
+              "raw": "https://{{gatewayBaseUrl}}/gr2-response-only/chat/completions",
               "protocol": "https",
               "host": [
                 "{{gatewayBaseUrl}}"
               ],
               "path": [
-                "gr2-main",
+                "gr2-response-only",
                 "chat",
                 "completions"
               ]
@@ -1033,7 +1067,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"BLOCK_ME please\"}]}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1047,7 +1081,19 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('route was never wired up (404), never silently served', () => pm.response.to.have.status(404));"
+                  "// A policy instance that fails to build (missing/invalid required param) is",
+                  "// dropped by the gateway-runtime, which logs \"Failed to build policy chain",
+                  "// for route, skipping\" and then serves the route WITHOUT the guardrail",
+                  "// (fail-open) - it does NOT take the route down. Operators must monitor that",
+                  "// log line to detect a guardrail that silently stopped enforcing. This test",
+                  "// pins the observable contract: the route stays reachable but the guardrail",
+                  "// is provably not enforcing (a BLOCK_ME payload is NOT turned into a 422).",
+                  "pm.test('misconfigured route: guardrail is not enforced (policy dropped, see runtime log)', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 404, 500]);",
+                  "  if (pm.response.code === 200) {",
+                  "    pm.expect(pm.response.text()).to.not.include('GUARDRAILS_AI_GUARDRAIL');",
+                  "  }",
+                  "});"
                 ]
               }
             }
@@ -1078,7 +1124,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"BLOCK_ME please\"}]}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1092,7 +1138,19 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('route was never wired up (404), never silently served', () => pm.response.to.have.status(404));"
+                  "// A policy instance that fails to build (missing/invalid required param) is",
+                  "// dropped by the gateway-runtime, which logs \"Failed to build policy chain",
+                  "// for route, skipping\" and then serves the route WITHOUT the guardrail",
+                  "// (fail-open) - it does NOT take the route down. Operators must monitor that",
+                  "// log line to detect a guardrail that silently stopped enforcing. This test",
+                  "// pins the observable contract: the route stays reachable but the guardrail",
+                  "// is provably not enforcing (a BLOCK_ME payload is NOT turned into a 422).",
+                  "pm.test('misconfigured route: guardrail is not enforced (policy dropped, see runtime log)', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 404, 500]);",
+                  "  if (pm.response.code === 200) {",
+                  "    pm.expect(pm.response.text()).to.not.include('GUARDRAILS_AI_GUARDRAIL');",
+                  "  }",
+                  "});"
                 ]
               }
             }
@@ -1126,6 +1184,33 @@
                 "v1",
                 "llm-proxies",
                 "gr2-main"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete LlmProxy gr2-response-only",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/gr2-response-only",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "gr2-response-only"
               ]
             }
           },

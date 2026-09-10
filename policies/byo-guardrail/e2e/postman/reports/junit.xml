@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="byo-guardrail e2e" tests="39" time="12.480">
+  <testsuite name="02 - Request phase: ALLOW and BLOCK / reset mock" id="f242c89a-dea4-4461-b242-6f194d596554" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.028"/>
+  <testsuite name="02 - Request phase: ALLOW and BLOCK / benign message allowed" id="8572985e-c234-4659-8718-8ea08b75f0f8" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.054">
+    <testcase name="status is 200" time="0.054" classname="02RequestPhaseAllowAndBlockBenignMessageAllowed"/>
+  </testsuite>
+  <testsuite name="02 - Request phase: ALLOW and BLOCK / mock received extracted text" id="80c18d24-f29b-4a4a-95e9-bfbfcf3d5c14" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.005">
+    <testcase name="content matches last user message" time="0.005" classname="02RequestPhaseAllowAndBlockMockReceivedExtractedText"/>
+  </testsuite>
+  <testsuite name="02 - Request phase: ALLOW and BLOCK / reset mock" id="9ca79cb5-97cf-4f2b-b395-f30e0f7386b7" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="02 - Request phase: ALLOW and BLOCK / blocked message returns 422 with assessment" id="76e1bf3f-c777-43a7-86d4-a76173104b7b" timestamp="2026-09-10T10:39:43.473Z" tests="5" failures="0" errors="0" time="0.010">
+    <testcase name="status is 422" time="0.010" classname="02RequestPhaseAllowAndBlockBlockedMessageReturns422WithAssessment"/>
+    <testcase name="type is BYO_GUARDRAIL" time="0.010" classname="02RequestPhaseAllowAndBlockBlockedMessageReturns422WithAssessment"/>
+    <testcase name="direction is REQUEST" time="0.010" classname="02RequestPhaseAllowAndBlockBlockedMessageReturns422WithAssessment"/>
+    <testcase name="reason is surfaced" time="0.010" classname="02RequestPhaseAllowAndBlockBlockedMessageReturns422WithAssessment"/>
+    <testcase name="showAssessment=true includes assessments" time="0.010" classname="02RequestPhaseAllowAndBlockBlockedMessageReturns422WithAssessment"/>
+  </testsuite>
+  <testsuite name="03 - Response phase: ALLOW and BLOCK / reset mock" id="e27ee14a-9a97-44bc-81c1-663139f94a32" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="03 - Response phase: ALLOW and BLOCK / benign reply allowed" id="f7e671d0-109f-467f-b15c-fb0dd6cd5564" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.015">
+    <testcase name="status is 200" time="0.015" classname="03ResponsePhaseAllowAndBlockBenignReplyAllowed"/>
+  </testsuite>
+  <testsuite name="03 - Response phase: ALLOW and BLOCK / reply containing BLOCK_ME is blocked, showAssessment=false omits assessments" id="64349dba-0cb1-4982-92af-38a7d2be6765" timestamp="2026-09-10T10:39:43.473Z" tests="2" failures="0" errors="0" time="0.010">
+    <testcase name="status is 422" time="0.010" classname="03ResponsePhaseAllowAndBlockReplyContainingBlockMeIsBlockedShowAssessmentFalseOmitsAssessments"/>
+    <testcase name="direction is REQUEST (request phase caught it first)" time="0.010" classname="03ResponsePhaseAllowAndBlockReplyContainingBlockMeIsBlockedShowAssessmentFalseOmitsAssessments"/>
+  </testsuite>
+  <testsuite name="04 - MODIFY verdict rewrites content transparently / reset mock" id="c36adfd6-87f2-4e36-ab07-7496ffe449eb" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="04 - MODIFY verdict rewrites content transparently / MODIFY_ME request is rewritten before reaching upstream" id="986148d7-3449-49a5-a307-b2d625e29bbc" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.015">
+    <testcase name="status is 200 (MODIFY continues, never blocks)" time="0.015" classname="04ModifyVerdictRewritesContentTransparentlyModifyMeRequestIsRewrittenBeforeReachingUpstream"/>
+  </testsuite>
+  <testsuite name="04 - MODIFY verdict rewrites content transparently / upstream echo reflects the redacted content, not the original" id="971bd11d-b207-495a-a437-0b8314616db5" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.003">
+    <testcase name="backend received modified content" time="0.003" classname="04ModifyVerdictRewritesContentTransparentlyUpstreamEchoReflectsTheRedactedContentNotTheOriginal"/>
+  </testsuite>
+  <testsuite name="04 - MODIFY verdict rewrites content transparently / reset mock" id="9d8a61fa-104d-4c7b-aa8b-e28d27368b5c" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="04 - MODIFY verdict rewrites content transparently / EMPTY_MODIFY (empty modifiedContent) is treated as a protocol error, blocked" id="a037ece2-f06a-45c4-b720-425cc741366e" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.010">
+    <testcase name="status is 422 (empty modifiedContent is not silently allowed)" time="0.010" classname="04ModifyVerdictRewritesContentTransparentlyEmptyModifyEmptyModifiedContentIsTreatedAsAProtocolErrorBlocked"/>
+  </testsuite>
+  <testsuite name="05 - Unknown verdict is fail-closed, never an implicit ALLOW / reset mock" id="dec91af2-7c07-423f-9d96-05adaa1deec3" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="05 - Unknown verdict is fail-closed, never an implicit ALLOW / UNKNOWN_VERDICT on byo-main (passthroughOnError=false) is blocked" id="55f439ee-d07f-4ca9-a51d-d8c6a7c67360" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.011">
+    <testcase name="status is 422, not silently allowed" time="0.011" classname="05UnknownVerdictIsFailClosedNeverAnImplicitAllowUnknownVerdictOnByoMainPassthroughOnErrorFalseIsBlocked"/>
+  </testsuite>
+  <testsuite name="06 - Custom auth header name and value prefix / reset mock" id="3688e989-464d-41d7-af44-aa3d1573bb3c" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="06 - Custom auth header name and value prefix / reset mock" id="5791ca12-3cc6-440f-bc42-3b36f8f50e44" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="06 - Custom auth header name and value prefix / byo-custom-auth sends x-api-key with no prefix" id="6c4f279a-3a26-4cce-97fa-384ee1d4f7ea" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.009">
+    <testcase name="status is 200 (auth accepted by mock)" time="0.009" classname="06CustomAuthHeaderNameAndValuePrefixByoCustomAuthSendsXApiKeyWithNoPrefix"/>
+  </testsuite>
+  <testsuite name="06 - Custom auth header name and value prefix / mock received x-api-key with no prefix, no Authorization header" id="efc296ac-c846-49ef-adb4-12a8213bfa56" timestamp="2026-09-10T10:39:43.473Z" tests="2" failures="0" errors="0" time="0.003">
+    <testcase name="x-api-key carries the raw value with no prefix" time="0.003" classname="06CustomAuthHeaderNameAndValuePrefixMockReceivedXApiKeyWithNoPrefixNoAuthorizationHeader"/>
+    <testcase name="Authorization header was not sent for this proxy" time="0.003" classname="06CustomAuthHeaderNameAndValuePrefixMockReceivedXApiKeyWithNoPrefixNoAuthorizationHeader"/>
+  </testsuite>
+  <testsuite name="06 - Custom auth header name and value prefix / reset mock" id="8d7518ea-167c-4d9b-993e-044746771ec6" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="06 - Custom auth header name and value prefix / byo-main sends default Authorization: Bearer &lt;apiKey>" id="a3b39c5a-e55f-4be0-b2fc-50930322c03b" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.015">
+    <testcase name="status is 200" time="0.015" classname="06CustomAuthHeaderNameAndValuePrefixByoMainSendsDefaultAuthorizationBearerLtApiKey"/>
+  </testsuite>
+  <testsuite name="06 - Custom auth header name and value prefix / mock received Authorization: Bearer test-secret-key" id="2ece7ace-327b-435a-bdee-448fb8d84eb7" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.002">
+    <testcase name="Authorization header carries Bearer prefix + apiKey" time="0.002" classname="06CustomAuthHeaderNameAndValuePrefixMockReceivedAuthorizationBearerTestSecretKey"/>
+  </testsuite>
+  <testsuite name="07 - Guardrail service oversized response or timeout / reset mock" id="be693bda-d2a6-4c9e-b754-75a6814176fb" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="07 - Guardrail service oversized response or timeout / byo-size: response exceeds maxResponseBytes, blocked (passthroughOnError=false)" id="1cab5789-c0cf-40ff-a68f-8fabf8b2b6f7" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.032">
+    <testcase name="status is 422 (treated as error)" time="0.032" classname="07GuardrailServiceOversizedResponseOrTimeoutByoSizeResponseExceedsMaxResponseBytesBlockedPassthroughOnErrorFalse"/>
+  </testsuite>
+  <testsuite name="07 - Guardrail service oversized response or timeout / byo-timeout: SLOW_RESPONSE exceeds requestTimeout, blocked (passthroughOnError=false)" id="22e710ec-ef75-44b3-8175-9a6ceb80930c" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="1.011">
+    <testcase name="status is 422 (timed out, treated as error)" time="1.011" classname="07GuardrailServiceOversizedResponseOrTimeoutByoTimeoutSlowResponseExceedsRequestTimeoutBlockedPassthroughOnErrorFalse"/>
+  </testsuite>
+  <testsuite name="07 - Guardrail service oversized response or timeout / byo-main: SERVER_ERROR from guardrail service, blocked (passthroughOnError=false)" id="e6107e5b-58eb-40f5-adbc-d9c8fb31f80a" timestamp="2026-09-10T10:39:43.473Z" tests="2" failures="0" errors="0" time="0.011">
+    <testcase name="status is 422" time="0.011" classname="07GuardrailServiceOversizedResponseOrTimeoutByoMainServerErrorFromGuardrailServiceBlockedPassthroughOnErrorFalse"/>
+    <testcase name="sterile reason, no internal detail leaked" time="0.011" classname="07GuardrailServiceOversizedResponseOrTimeoutByoMainServerErrorFromGuardrailServiceBlockedPassthroughOnErrorFalse"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / missing endpoint is rejected" id="47d4e429-317a-4c18-aa9c-82d02a7c033b" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="1.023">
+    <testcase name="registration itself succeeds (GetPolicy validation only runs when the route builds, at route-build time)" time="1.023" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpMissingEndpointIsRejected"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / endpoint with embedded userinfo is rejected" id="82590708-f574-4392-9fd4-6b0cf8b976ae" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.885">
+    <testcase name="registration itself succeeds (GetPolicy validation only runs when the route builds, at route-build time)" time="0.885" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpEndpointWithEmbeddedUserinfoIsRejected"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / non-http(s) scheme is rejected" id="a4231404-642b-41ed-b57d-3a073e0a46ef" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="1.883">
+    <testcase name="registration itself succeeds (GetPolicy validation only runs when the route builds, at route-build time)" time="1.883" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpNonHttpSSchemeIsRejected"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / auth.type apiKey without apiKeyValue is rejected" id="29678cce-dff9-4c51-8d3e-aa610396c74d" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.980">
+    <testcase name="registration itself succeeds (GetPolicy validation only runs when the route builds, at route-build time)" time="0.980" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpAuthTypeApiKeyWithoutApiKeyValueIsRejected"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / byo-invalid-no-endpoint route never comes up (policy chain failed to build)" id="d2082c18-9929-4e11-bc8e-6a2b16deb781" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.007">
+    <testcase name="misconfigured route: guardrail is not enforced (policy dropped, see runtime log)" time="0.007" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpByoInvalidNoEndpointRouteNeverComesUpPolicyChainFailedToBuild"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / byo-invalid-userinfo route never comes up (policy chain failed to build)" id="6ef80f3a-9453-4377-bd8a-39f3a76a50d7" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.007">
+    <testcase name="misconfigured route: guardrail is not enforced (policy dropped, see runtime log)" time="0.007" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpByoInvalidUserinfoRouteNeverComesUpPolicyChainFailedToBuild"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / byo-invalid-scheme route never comes up (policy chain failed to build)" id="16cd0f69-0c58-4301-9c37-591153fc5ee2" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.007">
+    <testcase name="misconfigured route: guardrail is not enforced (policy dropped, see runtime log)" time="0.007" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpByoInvalidSchemeRouteNeverComesUpPolicyChainFailedToBuild"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / byo-invalid-auth route never comes up (policy chain failed to build)" id="a724dc9f-cfad-4aa2-b106-2c1acc37dfee" timestamp="2026-09-10T10:39:43.473Z" tests="1" failures="0" errors="0" time="0.006">
+    <testcase name="misconfigured route: guardrail is not enforced (policy dropped, see runtime log)" time="0.006" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpByoInvalidAuthRouteNeverComesUpPolicyChainFailedToBuild"/>
+  </testsuite>
+  <testsuite name="09 - Cleanup / Delete LlmProxy byo-main" id="dab809c3-770c-4d46-be09-4d07934001ee" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="1.070"/>
+  <testsuite name="09 - Cleanup / Delete LlmProxy byo-custom-auth" id="64dd6580-c8ce-4cd2-a15d-f08519904a15" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="1.096"/>
+  <testsuite name="09 - Cleanup / Delete LlmProxy byo-size" id="84d48eec-5ff3-47c6-a7d9-6701ec898f7b" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.981"/>
+  <testsuite name="09 - Cleanup / Delete LlmProxy byo-timeout" id="9bd4e2d1-3982-4f5a-9009-15399dba8ab5" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="0.973"/>
+  <testsuite name="09 - Cleanup / Delete LlmProvider" id="d124fc1f-e2bd-42ae-ae3d-4ac2523a3966" timestamp="2026-09-10T10:39:43.473Z" tests="0" failures="0" errors="0" time="2.294"/>
+</testsuites>

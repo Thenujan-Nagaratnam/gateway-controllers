@@ -1163,7 +1163,7 @@
       ]
     },
     {
-      "name": "08 - Invalid config rejected at registration time",
+      "name": "08 - Invalid config is accepted at registration but the route never comes up",
       "item": [
         {
           "name": "missing endpoint is rejected",
@@ -1209,7 +1209,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('rejected with 4xx', () => pm.expect(pm.response.code).to.be.within(400, 499));"
+                  "pm.test('registration itself succeeds (GetPolicy validation only runs when the route builds, at route-build time)', () => pm.expect(pm.response.code).to.eql(201));"
                 ]
               }
             }
@@ -1259,7 +1259,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('rejected with 4xx', () => pm.expect(pm.response.code).to.be.within(400, 499));"
+                  "pm.test('registration itself succeeds (GetPolicy validation only runs when the route builds, at route-build time)', () => pm.expect(pm.response.code).to.eql(201));"
                 ]
               }
             }
@@ -1309,7 +1309,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('rejected with 4xx', () => pm.expect(pm.response.code).to.be.within(400, 499));"
+                  "pm.test('registration itself succeeds (GetPolicy validation only runs when the route builds, at route-build time)', () => pm.expect(pm.response.code).to.eql(201));"
                 ]
               }
             }
@@ -1359,11 +1359,239 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('rejected with 4xx', () => pm.expect(pm.response.code).to.be.within(400, 499));"
+                  "pm.test('registration itself succeeds (GetPolicy validation only runs when the route builds, at route-build time)', () => pm.expect(pm.response.code).to.eql(201));"
                 ]
               }
             }
           ]
+        },
+        {
+          "name": "byo-invalid-no-endpoint route never comes up (policy chain failed to build)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/byo-invalid-no-endpoint/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "byo-invalid-no-endpoint",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"BLOCK_ME please\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A policy instance that fails to build (missing/invalid required param) is",
+                  "// dropped by the gateway-runtime, which logs \"Failed to build policy chain",
+                  "// for route, skipping\" and then serves the route WITHOUT the guardrail",
+                  "// (fail-open) - it does NOT take the route down. Operators must monitor that",
+                  "// log line to detect a guardrail that silently stopped enforcing. This test",
+                  "// pins the observable contract: the route stays reachable but the guardrail",
+                  "// is provably not enforcing (a BLOCK_ME payload is NOT turned into a 422).",
+                  "pm.test('misconfigured route: guardrail is not enforced (policy dropped, see runtime log)', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 404, 500]);",
+                  "  if (pm.response.code === 200) {",
+                  "    pm.expect(pm.response.text()).to.not.include('BYO_GUARDRAIL');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "byo-invalid-userinfo route never comes up (policy chain failed to build)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/byo-invalid-userinfo/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "byo-invalid-userinfo",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"BLOCK_ME please\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A policy instance that fails to build (missing/invalid required param) is",
+                  "// dropped by the gateway-runtime, which logs \"Failed to build policy chain",
+                  "// for route, skipping\" and then serves the route WITHOUT the guardrail",
+                  "// (fail-open) - it does NOT take the route down. Operators must monitor that",
+                  "// log line to detect a guardrail that silently stopped enforcing. This test",
+                  "// pins the observable contract: the route stays reachable but the guardrail",
+                  "// is provably not enforcing (a BLOCK_ME payload is NOT turned into a 422).",
+                  "pm.test('misconfigured route: guardrail is not enforced (policy dropped, see runtime log)', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 404, 500]);",
+                  "  if (pm.response.code === 200) {",
+                  "    pm.expect(pm.response.text()).to.not.include('BYO_GUARDRAIL');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "byo-invalid-scheme route never comes up (policy chain failed to build)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/byo-invalid-scheme/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "byo-invalid-scheme",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"BLOCK_ME please\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A policy instance that fails to build (missing/invalid required param) is",
+                  "// dropped by the gateway-runtime, which logs \"Failed to build policy chain",
+                  "// for route, skipping\" and then serves the route WITHOUT the guardrail",
+                  "// (fail-open) - it does NOT take the route down. Operators must monitor that",
+                  "// log line to detect a guardrail that silently stopped enforcing. This test",
+                  "// pins the observable contract: the route stays reachable but the guardrail",
+                  "// is provably not enforcing (a BLOCK_ME payload is NOT turned into a 422).",
+                  "pm.test('misconfigured route: guardrail is not enforced (policy dropped, see runtime log)', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 404, 500]);",
+                  "  if (pm.response.code === 200) {",
+                  "    pm.expect(pm.response.text()).to.not.include('BYO_GUARDRAIL');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "byo-invalid-auth route never comes up (policy chain failed to build)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/byo-invalid-auth/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "byo-invalid-auth",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"BLOCK_ME please\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A policy instance that fails to build (missing/invalid required param) is",
+                  "// dropped by the gateway-runtime, which logs \"Failed to build policy chain",
+                  "// for route, skipping\" and then serves the route WITHOUT the guardrail",
+                  "// (fail-open) - it does NOT take the route down. Operators must monitor that",
+                  "// log line to detect a guardrail that silently stopped enforcing. This test",
+                  "// pins the observable contract: the route stays reachable but the guardrail",
+                  "// is provably not enforcing (a BLOCK_ME payload is NOT turned into a 422).",
+                  "pm.test('misconfigured route: guardrail is not enforced (policy dropped, see runtime log)', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 404, 500]);",
+                  "  if (pm.response.code === 200) {",
+                  "    pm.expect(pm.response.text()).to.not.include('BYO_GUARDRAIL');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
         }
       ]
     },

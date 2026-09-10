@@ -125,7 +125,7 @@ start_mock_if_needed "$ROOT/mocks/mock-echo-llm" "$ECHO_LLM_MOCK_ADDR" "$ECHO_LL
 
 # --- run newman ----------------------------------------------------------
 
-REGISTERED_PROXIES=(gr2-main gr2-size-block gr2-size-passthrough gr2-timeout-block gr2-timeout-passthrough gr2-custom-jsonpath gr2-invalid-missing-guardname gr2-invalid-missing-endpoint)
+REGISTERED_PROXIES=(gr2-main gr2-response-only gr2-size-block gr2-size-passthrough gr2-timeout-block gr2-timeout-passthrough gr2-custom-jsonpath gr2-invalid-missing-guardname gr2-invalid-missing-endpoint)
 
 cleanup_registered_resources() {
   for name in "${REGISTERED_PROXIES[@]}"; do
@@ -152,11 +152,15 @@ route_is_up() {
   code=$(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' \
     -X POST "$GATEWAY_URL/$path" \
     -H "Content-Type: application/json" -d '{}')
-  [ "$code" != "404" ] && [ "$code" != "000" ] && [ "$code" != "500" ]
+  # 503 is Envoy's "cluster not warm yet" response in the same brief window right
+  # after registration - a route that answers 503 is not actually ready either,
+  # even though it's no longer 404. Treating 503 as "up" here was the root cause
+  # of intermittent early-test failures in the real automated run.
+  [ "$code" != "404" ] && [ "$code" != "000" ] && [ "$code" != "500" ] && [ "$code" != "503" ]
 }
 
 wait_for_route() {
-  local path="$1" tries=40
+  local path="$1" tries=120
   until route_is_up "$path"; do
     tries=$((tries - 1))
     [ "$tries" -le 0 ] && return 1
@@ -198,7 +202,7 @@ MAX_REGISTER_ATTEMPTS="${MAX_REGISTER_ATTEMPTS:-3}"
 # a bounded number of times rather than treating one bad attempt as a real
 # failure (the same shape of environment flake model-failover/e2e's run-e2e.sh
 # retries for, not a policy bug).
-ALL_PROXY_CONTEXTS=(gr2-main gr2-size-block gr2-size-passthrough gr2-timeout-block gr2-timeout-passthrough gr2-custom-jsonpath)
+ALL_PROXY_CONTEXTS=(gr2-main gr2-response-only gr2-size-block gr2-size-passthrough gr2-timeout-block gr2-timeout-passthrough gr2-custom-jsonpath)
 
 register_attempt=0
 routes_ready=false

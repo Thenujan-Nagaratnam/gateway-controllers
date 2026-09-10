@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="guardrails-ai e2e" tests="28" time="16.405">
+  <testsuite name="02 - Request phase: pass-through / reset mocks" id="27b2cd77-9e39-490e-9d06-db1db8f73714" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="0.023"/>
+  <testsuite name="02 - Request phase: pass-through / benign message allowed" id="45e7d84c-f6c2-4808-9af9-993923afcd89" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="0.059">
+    <testcase name="status is 200" time="0.059" classname="02RequestPhasePassThroughBenignMessageAllowed"/>
+  </testsuite>
+  <testsuite name="02 - Request phase: pass-through / guardrails server received extracted text" id="d8333ea2-1967-4234-a3b5-12055f4281af" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="0.003">
+    <testcase name="llmOutput matches last user message" time="0.003" classname="02RequestPhasePassThroughGuardrailsServerReceivedExtractedText"/>
+  </testsuite>
+  <testsuite name="03 - Request phase: block + showAssessment / blocked message returns 422" id="619469ba-c3f6-45f9-8f7d-4536f7e0d358" timestamp="2026-09-10T10:38:08.153Z" tests="4" failures="0" errors="0" time="0.007">
+    <testcase name="status is 422" time="0.007" classname="03RequestPhaseBlockShowAssessmentBlockedMessageReturns422"/>
+    <testcase name="type is GUARDRAILS_AI_GUARDRAIL" time="0.007" classname="03RequestPhaseBlockShowAssessmentBlockedMessageReturns422"/>
+    <testcase name="direction is REQUEST" time="0.007" classname="03RequestPhaseBlockShowAssessmentBlockedMessageReturns422"/>
+    <testcase name="showAssessment=true includes failedValidators" time="0.007" classname="03RequestPhaseBlockShowAssessmentBlockedMessageReturns422"/>
+  </testsuite>
+  <testsuite name="04 - Response phase: pass-through and block / reset mocks" id="3448149d-35b7-44e1-acd9-b5931a9e1a68" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="04 - Response phase: pass-through and block / benign reply allowed" id="e1d3da3c-2dd2-458c-bb0e-f354477d62fc" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="0.014">
+    <testcase name="status is 200" time="0.014" classname="04ResponsePhasePassThroughAndBlockBenignReplyAllowed"/>
+  </testsuite>
+  <testsuite name="04 - Response phase: pass-through and block / reply containing BLOCK_ME is blocked" id="96a40340-c80a-4f9d-9941-815383641127" timestamp="2026-09-10T10:38:08.153Z" tests="3" failures="0" errors="0" time="0.014">
+    <testcase name="status is 422" time="0.014" classname="04ResponsePhasePassThroughAndBlockReplyContainingBlockMeIsBlocked"/>
+    <testcase name="direction is RESPONSE" time="0.014" classname="04ResponsePhasePassThroughAndBlockReplyContainingBlockMeIsBlocked"/>
+    <testcase name="showAssessment=false omits assessments" time="0.014" classname="04ResponsePhasePassThroughAndBlockReplyContainingBlockMeIsBlocked"/>
+  </testsuite>
+  <testsuite name="05 - Guardrails response exceeds maxResponseBytes / blocked when passthroughOnError=false" id="526d9219-ea92-458a-9aa2-a5e5e7a5f1cb" timestamp="2026-09-10T10:38:08.153Z" tests="2" failures="0" errors="0" time="0.011">
+    <testcase name="status is 422 (treated as error)" time="0.011" classname="05GuardrailsResponseExceedsMaxResponseBytesBlockedWhenPassthroughOnErrorFalse"/>
+    <testcase name="sterile reason, no internal detail leaked" time="0.011" classname="05GuardrailsResponseExceedsMaxResponseBytesBlockedWhenPassthroughOnErrorFalse"/>
+  </testsuite>
+  <testsuite name="05 - Guardrails response exceeds maxResponseBytes / passthrough when passthroughOnError=true" id="842b14f2-53ba-439f-b49a-f7245b506436" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="0.016">
+    <testcase name="status is 200 (passed through)" time="0.016" classname="05GuardrailsResponseExceedsMaxResponseBytesPassthroughWhenPassthroughOnErrorTrue"/>
+  </testsuite>
+  <testsuite name="06 - Guardrail service slow or erroring / SLOW_RESPONSE blocked on timeout (passthroughOnError=false)" id="35a8e1e9-22a4-43a9-8830-73e640447c89" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="1.023">
+    <testcase name="status is 422" time="1.023" classname="06GuardrailServiceSlowOrErroringSlowResponseBlockedOnTimeoutPassthroughOnErrorFalse"/>
+  </testsuite>
+  <testsuite name="06 - Guardrail service slow or erroring / SLOW_RESPONSE passthrough on timeout (passthroughOnError=true)" id="23bdee45-2329-4262-bb81-bd8cde904e98" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="1.020">
+    <testcase name="status is 200" time="1.020" classname="06GuardrailServiceSlowOrErroringSlowResponsePassthroughOnTimeoutPassthroughOnErrorTrue"/>
+  </testsuite>
+  <testsuite name="06 - Guardrail service slow or erroring / SERVER_ERROR blocked (passthroughOnError=false)" id="14c7c791-c9a2-4edd-8fde-a2ca3a69852b" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="0.012">
+    <testcase name="status is 422" time="0.012" classname="06GuardrailServiceSlowOrErroringServerErrorBlockedPassthroughOnErrorFalse"/>
+  </testsuite>
+  <testsuite name="06 - Guardrail service slow or erroring / SERVER_ERROR passthrough (passthroughOnError=true)" id="f4548d37-c4b8-4711-ba15-ee3d9f1c78b4" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="0.011">
+    <testcase name="status is 200" time="0.011" classname="06GuardrailServiceSlowOrErroringServerErrorPassthroughPassthroughOnErrorTrue"/>
+  </testsuite>
+  <testsuite name="07 - Custom jsonPath extraction / reset mocks" id="c2bec59b-e7ac-41b0-9d64-2f888ac77220" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="0.002"/>
+  <testsuite name="07 - Custom jsonPath extraction / send non-default body shape" id="9740bc6d-12f4-4567-af6a-bbe8e87b07fa" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="0.013"/>
+  <testsuite name="07 - Custom jsonPath extraction / guardrails server received the custom-path text" id="34c0f341-7081-4f16-9496-2507a1e1dc9b" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="0.003">
+    <testcase name="llmOutput matches $.prompt" time="0.003" classname="07CustomJsonPathExtractionGuardrailsServerReceivedTheCustomPathText"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / missing guardName is rejected" id="ab4d1478-7751-4b02-a338-5c922dc667e7" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="0.954">
+    <testcase name="registration itself succeeds (system-param default fails later, at route-build time)" time="0.954" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpMissingGuardNameIsRejected"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / missing guardrailsApiEndpoint is rejected" id="b91f204c-8704-42c8-8f81-1172dde42182" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="1.083">
+    <testcase name="registration itself succeeds (system-param default fails later, at route-build time)" time="1.083" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpMissingGuardrailsApiEndpointIsRejected"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / gr2-invalid-missing-guardname route never comes up (policy chain failed to build)" id="e3618142-b216-4f6f-b49d-0227204a7f40" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="0.009">
+    <testcase name="misconfigured route: guardrail is not enforced (policy dropped, see runtime log)" time="0.009" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpGr2InvalidMissingGuardnameRouteNeverComesUpPolicyChainFailedToBuild"/>
+  </testsuite>
+  <testsuite name="08 - Invalid config is accepted at registration but the route never comes up / gr2-invalid-missing-endpoint route never comes up (policy chain failed to build)" id="5a5e4b3c-9395-4c4b-89f2-c0128991ce3d" timestamp="2026-09-10T10:38:08.153Z" tests="1" failures="0" errors="0" time="0.008">
+    <testcase name="misconfigured route: guardrail is not enforced (policy dropped, see runtime log)" time="0.008" classname="08InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpGr2InvalidMissingEndpointRouteNeverComesUpPolicyChainFailedToBuild"/>
+  </testsuite>
+  <testsuite name="09 - Cleanup / Delete LlmProxy gr2-main" id="2bee1bf3-7a23-4a80-8050-9c9c984f8d2d" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="1.723"/>
+  <testsuite name="09 - Cleanup / Delete LlmProxy gr2-response-only" id="a136755a-7568-46c4-9c8e-04377b72ed0f" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="1.191"/>
+  <testsuite name="09 - Cleanup / Delete LlmProxy gr2-size-block" id="972dd82f-a0f8-4f69-9b9b-20fc690902b3" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="1.185"/>
+  <testsuite name="09 - Cleanup / Delete LlmProxy gr2-size-passthrough" id="229f4bf2-c9c2-43ba-8cb0-04562717def3" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="1.077"/>
+  <testsuite name="09 - Cleanup / Delete LlmProxy gr2-timeout-block" id="ab019e96-9a30-49a6-9d7a-22c56d408d19" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="2.590"/>
+  <testsuite name="09 - Cleanup / Delete LlmProxy gr2-timeout-passthrough" id="057be1bd-d910-4193-9d03-42fb9e0a671f" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="1.578"/>
+  <testsuite name="09 - Cleanup / Delete LlmProxy gr2-custom-jsonpath" id="45e832f6-e186-4c10-9aa8-13460f72a783" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="0.983"/>
+  <testsuite name="09 - Cleanup / Delete LlmProvider" id="b632ffec-a170-4285-9dd9-c93951547122" timestamp="2026-09-10T10:38:08.153Z" tests="0" failures="0" errors="0" time="1.790"/>
+</testsuites>

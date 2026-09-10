@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="headroom-compressor e2e" tests="6" time="3.404">
+  <testsuite name="00 - Health Checks / Echo LLM mock healthz" id="f0924380-b667-4320-893f-5bb856090c8f" timestamp="2026-09-10T12:52:58.051Z" tests="0" failures="0" errors="0" time="0.025"/>
+  <testsuite name="00 - Health Checks / Controller admin health" id="59ea1457-d782-455f-9d63-2f44046507c0" timestamp="2026-09-10T12:52:58.051Z" tests="0" failures="0" errors="0" time="0.009"/>
+  <testsuite name="00 - Health Checks / Gateway reachable" id="734fea5a-aab8-42ca-bc75-b45b3975b2d4" timestamp="2026-09-10T12:52:58.051Z" tests="0" failures="0" errors="0" time="0.036"/>
+  <testsuite name="01 - Register / Register: headroom-compressor-e2e-provider" id="41262641-857e-4901-b039-4dab3244c483" timestamp="2026-09-10T12:52:58.051Z" tests="0" failures="0" errors="0" time="0.967"/>
+  <testsuite name="01 - Register / Register: hc-main (compressUserMessages=false)" id="72053dc1-d09f-4866-bce2-c4b0f786d61d" timestamp="2026-09-10T12:52:58.051Z" tests="0" failures="0" errors="0" time="0.987"/>
+  <testsuite name="01 - Register / Register: hc-compress-user (compressUserMessages=true)" id="a2936f99-26f3-4124-9537-2270bb88e902" timestamp="2026-09-10T12:52:58.051Z" tests="0" failures="0" errors="0" time="1.380"/>
+</testsuites>

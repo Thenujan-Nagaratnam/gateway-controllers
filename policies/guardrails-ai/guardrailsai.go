@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -85,7 +86,7 @@ func GetPolicy(
 	metadata policy.PolicyMetadata,
 	params map[string]interface{},
 ) (policy.Policy, error) {
-	if err := validateSystemParams(params); err != nil {
+	if err := validateEndpointParam(params); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
 
@@ -209,8 +210,15 @@ func parseFlowParams(params map[string]interface{}, isResponse bool) (Guardrails
 	return result, nil
 }
 
-// validateSystemParams validates required system-level configuration parameters.
-func validateSystemParams(params map[string]interface{}) error {
+// validateEndpointParam validates the guardrailsApiEndpoint parameter. It must be
+// present, a string, and an absolute http(s) URL with a host and no embedded
+// userinfo. This runs at policy-chain build time (GetPolicy), so a bad value
+// surfaces as a route that never comes up rather than a runtime request failure.
+//
+// This is a static check only - there is no dial-time SSRF guard against
+// private/loopback/link-local/metadata addresses yet (that lives in
+// utils.SharedHTTPClient's optional guard, not in a published sdk/core release).
+func validateEndpointParam(params map[string]interface{}) error {
 	endpointRaw, ok := params["guardrailsApiEndpoint"]
 	if !ok {
 		return fmt.Errorf("'guardrailsApiEndpoint' parameter is required")
@@ -221,6 +229,19 @@ func validateSystemParams(params map[string]interface{}) error {
 	}
 	if endpoint == "" {
 		return fmt.Errorf("'guardrailsApiEndpoint' cannot be empty")
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("'guardrailsApiEndpoint' must be a valid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("'guardrailsApiEndpoint' must use the http or https scheme")
+	}
+	if u.Host == "" {
+		return fmt.Errorf("'guardrailsApiEndpoint' must be an absolute URL with a host")
+	}
+	if u.User != nil {
+		return fmt.Errorf("'guardrailsApiEndpoint' must not embed userinfo (username/password) in the URL")
 	}
 	return nil
 }

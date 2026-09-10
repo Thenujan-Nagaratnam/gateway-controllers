@@ -138,24 +138,122 @@ cleanup_registered_resources() {
 # Best-effort pre-clean in case a previous run left resources behind.
 cleanup_registered_resources
 
-log "Running newman against $COLLECTION ..."
+# A successful registration (HTTP 2xx from gateway-controller) does not mean the
+# route is live on gateway-runtime yet - that propagates asynchronously via xDS,
+# and even after the route itself answers, the upstream cluster can still return
+# 503 for a brief warm-up window. Poll until the route answers with anything
+# other than 404/000/500/503 before running the folders that exercise it (see
+# guardrails-ai/byo-guardrail's run-e2e.sh for the same pattern).
+route_is_up() {
+  local path="$1"
+  local code
+  code=$(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' \
+    -X POST "$GATEWAY_URL/$path" \
+    -H "Content-Type: application/json" -d '{}')
+  [ "$code" != "404" ] && [ "$code" != "000" ] && [ "$code" != "500" ] && [ "$code" != "503" ]
+}
+
+wait_for_route() {
+  local path="$1" tries=120
+  until route_is_up "$path"; do
+    tries=$((tries - 1))
+    [ "$tries" -le 0 ] && return 1
+    sleep 0.5
+  done
+  return 0
+}
+
 # --insecure alone doesn't cover every TLS code path newman/Node exercises against
 # the gateway's self-signed dev cert (some requests fail with "self-signed
 # certificate ... try running Node.js with --use-system-ca" even with --insecure
 # set) - NODE_TLS_REJECT_UNAUTHORIZED=0 is the blunt but reliable fix for local
 # e2e runs against a self-signed cert.
-NODE_TLS_REJECT_UNAUTHORIZED=0 "${NEWMAN[@]}" run "$COLLECTION" \
-  --env-var "controllerBaseUrl=${CONTROLLER_BASE_URL#http://}" \
-  --env-var "controllerAdminUrl=${CONTROLLER_ADMIN_URL#http://}" \
-  --env-var "gatewayBaseUrl=${GATEWAY_URL#https://}" \
-  --env-var "echoLlmMockUrl=localhost:$ECHO_LLM_MOCK_PORT" \
-  --env-var "echoLlmMockPort=$ECHO_LLM_MOCK_PORT" \
-  --insecure \
-  --delay-request 200 \
-  --timeout-request 30000 \
-  --reporters "$NEWMAN_REPORTERS" \
-  --reporter-junit-export "$REPORT_DIR/junit.xml"
-NEWMAN_EXIT=$?
+run_newman() {
+  local label="$1"; shift
+  log "$label"
+  NODE_TLS_REJECT_UNAUTHORIZED=0 "${NEWMAN[@]}" run "$COLLECTION" \
+    --env-var "controllerBaseUrl=${CONTROLLER_BASE_URL#http://}" \
+    --env-var "controllerAdminUrl=${CONTROLLER_ADMIN_URL#http://}" \
+    --env-var "gatewayBaseUrl=${GATEWAY_URL#https://}" \
+    --env-var "echoLlmMockUrl=localhost:$ECHO_LLM_MOCK_PORT" \
+    --env-var "echoLlmMockPort=$ECHO_LLM_MOCK_PORT" \
+    --insecure \
+    --delay-request 200 \
+    --timeout-request 30000 \
+    --reporters "$NEWMAN_REPORTERS" \
+    "$@"
+}
+
+OVERALL_EXIT=0
+MAX_REGISTER_ATTEMPTS="${MAX_REGISTER_ATTEMPTS:-3}"
+ALL_PROXY_CONTEXTS=(hc-main hc-compress-user)
+
+register_attempt=0
+routes_ready=false
+until $routes_ready || [ "$register_attempt" -ge "$MAX_REGISTER_ATTEMPTS" ]; do
+  register_attempt=$((register_attempt + 1))
+  if [ "$register_attempt" -gt 1 ]; then
+    log "Registration attempt $register_attempt/$MAX_REGISTER_ATTEMPTS - cleaning up and retrying ..."
+    cleanup_registered_resources
+    sleep 2
+  fi
+
+  run_newman "Register (attempt $register_attempt)" --folder "00 - Health Checks" --folder "01 - Register" \
+    --reporter-junit-export "$REPORT_DIR/junit-register.xml"
+
+  log "Waiting for gateway-runtime to pick up the registered proxies via xDS ..."
+  attempt_ok=true
+  for ctx in "${ALL_PROXY_CONTEXTS[@]}"; do
+    wait_for_route "$ctx/chat/completions" || { echo "route for '$ctx' never came up (attempt $register_attempt)" >&2; attempt_ok=false; }
+  done
+  if $attempt_ok; then
+    routes_ready=true
+  fi
+done
+
+if ! $routes_ready; then
+  echo "routes never came up cleanly after $MAX_REGISTER_ATTEMPTS attempts" >&2
+  OVERALL_EXIT=1
+fi
+
+sleep 3
+
+# Prime each Python policy instance with a few small real requests before the
+# functional folders run. The first request through a freshly-created
+# headroom-compressor instance pays a one-time cost - loading the tiktoken vocab
+# (which can hit its ~10s load timeout in an offline environment and fall back to
+# token estimation) and completing Headroom's ContentRouter first-call init -
+# during which the router is measurably more conservative. Without this, folder
+# 02/05's first request lands on a cold instance and its "was compressed"
+# assertion can flake. The wait_for_route probes above don't prime it: they send
+# an empty body, so the policy returns before Headroom is ever invoked. These
+# priming requests are deliberately small and NOT the compressible payload the
+# folders check - just enough to get the instance past first-call init.
+prime_route() {  # $1 = gateway context
+  local ctx="$1" i
+  for i in 1 2 3 4; do
+    curl -sk --max-time 30 -o /dev/null -X POST "$GATEWAY_URL/$ctx/chat/completions" \
+      -H "Content-Type: application/json" \
+      -d '{"model":"gpt-4o","messages":[{"role":"user","content":"warming the tokenizer with a normal-length sentence"},{"role":"assistant","content":"ready"},{"role":"user","content":"go ahead"}]}' || true
+  done
+}
+for ctx in "${ALL_PROXY_CONTEXTS[@]}"; do
+  log "Priming Headroom policy instance for '$ctx' ..."
+  prime_route "$ctx"
+done
+sleep 5
+
+run_newman "Functional tests" \
+  --folder "02 - Old repetitive message gets compressed, recent ones untouched" \
+  --folder "03 - Short ordinary message is left unchanged" \
+  --folder "04 - No model available anywhere skips compression entirely" \
+  --folder "05 - compressUserMessages true vs false" \
+  --folder "06 - Malformed JSON body still passes through" \
+  --folder "07 - Response body is never modified (request-only policy)" \
+  --folder "08 - Cleanup" \
+  --reporter-junit-export "$REPORT_DIR/junit.xml" || OVERALL_EXIT=1
+
+NEWMAN_EXIT=$OVERALL_EXIT
 
 if [ "$NEWMAN_EXIT" -eq 0 ]; then
   log "headroom-compressor e2e suite PASSED"
