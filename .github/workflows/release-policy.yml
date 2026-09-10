@@ -162,6 +162,41 @@ jobs:
           echo "module_path=$MODULE_PATH" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
 
+      - name: Guard against releasing under the wrong GitHub owner
+        shell: bash
+        env:
+          # MODULE_PATH is github.com/<owner>/<repo>/policies/<name>[/vN], where
+          # <owner>/<repo> comes from vars.CANONICAL_REPOSITORY (falling back to
+          # github.repository). This step enforces that a release always tags and
+          # publishes a module under the SAME GitHub owner as the repo the
+          # workflow runs in — so a fork can never accidentally cut a release
+          # under `wso2/…` (e.g. via a stray CANONICAL_REPOSITORY repo variable),
+          # and the upstream repo can't publish a fork's module path either.
+          MODULE_PATH: ${{ steps.meta.outputs.module_path }}
+          RUNNING_REPOSITORY: ${{ github.repository }}
+          CANONICAL_REPOSITORY: ${{ vars.CANONICAL_REPOSITORY || github.repository }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            { echo "## ❌ Release blocked"; echo ""; echo "$1"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          MODULE_OWNER="$(echo "$MODULE_PATH" | cut -d/ -f2)"
+          REPO_OWNER="$(echo "$RUNNING_REPOSITORY" | cut -d/ -f1)"
+
+          if [[ -z "$MODULE_OWNER" || -z "$REPO_OWNER" ]]; then
+            fail "Could not determine GitHub owner (module_path='$MODULE_PATH', repository='$RUNNING_REPOSITORY')."
+          fi
+
+          if [[ "$MODULE_OWNER" != "$REPO_OWNER" ]]; then
+            fail "Refusing to release. The module path would be published under owner **\`$MODULE_OWNER\`** (from CANONICAL_REPOSITORY=\`$CANONICAL_REPOSITORY\`), but this workflow is running in **\`$RUNNING_REPOSITORY\`** (owner \`$REPO_OWNER\`). A release must tag and publish under the same GitHub owner as the repository it runs in. Unset or correct the \`CANONICAL_REPOSITORY\` repository variable, or run this workflow from the intended fork."
+          fi
+
+          echo "✅ Module owner '$MODULE_OWNER' matches repository owner '$REPO_OWNER' — release may proceed"
+
       - name: Check for existing release tag
         id: tag-check
         shell: bash

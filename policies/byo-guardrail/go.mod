@@ -1,4 +1,4 @@
-module github.com/wso2/gateway-controllers/policies/byo-guardrail
+module github.com/Thenujan-Nagaratnam/gateway-controllers/policies/byo-guardrail
 
 go 1.26.1
 

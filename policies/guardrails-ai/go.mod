@@ -1,4 +1,4 @@
-module github.com/wso2/gateway-controllers/policies/guardrails-ai
+module github.com/Thenujan-Nagaratnam/gateway-controllers/policies/guardrails-ai
 
 go 1.26.1
 
