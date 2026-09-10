@@ -1,0 +1,97 @@
+name: tool-argument-egress-dlp
+version: v0.1.0
+description: |
+  Data-loss prevention on the agent's OUTBOUND tool-call arguments (OWASP LLM02
+  Sensitive Information Disclosure, Agentic T2 tool-based exfiltration). When an
+  agent calls a third-party / external MCP tool it can pass along a live API key,
+  a database connection string, a private key, or customer PII inside the tool
+  arguments - and that data has now left your boundary.
+
+  This request-phase policy recursively scans every string value under the tool
+  arguments (default $.params.arguments, plus any additionalJsonPaths) for:
+    - secrets : AWS / GCP / GitHub / Slack / Stripe keys, PEM private-key blocks,
+                JWTs, bearer tokens, DSN connection strings, and any long token
+                whose Shannon entropy exceeds a threshold
+    - pii     : email, phone, US SSN, Luhn-valid credit-card number, IBAN
+
+  On a hit:
+    - block    : short-circuit with HTTP 422 (the matched value is never echoed)
+    - redact   : replace the matched span with [REDACTED:<category>] and forward
+    - annotate : forward unchanged with x-egress-dlp-* headers + analytics
+
+  This is distinct from pii-masking-regex (which masks the prompt going TO the
+  LLM) - here the concern is data going OUT to a tool.
+
+parameters:
+  type: object
+  properties:
+    argumentsJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.params.arguments"
+    additionalJsonPaths:
+      type: array
+      items: { type: string }
+      x-wso2-policy-advanced-param: true
+      default: []
+    onDetected:
+      type: string
+      enum: [block, redact, annotate]
+      x-wso2-policy-advanced-param: false
+      default: block
+    detectors:
+      type: object
+      x-wso2-policy-advanced-param: false
+      properties:
+        secrets:
+          type: object
+          properties:
+            enabled: { type: boolean, default: true }
+            entropyEnabled: { type: boolean, default: true }
+            minEntropyBits: { type: number, default: 3.5, minimum: 0 }
+            entropyMinLength: { type: integer, default: 24, minimum: 8 }
+        pii:
+          type: object
+          properties:
+            enabled: { type: boolean, default: true }
+            categories:
+              type: array
+              items:
+                type: string
+                enum: [email, phone, ssn, creditCard, iban]
+              default: [ssn, creditCard, iban]
+    allowValues:
+      type: array
+      items: { type: string }
+      x-wso2-policy-advanced-param: true
+      description: Exact string values to skip (known-safe placeholders / test fixtures).
+      default: []
+    customPatterns:
+      type: array
+      x-wso2-policy-advanced-param: true
+      items:
+        type: object
+        required: [name, regex]
+        properties:
+          name: { type: string }
+          regex: { type: string }
+          category: { type: string, default: "custom" }
+      default: []
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+    passthroughOnError:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+    maxScanBytes:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      default: 262144
+      minimum: 1024
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
