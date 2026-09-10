@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="indirect-prompt-injection-guardrail e2e" tests="10" time="8.479">
+  <testsuite name="00 - Health Checks / echo mock healthz" id="334311fc-8263-4a39-9702-e74901a1b64d" timestamp="2026-09-10T17:18:50.701Z" tests="1" failures="0" errors="0" time="0.032">
+    <testcase name="echo mock up" time="0.032" classname="00HealthChecksEchoMockHealthz"/>
+  </testsuite>
+  <testsuite name="00 - Health Checks / controller admin health" id="19abf35b-7a7c-4fcf-906d-f308dc5cad69" timestamp="2026-09-10T17:18:50.701Z" tests="1" failures="0" errors="0" time="0.011">
+    <testcase name="controller up" time="0.011" classname="00HealthChecksControllerAdminHealth"/>
+  </testsuite>
+  <testsuite name="00 - Health Checks / gateway reachable" id="005876fd-277d-4f1f-aed9-1f41db41df2c" timestamp="2026-09-10T17:18:50.701Z" tests="1" failures="0" errors="0" time="0.041">
+    <testcase name="gateway reachable" time="0.041" classname="00HealthChecksGatewayReachable"/>
+  </testsuite>
+  <testsuite name="01 - Register / Register LlmProvider" id="c2c19ada-cbdf-414e-964c-aab5d36411d5" timestamp="2026-09-10T17:18:50.701Z" tests="0" failures="0" errors="0" time="0.920"/>
+  <testsuite name="01 - Register / Register ipi-block" id="89aef299-5787-4f8e-8730-feebd437f693" timestamp="2026-09-10T17:18:50.701Z" tests="1" failures="0" errors="0" time="1.289">
+    <testcase name="registration accepted (201)" time="1.289" classname="01RegisterRegisterIpiBlock"/>
+  </testsuite>
+  <testsuite name="01 - Register / Register ipi-sanitize" id="a74ee84e-618d-49c9-b1b5-343a556585ae" timestamp="2026-09-10T17:18:50.701Z" tests="1" failures="0" errors="0" time="0.972">
+    <testcase name="registration accepted (201)" time="0.972" classname="01RegisterRegisterIpiSanitize"/>
+  </testsuite>
+  <testsuite name="01 - Register / Register ipi-annotate" id="c635ff4a-7d0a-41d6-b1d3-f09975594b27" timestamp="2026-09-10T17:18:50.701Z" tests="1" failures="0" errors="0" time="1.582">
+    <testcase name="registration accepted (201)" time="1.582" classname="01RegisterRegisterIpiAnnotate"/>
+  </testsuite>
+  <testsuite name="01 - Register / Register ipi-response" id="b9505e96-ad3d-4780-a49b-ff23dff95d13" timestamp="2026-09-10T17:18:50.701Z" tests="1" failures="0" errors="0" time="0.976">
+    <testcase name="registration accepted (201)" time="0.976" classname="01RegisterRegisterIpiResponse"/>
+  </testsuite>
+  <testsuite name="01 - Register / Register ipi-custom-paths" id="ff5d7961-484d-45a1-a1e4-c3fdd7fd42ff" timestamp="2026-09-10T17:18:50.701Z" tests="1" failures="0" errors="0" time="1.587">
+    <testcase name="registration accepted (201)" time="1.587" classname="01RegisterRegisterIpiCustomPaths"/>
+  </testsuite>
+  <testsuite name="01 - Register / Register ipi-threshold" id="275997f3-eb6f-42bd-9b82-c5daa5e65315" timestamp="2026-09-10T17:18:50.701Z" tests="1" failures="0" errors="0" time="1.069">
+    <testcase name="registration accepted (201)" time="1.069" classname="01RegisterRegisterIpiThreshold"/>
+  </testsuite>
+</testsuites>

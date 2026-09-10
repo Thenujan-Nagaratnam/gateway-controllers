@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="indirect-prompt-injection-guardrail e2e" tests="28" time="10.708">
+  <testsuite name="02 - Benign tool output passes through / benign tool message" id="3d8b1246-cf86-4319-a415-fd4a96fb33db" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="0.070">
+    <testcase name="status 200" time="0.070" classname="02BenignToolOutputPassesThroughBenignToolMessage"/>
+  </testsuite>
+  <testsuite name="03 - Injection in tool message is blocked / imperative override in tool output -> 422" id="5c581eab-7e9a-4205-92db-7ff9a866680a" timestamp="2026-09-10T17:19:05.629Z" tests="5" failures="0" errors="0" time="0.010">
+    <testcase name="status 422" time="0.010" classname="03InjectionInToolMessageIsBlockedImperativeOverrideInToolOutput422"/>
+    <testcase name="type is INDIRECT_PROMPT_INJECTION_GUARDRAIL" time="0.010" classname="03InjectionInToolMessageIsBlockedImperativeOverrideInToolOutput422"/>
+    <testcase name="direction REQUEST" time="0.010" classname="03InjectionInToolMessageIsBlockedImperativeOverrideInToolOutput422"/>
+    <testcase name="showAssessment=true -> assessments present" time="0.010" classname="03InjectionInToolMessageIsBlockedImperativeOverrideInToolOutput422"/>
+    <testcase name="assessment names a detector" time="0.010" classname="03InjectionInToolMessageIsBlockedImperativeOverrideInToolOutput422"/>
+  </testsuite>
+  <testsuite name="04 - User/system messages are not inspected / same injection text in user+system roles -> 200" id="4e981f65-b846-4cfc-9c06-4c349f7ec151" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="0.014">
+    <testcase name="user/system injection text is NOT blocked by this policy" time="0.014" classname="04UserSystemMessagesAreNotInspectedSameInjectionTextInUserSystemRoles200"/>
+  </testsuite>
+  <testsuite name="05 - Sanitize rewrites the tool content / reset echo" id="1d59cd8b-5c05-418f-8c33-4d14eca44e45" timestamp="2026-09-10T17:19:05.629Z" tests="0" failures="0" errors="0" time="0.004"/>
+  <testsuite name="05 - Sanitize rewrites the tool content / sanitize mode -> 200" id="e92dd2f6-129c-424b-a400-1d7477185860" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="0.019">
+    <testcase name="status 200 (sanitized, not blocked)" time="0.019" classname="05SanitizeRewritesTheToolContentSanitizeMode200"/>
+  </testsuite>
+  <testsuite name="05 - Sanitize rewrites the tool content / backend received cleaned + wrapped content" id="ce1e27ef-c175-4f5f-80e3-f26400215de5" timestamp="2026-09-10T17:19:05.629Z" tests="4" failures="0" errors="0" time="0.002">
+    <testcase name="tool content wrapped in untrusted delimiter" time="0.002" classname="05SanitizeRewritesTheToolContentBackendReceivedCleanedWrappedContent"/>
+    <testcase name="exfil image removed" time="0.002" classname="05SanitizeRewritesTheToolContentBackendReceivedCleanedWrappedContent"/>
+    <testcase name="user message untouched" time="0.002" classname="05SanitizeRewritesTheToolContentBackendReceivedCleanedWrappedContent"/>
+    <testcase name="x-indirect-injection-action=sanitized reached backend" time="0.002" classname="05SanitizeRewritesTheToolContentBackendReceivedCleanedWrappedContent"/>
+  </testsuite>
+  <testsuite name="06 - Annotate adds headers and forwards / reset echo" id="f3df142f-0fa5-464c-ab0d-5d2428383188" timestamp="2026-09-10T17:19:05.629Z" tests="0" failures="0" errors="0" time="0.003"/>
+  <testsuite name="06 - Annotate adds headers and forwards / annotate mode -> 200" id="d0ff8a45-b667-477e-8f7e-680e2f54afa6" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="0.012">
+    <testcase name="status 200" time="0.012" classname="06AnnotateAddsHeadersAndForwardsAnnotateMode200"/>
+  </testsuite>
+  <testsuite name="06 - Annotate adds headers and forwards / backend received x-indirect-injection-* headers, body unchanged" id="0b1ecbe1-b699-425f-8646-184228f50c0c" timestamp="2026-09-10T17:19:05.629Z" tests="3" failures="0" errors="0" time="0.002">
+    <testcase name="score header present" time="0.002" classname="06AnnotateAddsHeadersAndForwardsBackendReceivedXIndirectInjectionHeadersBodyUnchanged"/>
+    <testcase name="detectors header present" time="0.002" classname="06AnnotateAddsHeadersAndForwardsBackendReceivedXIndirectInjectionHeadersBodyUnchanged"/>
+    <testcase name="body forwarded unchanged" time="0.002" classname="06AnnotateAddsHeadersAndForwardsBackendReceivedXIndirectInjectionHeadersBodyUnchanged"/>
+  </testsuite>
+  <testsuite name="07 - Invisible unicode / exfil markup / delimiter detection / unicode tag chars in tool output -> 422" id="683721ff-c6eb-4c9f-8120-7615133f5029" timestamp="2026-09-10T17:19:05.629Z" tests="2" failures="0" errors="0" time="0.011">
+    <testcase name="tag-char smuggling blocked" time="0.011" classname="07InvisibleUnicodeExfilMarkupDelimiterDetectionUnicodeTagCharsInToolOutput422"/>
+    <testcase name="invisibleUnicode detector" time="0.011" classname="07InvisibleUnicodeExfilMarkupDelimiterDetectionUnicodeTagCharsInToolOutput422"/>
+  </testsuite>
+  <testsuite name="07 - Invisible unicode / exfil markup / delimiter detection / data: URI in tool output -> 422" id="aaa9c004-0a13-4a4a-a165-924f7eb352ba" timestamp="2026-09-10T17:19:05.629Z" tests="2" failures="0" errors="0" time="0.008">
+    <testcase name="data uri blocked" time="0.008" classname="07InvisibleUnicodeExfilMarkupDelimiterDetectionDataUriInToolOutput422"/>
+    <testcase name="dataExfilMarkup detector" time="0.008" classname="07InvisibleUnicodeExfilMarkupDelimiterDetectionDataUriInToolOutput422"/>
+  </testsuite>
+  <testsuite name="07 - Invisible unicode / exfil markup / delimiter detection / chat template delimiter in tool output -> 422" id="4b23ee64-a290-4bdd-aade-113d261855e0" timestamp="2026-09-10T17:19:05.629Z" tests="2" failures="0" errors="0" time="0.008">
+    <testcase name="delimiter blocked" time="0.008" classname="07InvisibleUnicodeExfilMarkupDelimiterDetectionChatTemplateDelimiterInToolOutput422"/>
+    <testcase name="templateDelimiters detector" time="0.008" classname="07InvisibleUnicodeExfilMarkupDelimiterDetectionChatTemplateDelimiterInToolOutput422"/>
+  </testsuite>
+  <testsuite name="08 - Custom RAG jsonPath is inspected / injection in $.context -> 422" id="7fc9e5ad-c779-4873-aeca-ffcce60b7eae" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="0.008">
+    <testcase name="RAG context injection blocked" time="0.008" classname="08CustomRagJsonPathIsInspectedInjectionInContext422"/>
+  </testsuite>
+  <testsuite name="08 - Custom RAG jsonPath is inspected / benign $.context -> 200" id="6723f039-3be4-4958-bb74-37d9d78bbc6d" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="0.015">
+    <testcase name="benign RAG context passes" time="0.015" classname="08CustomRagJsonPathIsInspectedBenignContext200"/>
+  </testsuite>
+  <testsuite name="09 - Response-phase inspection / model reply carries exfil image -> 422" id="c3362b04-398c-4423-b16a-d87b1967e045" timestamp="2026-09-10T17:19:05.629Z" tests="2" failures="0" errors="0" time="0.012">
+    <testcase name="response-phase block -> 422" time="0.012" classname="09ResponsePhaseInspectionModelReplyCarriesExfilImage422"/>
+    <testcase name="direction RESPONSE" time="0.012" classname="09ResponsePhaseInspectionModelReplyCarriesExfilImage422"/>
+  </testsuite>
+  <testsuite name="09 - Response-phase inspection / benign model reply -> 200" id="b13b569c-ec68-4ff1-be65-82d84e8322b6" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="0.013">
+    <testcase name="benign reply passes" time="0.013" classname="09ResponsePhaseInspectionBenignModelReply200"/>
+  </testsuite>
+  <testsuite name="10 - severityThreshold requires two findings / single finding under threshold -> 200" id="0c20265f-cf6f-475b-96f1-7dfe26ae3721" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="0.013">
+    <testcase name="one finding, threshold 2 -> not blocked" time="0.013" classname="10SeverityThresholdRequiresTwoFindingsSingleFindingUnderThreshold200"/>
+  </testsuite>
+  <testsuite name="10 - severityThreshold requires two findings / two findings meet threshold -> 422" id="6da74e4b-ef17-445b-bf6d-88d21842250f" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="0.008">
+    <testcase name="two findings -> blocked" time="0.008" classname="10SeverityThresholdRequiresTwoFindingsTwoFindingsMeetThreshold422"/>
+  </testsuite>
+  <testsuite name="11 - Invalid config is accepted at registration but the route never comes up / register ipi-invalid (bad onDetected)" id="4a23a241-da39-4c19-b73b-f004c67dec25" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="1.015">
+    <testcase name="registration itself succeeds (GetPolicy validation only runs when the route builds)" time="1.015" classname="11InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpRegisterIpiInvalidBadOnDetected"/>
+  </testsuite>
+  <testsuite name="11 - Invalid config is accepted at registration but the route never comes up / ipi-invalid route does not enforce the guardrail (policy dropped, see runtime log)" id="f61a269b-d70f-42fb-addc-9f00c02eea80" timestamp="2026-09-10T17:19:05.629Z" tests="1" failures="0" errors="0" time="0.010">
+    <testcase name="misconfigured route: guardrail not enforced" time="0.010" classname="11InvalidConfigIsAcceptedAtRegistrationButTheRouteNeverComesUpIpiInvalidRouteDoesNotEnforceTheGuardrailPolicyDroppedSeeRuntimeLog"/>
+  </testsuite>
+  <testsuite name="12 - Cleanup / Delete ipi-block" id="61fc8ba3-5d20-4873-a8c8-a7581b62cedc" timestamp="2026-09-10T17:19:05.629Z" tests="0" failures="0" errors="0" time="0.953"/>
+  <testsuite name="12 - Cleanup / Delete ipi-sanitize" id="308ecbc1-a962-4aa3-8c5f-aa136955fc3a" timestamp="2026-09-10T17:19:05.629Z" tests="0" failures="0" errors="0" time="0.890"/>
+  <testsuite name="12 - Cleanup / Delete ipi-annotate" id="52810b03-294d-4980-9576-807528dc27e8" timestamp="2026-09-10T17:19:05.629Z" tests="0" failures="0" errors="0" time="1.879"/>
+  <testsuite name="12 - Cleanup / Delete ipi-response" id="925fdac4-59ed-4de6-bcb2-4614914e147f" timestamp="2026-09-10T17:19:05.629Z" tests="0" failures="0" errors="0" time="0.983"/>
+  <testsuite name="12 - Cleanup / Delete ipi-custom-paths" id="2c53bd19-643f-4aea-bb4a-e9995e42d4db" timestamp="2026-09-10T17:19:05.629Z" tests="0" failures="0" errors="0" time="0.995"/>
+  <testsuite name="12 - Cleanup / Delete ipi-threshold" id="629eb0a5-41b5-46ae-a2cf-cc6a59b05999" timestamp="2026-09-10T17:19:05.629Z" tests="0" failures="0" errors="0" time="0.976"/>
+  <testsuite name="12 - Cleanup / Delete ipi-invalid" id="9dc861bf-2318-4169-88ba-449c73b9a9f0" timestamp="2026-09-10T17:19:05.629Z" tests="0" failures="0" errors="0" time="1.785"/>
+  <testsuite name="12 - Cleanup / Delete provider" id="3a690269-c57f-465d-af11-f956f871d620" timestamp="2026-09-10T17:19:05.629Z" tests="0" failures="0" errors="0" time="0.990"/>
+</testsuites>

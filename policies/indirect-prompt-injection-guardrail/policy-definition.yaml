@@ -1,0 +1,187 @@
+name: indirect-prompt-injection-guardrail
+version: v0.1.0
+description: |
+  Defend against INDIRECT prompt injection (OWASP LLM01, Agentic ASI01 / "EchoLeak"
+  class). Content an agent pulls from tools, retrieval/RAG stores, emails, web pages
+  and API responses is untrusted data - but agent frameworks concatenate it straight
+  into the LLM context, where a hidden instruction inside it can hijack the model.
+
+  This policy inspects ONLY that untrusted, retrieved content - by default the
+  `tool` and `function` messages in the request, plus any extra JSONPaths you point
+  at RAG context blocks - and never the user's own prompt (use semantic-prompt-guard
+  for that). It runs a set of heuristic detectors:
+
+    - imperativeOverride  : "ignore previous instructions", "you are now ...",
+                            "reveal your system prompt", "do not tell the user", etc.
+    - templateDelimiters  : chat-template tokens smuggled into content
+                            (<|im_start|>, [INST], <<SYS>>, </s> ...)
+    - invisibleUnicode    : zero-width, bidi-override and Unicode "tag" (ASCII-
+                            smuggling) characters used to hide instructions
+    - dataExfilMarkup     : markdown images / links / data: URIs / raw HTML that
+                            exfiltrate context to an attacker URL when rendered
+    - encodedBlob         : long base64/hex runs that decode to text (obfuscated
+                            instructions)
+
+  Each triggered detector contributes its configurable weight; when the total for a
+  segment reaches `severityThreshold` the configured action fires:
+
+    - block    : short-circuit with HTTP 422 (default)
+    - sanitize : strip the dangerous markup / invisible characters, wrap the segment
+                 in an explicit "untrusted data" delimiter, and forward the cleaned
+                 request upstream
+    - annotate : forward unchanged but add x-indirect-injection-* headers and
+                 analytics metadata for downstream detection
+
+  Content larger than `maxScanBytes` cannot be inspected safely and is treated as
+  suspicious by default (`onOversize: block`).
+
+parameters:
+  type: object
+  properties:
+    request:
+      type: object
+      description: Inspection of untrusted content in the request before it reaches the LLM.
+      properties:
+        enabled:
+          type: boolean
+          x-wso2-policy-advanced-param: false
+          description: Enable request-phase inspection.
+          default: true
+        inspectRoles:
+          type: array
+          items:
+            type: string
+          x-wso2-policy-advanced-param: false
+          description: |
+            Message roles treated as untrusted retrieved content. The user's own
+            prompt (role "user"/"system") is never inspected by this policy.
+          default:
+            - tool
+            - function
+        jsonPaths:
+          type: array
+          items:
+            type: string
+          x-wso2-policy-advanced-param: false
+          description: |
+            Extra JSONPath expressions pointing at retrieved/RAG content to inspect
+            (e.g. "$.context", "$.input"). A path that does not resolve is skipped,
+            not an error.
+          default: []
+        onDetected:
+          type: string
+          enum: [block, sanitize, annotate]
+          x-wso2-policy-advanced-param: false
+          description: Action when a segment's detector score reaches severityThreshold.
+          default: block
+        severityThreshold:
+          type: number
+          x-wso2-policy-advanced-param: true
+          description: Sum of triggered-detector weights required to act on a segment.
+          default: 1
+          minimum: 0
+        onOversize:
+          type: string
+          enum: [block, annotate, allow]
+          x-wso2-policy-advanced-param: true
+          description: What to do with an untrusted segment larger than maxScanBytes (cannot be inspected).
+          default: block
+        showAssessment:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: Include the list of triggered detectors and match excerpts in the 422 body.
+          default: false
+        passthroughOnError:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            If the policy itself cannot run (request body is not JSON, etc.), allow
+            the request through instead of blocking with 422.
+          default: false
+    response:
+      type: object
+      description: Inspection of the model's reply (catches an already-compromised model echoing exfil markup back).
+      properties:
+        enabled:
+          type: boolean
+          x-wso2-policy-advanced-param: false
+          description: Enable response-phase inspection.
+          default: false
+        jsonPath:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: JSONPath to the assistant reply content.
+          default: "$.choices[0].message.content"
+        onDetected:
+          type: string
+          enum: [block, sanitize, annotate]
+          x-wso2-policy-advanced-param: false
+          description: Action when the reply's detector score reaches severityThreshold.
+          default: block
+        severityThreshold:
+          type: number
+          x-wso2-policy-advanced-param: true
+          default: 1
+          minimum: 0
+        showAssessment:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          default: false
+        passthroughOnError:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          default: false
+    detectors:
+      type: object
+      description: Per-detector enable flag, weight, and (where supported) tuning. All enabled by default at weight 1.
+      x-wso2-policy-advanced-param: true
+      properties:
+        imperativeOverride:
+          type: object
+          properties:
+            enabled: { type: boolean, default: true }
+            weight: { type: number, default: 1, minimum: 0 }
+            extraPatterns:
+              type: array
+              items: { type: string }
+              description: Additional case-insensitive regular expressions treated as override attempts.
+              default: []
+        templateDelimiters:
+          type: object
+          properties:
+            enabled: { type: boolean, default: true }
+            weight: { type: number, default: 1, minimum: 0 }
+        invisibleUnicode:
+          type: object
+          properties:
+            enabled: { type: boolean, default: true }
+            weight: { type: number, default: 1, minimum: 0 }
+        dataExfilMarkup:
+          type: object
+          properties:
+            enabled: { type: boolean, default: true }
+            weight: { type: number, default: 1, minimum: 0 }
+        encodedBlob:
+          type: object
+          properties:
+            enabled: { type: boolean, default: true }
+            weight: { type: number, default: 1, minimum: 0 }
+            minRunLength:
+              type: integer
+              description: Minimum length of a contiguous base64/hex run before it is examined.
+              default: 512
+              minimum: 32
+    maxScanBytes:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: |
+        Maximum number of bytes inspected per untrusted segment. Protects against
+        resource exhaustion on very large retrieved documents. A segment above this
+        size is handled per `onOversize`.
+      default: 262144
+      minimum: 1024
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
