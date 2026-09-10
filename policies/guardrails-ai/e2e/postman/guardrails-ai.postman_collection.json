@@ -1,0 +1,1325 @@
+{
+  "info": {
+    "name": "guardrails-ai e2e",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "item": [
+        {
+          "name": "mock-guardrails-server healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{guardrailsMockUrl}}/healthz",
+              "protocol": "http",
+              "host": [
+                "{{guardrailsMockUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "mock-echo-llm healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/healthz",
+              "protocol": "http",
+              "host": [
+                "{{echoLlmMockUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "controller admin health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+              "protocol": "http",
+              "host": [
+                "{{controllerAdminUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "v1",
+                "health"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gateway reachable",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                ""
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 - Register",
+      "item": [
+        {
+          "name": "Register LlmProvider (echo backend)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: guardrails-ai-e2e-provider\nspec:\n  displayName: Guardrails AI E2E Echo Provider\n  version: v1.0\n  template: openai\n  upstream:\n    url: http://host.docker.internal:9731\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register LlmProxy gr2-main",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: gr2-main\nspec:\n  displayName: gr2-main\n  version: v1.0\n  context: /gr2-main\n  provider:\n    id: guardrails-ai-e2e-provider\n  policies:\n    - name: guardrails-ai\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            guardrailsApiEndpoint: \"http://host.docker.internal:9730\"\n            apiKey: \"test-secret-key\"\n            guardName: test-guard\n            request:\n              enabled: true\n              passthroughOnError: false\n              showAssessment: true\n            response:\n              enabled: true\n              passthroughOnError: true\n              showAssessment: false\n"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register LlmProxy gr2-size-block",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: gr2-size-block\nspec:\n  displayName: gr2-size-block\n  version: v1.0\n  context: /gr2-size-block\n  provider:\n    id: guardrails-ai-e2e-provider\n  policies:\n    - name: guardrails-ai\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            guardrailsApiEndpoint: \"http://host.docker.internal:9730\"\n            guardName: test-guard\n            maxResponseBytes: 64\n            request:\n              enabled: true\n              passthroughOnError: false\n"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register LlmProxy gr2-size-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: gr2-size-passthrough\nspec:\n  displayName: gr2-size-passthrough\n  version: v1.0\n  context: /gr2-size-passthrough\n  provider:\n    id: guardrails-ai-e2e-provider\n  policies:\n    - name: guardrails-ai\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            guardrailsApiEndpoint: \"http://host.docker.internal:9730\"\n            guardName: test-guard\n            maxResponseBytes: 64\n            request:\n              enabled: true\n              passthroughOnError: true\n"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register LlmProxy gr2-timeout-block",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: gr2-timeout-block\nspec:\n  displayName: gr2-timeout-block\n  version: v1.0\n  context: /gr2-timeout-block\n  provider:\n    id: guardrails-ai-e2e-provider\n  policies:\n    - name: guardrails-ai\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            guardrailsApiEndpoint: \"http://host.docker.internal:9730\"\n            guardName: test-guard\n            requestTimeout: 1\n            request:\n              enabled: true\n              passthroughOnError: false\n"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register LlmProxy gr2-timeout-passthrough",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: gr2-timeout-passthrough\nspec:\n  displayName: gr2-timeout-passthrough\n  version: v1.0\n  context: /gr2-timeout-passthrough\n  provider:\n    id: guardrails-ai-e2e-provider\n  policies:\n    - name: guardrails-ai\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            guardrailsApiEndpoint: \"http://host.docker.internal:9730\"\n            guardName: test-guard\n            requestTimeout: 1\n            request:\n              enabled: true\n              passthroughOnError: true\n"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register LlmProxy gr2-custom-jsonpath",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: gr2-custom-jsonpath\nspec:\n  displayName: gr2-custom-jsonpath\n  version: v1.0\n  context: /gr2-custom-jsonpath\n  provider:\n    id: guardrails-ai-e2e-provider\n  policies:\n    - name: guardrails-ai\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            guardrailsApiEndpoint: \"http://host.docker.internal:9730\"\n            guardName: test-guard\n            request:\n              enabled: true\n              jsonPath: \"$.prompt\"\n              passthroughOnError: false\n"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 - Request phase: pass-through",
+      "item": [
+        {
+          "name": "reset mocks",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{guardrailsMockUrl}}/debug/reset",
+              "protocol": "http",
+              "host": [
+                "{{guardrailsMockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "benign message allowed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-main/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-main",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"mock-model\", \"messages\": [{\"role\": \"user\", \"content\": \"hello there, nothing wrong here\"}]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "guardrails server received extracted text",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{guardrailsMockUrl}}/debug/last-request",
+              "protocol": "http",
+              "host": [
+                "{{guardrailsMockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test('llmOutput matches last user message', () => pm.expect(j.llmOutput).to.eql('hello there, nothing wrong here'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Request phase: block + showAssessment",
+      "item": [
+        {
+          "name": "blocked message returns 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-main/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-main",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"mock-model\", \"messages\": [{\"role\": \"user\", \"content\": \"this contains BLOCK_ME keyword\"}]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "const j = pm.response.json();",
+                  "pm.test('type is GUARDRAILS_AI_GUARDRAIL', () => pm.expect(j.type).to.eql('GUARDRAILS_AI_GUARDRAIL'));",
+                  "pm.test('direction is REQUEST', () => pm.expect(j.message.direction).to.eql('REQUEST'));",
+                  "pm.test('showAssessment=true includes failedValidators', () => pm.expect(j.message.assessments.failedValidators).to.include('ToxicLanguage'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Response phase: pass-through and block",
+      "item": [
+        {
+          "name": "reset mocks",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{guardrailsMockUrl}}/debug/reset",
+              "protocol": "http",
+              "host": [
+                "{{guardrailsMockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "benign reply allowed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-main/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-main",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"mock-model\", \"messages\": [{\"role\": \"user\", \"content\": \"say something totally fine\"}]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "reply containing BLOCK_ME is blocked",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-main/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-main",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"mock-model\", \"messages\": [{\"role\": \"user\", \"content\": \"please reply with BLOCK_ME in your answer\"}]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "const j = pm.response.json();",
+                  "pm.test('direction is RESPONSE', () => pm.expect(j.message.direction).to.eql('RESPONSE'));",
+                  "pm.test('showAssessment=false omits assessments', () => pm.expect(j.message.assessments).to.be.undefined);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Guardrails response exceeds maxResponseBytes",
+      "item": [
+        {
+          "name": "blocked when passthroughOnError=false",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-size-block/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-size-block",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"mock-model\", \"messages\": [{\"role\": \"user\", \"content\": \"trigger HUGE_RESPONSE from the guard\"}]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422 (treated as error)', () => pm.response.to.have.status(422));",
+                  "const j = pm.response.json();",
+                  "pm.test('sterile reason, no internal detail leaked', () => {",
+                  "  pm.expect(j.message.actionReason).to.not.include('byte limit');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "passthrough when passthroughOnError=true",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-size-passthrough/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-size-passthrough",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"mock-model\", \"messages\": [{\"role\": \"user\", \"content\": \"trigger HUGE_RESPONSE from the guard\"}]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (passed through)', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Guardrail service slow or erroring",
+      "item": [
+        {
+          "name": "SLOW_RESPONSE blocked on timeout (passthroughOnError=false)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-timeout-block/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-timeout-block",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"mock-model\", \"messages\": [{\"role\": \"user\", \"content\": \"trigger SLOW_RESPONSE please\"}]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "SLOW_RESPONSE passthrough on timeout (passthroughOnError=true)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-timeout-passthrough/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-timeout-passthrough",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"mock-model\", \"messages\": [{\"role\": \"user\", \"content\": \"trigger SLOW_RESPONSE please\"}]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "SERVER_ERROR blocked (passthroughOnError=false)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-timeout-block/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-timeout-block",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"mock-model\", \"messages\": [{\"role\": \"user\", \"content\": \"trigger SERVER_ERROR please\"}]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "SERVER_ERROR passthrough (passthroughOnError=true)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-timeout-passthrough/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-timeout-passthrough",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"mock-model\", \"messages\": [{\"role\": \"user\", \"content\": \"trigger SERVER_ERROR please\"}]}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - Custom jsonPath extraction",
+      "item": [
+        {
+          "name": "reset mocks",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{guardrailsMockUrl}}/debug/reset",
+              "protocol": "http",
+              "host": [
+                "{{guardrailsMockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "send non-default body shape",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-custom-jsonpath/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-custom-jsonpath",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"prompt\": \"custom path extracted text\"}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "guardrails server received the custom-path text",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{guardrailsMockUrl}}/debug/last-request",
+              "protocol": "http",
+              "host": [
+                "{{guardrailsMockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test('llmOutput matches $.prompt', () => pm.expect(j.llmOutput).to.eql('custom path extracted text'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 - Invalid config is accepted at registration but the route never comes up",
+      "item": [
+        {
+          "name": "missing guardName is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: gr2-invalid-missing-guardname\nspec:\n  displayName: gr2-invalid-missing-guardname\n  version: v1.0\n  context: /gr2-invalid-missing-guardname\n  provider:\n    id: guardrails-ai-e2e-provider\n  policies:\n    - name: guardrails-ai\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            guardrailsApiEndpoint: \"http://host.docker.internal:9730\"\n            request:\n              enabled: true\n"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration itself succeeds (system-param default fails later, at route-build time)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "missing guardrailsApiEndpoint is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: gr2-invalid-missing-endpoint\nspec:\n  displayName: gr2-invalid-missing-endpoint\n  version: v1.0\n  context: /gr2-invalid-missing-endpoint\n  provider:\n    id: guardrails-ai-e2e-provider\n  policies:\n    - name: guardrails-ai\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            guardName: test-guard\n            request:\n              enabled: true\n"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration itself succeeds (system-param default fails later, at route-build time)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gr2-invalid-missing-guardname route never comes up (policy chain failed to build)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-invalid-missing-guardname/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-invalid-missing-guardname",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('route was never wired up (404), never silently served', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "gr2-invalid-missing-endpoint route never comes up (policy chain failed to build)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/gr2-invalid-missing-endpoint/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "gr2-invalid-missing-endpoint",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('route was never wired up (404), never silently served', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "09 - Cleanup",
+      "item": [
+        {
+          "name": "Delete LlmProxy gr2-main",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/gr2-main",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "gr2-main"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete LlmProxy gr2-size-block",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/gr2-size-block",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "gr2-size-block"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete LlmProxy gr2-size-passthrough",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/gr2-size-passthrough",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "gr2-size-passthrough"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete LlmProxy gr2-timeout-block",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/gr2-timeout-block",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "gr2-timeout-block"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete LlmProxy gr2-timeout-passthrough",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/gr2-timeout-passthrough",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "gr2-timeout-passthrough"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete LlmProxy gr2-custom-jsonpath",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/gr2-custom-jsonpath",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "gr2-custom-jsonpath"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete LlmProvider",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/guardrails-ai-e2e-provider",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "guardrails-ai-e2e-provider"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090"
+    },
+    {
+      "key": "controllerAdminUrl",
+      "value": "localhost:9094"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8443"
+    },
+    {
+      "key": "guardrailsMockUrl",
+      "value": "localhost:9730"
+    },
+    {
+      "key": "echoLlmMockUrl",
+      "value": "localhost:9731"
+    },
+    {
+      "key": "adminAuthHeader",
+      "value": "Basic YWRtaW46YWRtaW4="
+    }
+  ]
+}

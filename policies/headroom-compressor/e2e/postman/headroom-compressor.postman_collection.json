@@ -1,0 +1,669 @@
+{
+  "info": {
+    "name": "headroom-compressor e2e",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "item": [
+        {
+          "name": "Echo LLM mock healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/healthz"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Controller admin health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerAdminUrl}}/api/admin/v1/health"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Gateway reachable",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 - Register",
+      "item": [
+        {
+          "name": "Register: headroom-compressor-e2e-provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: headroom-compressor-e2e-provider\nspec:\n  displayName: Headroom Compressor E2E Provider\n  version: v1.0\n  template: openai\n  context: /headroom-compressor-e2e-provider/latest\n  upstream:\n    url: http://host.docker.internal:{{echoLlmMockPort}}\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register: hc-main (compressUserMessages=false)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: hc-main\nspec:\n  displayName: hc-main\n  version: v1.0\n  context: /hc-main\n  provider:\n    id: headroom-compressor-e2e-provider\n  policies:\n    - name: headroom-compressor\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            jsonPath: \"$.messages\"\n            targetRatio: 0.4\n            protectRecent: 4\n            minTokensToCompress: 10\n            compressUserMessages: false\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Register: hc-compress-user (compressUserMessages=true)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: hc-compress-user\nspec:\n  displayName: hc-compress-user\n  version: v1.0\n  context: /hc-compress-user\n  provider:\n    id: headroom-compressor-e2e-provider\n  policies:\n    - name: headroom-compressor\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            jsonPath: \"$.messages\"\n            targetRatio: 0.4\n            protectRecent: 4\n            minTokensToCompress: 10\n            compressUserMessages: true\n  accessControl:\n    mode: deny_all\n    exceptions:\n      - path: /chat/completions\n        methods: [POST]\n",
+              "options": {
+                "raw": {
+                  "language": "yaml"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 - Old repetitive message gets compressed, recent ones untouched",
+      "item": [
+        {
+          "name": "Reset echo mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/reset"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send request with old repetitive + recent short messages (hc-main)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/hc-main/chat/completions"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\n      \"role\": \"tool\",\n      \"content\": \"ERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\n\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"hello, how can I help?\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"what is the weather today\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"it is sunny\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify backend received compressed old message, unchanged recent ones",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/last-request"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const received = JSON.parse(pm.response.json().body);",
+                  "const oldMsg = received.messages[0];",
+                  "pm.test('old repetitive message was substantially compressed', () => {",
+                  "  pm.expect(oldMsg.content.length).to.be.below(13500 * 0.5);",
+                  "});",
+                  "const recentMsg = received.messages[received.messages.length - 1];",
+                  "pm.test('most recent message is untouched', () => {",
+                  "  pm.expect(recentMsg.content).to.eql('it is sunny');",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Short ordinary message is left unchanged",
+      "item": [
+        {
+          "name": "Reset echo mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/reset"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send short message (hc-main)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/hc-main/chat/completions"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello there, how are you?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Verify backend received it byte-for-byte",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/last-request"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const received = JSON.parse(pm.response.json().body);",
+                  "pm.test('short message unchanged', () => {",
+                  "  pm.expect(received.messages[0].content).to.eql('hello there, how are you?');",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - No model available anywhere skips compression entirely",
+      "item": [
+        {
+          "name": "Reset echo mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/reset"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send request with no model field (hc-main)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/hc-main/chat/completions"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"tool\",\n      \"content\": \"ERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\n\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Verify backend received the repetitive message untouched",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/last-request"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const received = JSON.parse(pm.response.json().body);",
+                  "pm.test('message left uncompressed with no model available', () => {",
+                  "  pm.expect(received.messages[0].content.length).to.eql(13500);",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - compressUserMessages true vs false",
+      "item": [
+        {
+          "name": "Reset echo mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/reset"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send old repetitive USER message (hc-main, compressUserMessages=false)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/hc-main/chat/completions"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"ERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\n\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"hello, how can I help?\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"what is the weather today\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"it is sunny\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Verify user message left uncompressed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/last-request"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const received = JSON.parse(pm.response.json().body);",
+                  "pm.test('user message untouched when compressUserMessages=false', () => {",
+                  "  pm.expect(received.messages[0].content.length).to.eql(13500);",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset echo mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/reset"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send old repetitive USER message (hc-compress-user, compressUserMessages=true)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/hc-compress-user/chat/completions"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"ERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\nERROR: connection reset by peer at line 42.\\\\n\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"hello, how can I help?\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"what is the weather today\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"it is sunny\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Verify user message was compressed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/last-request"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const received = JSON.parse(pm.response.json().body);",
+                  "pm.test('user message compressed when compressUserMessages=true', () => {",
+                  "  pm.expect(received.messages[0].content.length).to.be.below(13500 * 0.5);",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Malformed JSON body still passes through",
+      "item": [
+        {
+          "name": "Reset echo mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/reset"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send non-JSON body (hc-main)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/hc-main/chat/completions"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{not valid json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request is not blocked', () => pm.response.to.have.status(200));",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - Response body is never modified (request-only policy)",
+      "item": [
+        {
+          "name": "Reset echo mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{echoLlmMockUrl}}/debug/reset"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send short message and capture the echoed response",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/hc-main/chat/completions"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"please just say ok\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const parsed = pm.response.json();",
+                  "pm.test('response content matches what backend echoed, unmodified', () => {",
+                  "  pm.expect(parsed.choices[0].message.content).to.eql('please just say ok');",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 - Cleanup",
+      "item": [
+        {
+          "name": "Delete hc-main",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/hc-main"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete hc-compress-user",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/hc-compress-user"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete headroom-compressor-e2e-provider",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46YWRtaW4="
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/headroom-compressor-e2e-provider"
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090"
+    },
+    {
+      "key": "controllerAdminUrl",
+      "value": "localhost:9094"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8443"
+    },
+    {
+      "key": "echoLlmMockUrl",
+      "value": "localhost:9741"
+    },
+    {
+      "key": "echoLlmMockPort",
+      "value": "9741"
+    }
+  ]
+}
