@@ -1,0 +1,120 @@
+name: guardrails-ai
+version: v1.0.0
+description: |
+  Validate LLM request and/or response content against a pre-configured guard on a
+  Guardrails AI server. Supports any validator from the Guardrails AI Hub, including
+  toxicity detection, PII detection, jailbreak detection, hallucination checks,
+  JSON/SQL format validation, and more.
+
+  The guard must be created in advance on the Guardrails AI server using the
+  Guardrails AI SDK or REST API. This policy calls the guard's /validate endpoint
+  and blocks content that fails validation with a 422 response.
+
+parameters:
+  type: object
+  properties:
+    guardName:
+      type: string
+      description: |
+        The name of the pre-configured guard on the Guardrails AI server.
+        The guard must be created in advance using the Guardrails AI API or SDK.
+      minLength: 1
+      x-wso2-policy-advanced-param: false
+    request:
+      type: object
+      description: Configuration for request phase validation.
+      properties:
+        enabled:
+          type: boolean
+          x-wso2-policy-advanced-param: false
+          description: |
+            Enables validation for the request flow.
+          default: true
+        jsonPath:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: |
+            JSONPath expression to extract a specific value from the JSON request body.
+          default: "$.messages[-1].content"
+        passthroughOnError:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            If true, allows requests to proceed if the Guardrails AI API call fails.
+            If false (default), blocks requests on API errors.
+          default: false
+        showAssessment:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            If true, includes detailed assessment information from Guardrails AI
+            (e.g. failed validator names) in the 422 error response body. Internal
+            error detail (connection/timeout failures) is never included regardless
+            of this setting - only Guardrails AI's own validation output is surfaced.
+          default: false
+    response:
+      type: object
+      description: Configuration for response phase validation.
+      properties:
+        enabled:
+          type: boolean
+          x-wso2-policy-advanced-param: false
+          description: |
+            Enables validation for the response flow.
+          default: false
+        jsonPath:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: |
+            JSONPath expression to extract a specific value from the JSON response body.
+          default: "$.choices[0].message.content"
+        passthroughOnError:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            If true, allows responses to proceed if the Guardrails AI API call fails.
+            If false (default), blocks responses on API errors.
+          default: false
+        showAssessment:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            If true, includes detailed assessment information from Guardrails AI
+            in the 422 error response body.
+          default: false
+  required:
+    - guardName
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    guardrailsApiEndpoint:
+      type: string
+      description: |
+        Base URL of the Guardrails AI server (e.g., "http://guardrails-server:8000").
+      minLength: 1
+      "wso2/defaultValue": "${config.guardrails_ai.endpoint}"
+    apiKey:
+      type: string
+      description: |
+        Bearer token for authenticating with the Guardrails AI server.
+        Leave empty if the server does not require authentication.
+      "wso2/defaultValue": "${config.guardrails_ai.api_key}"
+    requestTimeout:
+      type: number
+      description: |
+        HTTP request timeout in seconds for calls to the Guardrails AI server.
+      default: 10
+      "wso2/defaultValue": "${config.guardrails_ai.request_timeout}"
+    maxResponseBytes:
+      type: integer
+      description: |
+        Maximum number of bytes read from the Guardrails AI server's response body.
+        Protects against unbounded memory use if the server returns an
+        excessively large or malicious response. A response exceeding this
+        limit is treated as an API error (subject to passthroughOnError).
+      default: 1048576
+      "wso2/defaultValue": "${config.guardrails_ai.max_response_bytes}"
+  required:
+    - guardrailsApiEndpoint

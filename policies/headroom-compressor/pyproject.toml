@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "headroom-compressor-v0"
+version = "0.9.0"
+description = "WSO2 AI Gateway prompt/context compression policy backed by Headroom, for the Python executor"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "headroom-ai==0.37.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/headroom_compressor_v0"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"policy-definition.yaml" = "headroom_compressor_v0/policy-definition.yaml"
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "src/headroom_compressor_v0",
+  "tests",
+  "pyproject.toml",
+  "policy-definition.yaml",
+  "README.md",
+]
