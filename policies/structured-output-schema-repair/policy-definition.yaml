@@ -1,0 +1,98 @@
+name: structured-output-schema-repair
+version: v0.1.0
+description: |
+  Shield downstream APIs and agent workflows from malformed structured LLM output
+  (OWASP LLM05 Improper Output Handling; guards against cascading-failure /
+  cascading-hallucination in agent chains). The model returns JSON that is almost
+  right - wrapped in ```json fences, a trailing comma, a stray sentence of prose,
+  a single-quoted key - and the tool/API that consumes it breaks.
+
+  This response-phase policy:
+    1. Extracts the structured value from the reply (default
+       $.choices[0].message.content; can also target a tool_call's arguments).
+    2. Tries fast DETERMINISTIC repairs - strip code fences, drop leading/trailing
+       prose, trim to the outermost { } / [ ], remove trailing commas - and
+       re-validates against the configured JSON Schema.
+    3. If still invalid and `repair.enabled`, makes ONE bounded HTTP call to a
+       repair endpoint (an OpenAI-compatible chat/completions endpoint) with the
+       schema, the broken output, and the validation errors, then validates the
+       correction.
+    4. Decides via `onFail`:
+         - block       : reply with HTTP 502 and a structured error (default)
+         - passthrough  : forward the original reply plus x-schema-repair: failed
+         - emptyObject  : forward `{}` (or `[]`) so the consumer sees valid-but-empty
+
+  On success the (possibly repaired) JSON replaces the reply content and
+  x-schema-repair is set to `clean` | `deterministic` | `llm`.
+
+parameters:
+  type: object
+  properties:
+    schema:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: The JSON Schema (as a JSON string) the structured output must satisfy.
+      minLength: 2
+    responseJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: JSONPath to the structured output in the reply.
+      default: "$.choices[0].message.content"
+    deterministicRepair:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: Attempt fence-stripping / prose-trimming / trailing-comma fixes before failing or calling the repair model.
+      default: true
+    repair:
+      type: object
+      description: One-shot LLM repair pass (opt-in).
+      properties:
+        enabled:
+          type: boolean
+          x-wso2-policy-advanced-param: false
+          default: false
+        endpoint:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: OpenAI-compatible chat/completions URL used to request a corrected object.
+          default: ""
+        model:
+          type: string
+          x-wso2-policy-advanced-param: true
+          default: "gpt-4o-mini"
+        apiKey:
+          type: string
+          x-wso2-policy-advanced-param: true
+          description: Bearer token for the repair endpoint. Leave empty if none is required.
+          default: ""
+        timeoutSeconds:
+          type: number
+          x-wso2-policy-advanced-param: true
+          default: 15
+        maxResponseBytes:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          default: 262144
+          minimum: 1024
+    onFail:
+      type: string
+      enum: [block, passthrough, emptyObject]
+      x-wso2-policy-advanced-param: false
+      default: block
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: Include the JSON Schema validation errors in the 502 body.
+      default: false
+    passthroughOnError:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: If the reply itself cannot be parsed (not JSON at all), forward it rather than 502.
+      default: false
+  required:
+    - schema
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
