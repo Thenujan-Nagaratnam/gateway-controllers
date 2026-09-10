@@ -1,0 +1,100 @@
+name: rag-grounding-guardrail
+version: v0.1.0
+description: |
+  Catch RAG answers that are not grounded in the retrieved context (OWASP LLM09
+  Misinformation). A retrieval-augmented model will still confidently state
+  things that are not in the passages it was given - and dress them in a
+  citation-shaped sentence.
+
+  Response-phase, deterministic (no embedding model required):
+    1. Pull the retrieved context from the request - `tool` messages by default,
+       plus any `contextJsonPaths` (e.g. "$.context", "$.documents[*].text").
+    2. Pull the answer from the response.
+    3. Grade grounding:
+         - sentence support : fraction of answer sentences whose word 3-grams /
+           content words overlap the context above a threshold, weighted by
+           sentence length -> groundingScore in [0,1].
+         - unsupported specifics : numbers, dates, proper-noun phrases, URLs and
+           emails that appear in the answer but nowhere in the context - the
+           highest-signal hallucinations.
+         - citations : when `requireCitations`, an answer that makes claims
+           without a citation marker is flagged.
+
+  When groundingScore < `minGroundingScore`, or unsupported specifics exceed
+  `maxUnsupportedSpecifics`, or a required citation is missing:
+    - block    : short-circuit with HTTP 422
+    - warn     : append `warnText` to the answer and forward
+    - annotate : forward unchanged with x-grounding-* headers + analytics
+
+  Answers shorter than `minAnswerChars` (e.g. "Paris", "Yes") are not graded.
+
+parameters:
+  type: object
+  properties:
+    contextRoles:
+      type: array
+      items: { type: string }
+      x-wso2-policy-advanced-param: false
+      description: Request message roles that carry retrieved context.
+      default: [tool]
+    contextJsonPaths:
+      type: array
+      items: { type: string }
+      x-wso2-policy-advanced-param: false
+      description: Extra request JSONPaths pointing at retrieved context.
+      default: []
+    answerJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.choices[0].message.content"
+    minGroundingScore:
+      type: number
+      x-wso2-policy-advanced-param: false
+      description: Answers scoring below this (0-1) trigger the action.
+      default: 0.45
+      minimum: 0
+      maximum: 1
+    onLowGrounding:
+      type: string
+      enum: [block, warn, annotate]
+      x-wso2-policy-advanced-param: false
+      default: annotate
+    warnText:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "\n\n_Note: parts of this answer may not be fully supported by the retrieved sources._"
+    requireCitations:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+    citationPattern:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "\\[[0-9A-Za-z\\-]+\\]|\\(source:[^)]+\\)"
+    checkUnsupportedSpecifics:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: true
+    maxUnsupportedSpecifics:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      default: 0
+      minimum: 0
+    minAnswerChars:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      default: 40
+      minimum: 1
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+    passthroughOnError:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

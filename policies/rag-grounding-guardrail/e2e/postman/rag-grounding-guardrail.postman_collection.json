@@ -1,0 +1,1021 @@
+{
+  "info": {
+    "name": "rag-grounding-guardrail e2e",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090"
+    },
+    {
+      "key": "controllerAdminUrl",
+      "value": "localhost:9094"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8443"
+    },
+    {
+      "key": "mockUrl",
+      "value": "localhost:9757"
+    },
+    {
+      "key": "mockPort",
+      "value": "9757"
+    },
+    {
+      "key": "passage",
+      "value": "The Apollo 11 mission launched on 16 July 1969 from Kennedy Space Center. Neil Armstrong and Buzz Aldrin landed the lunar module Eagle in the Sea of Tranquility on 20 July 1969. Michael Collins remained in lunar orbit aboard the command module Columbia. Armstrong was the first person to walk on the Moon, followed about twenty minutes later by Aldrin. The astronauts collected 21.5 kilograms of lunar material and returned to Earth on 24 July 1969."
+    },
+    {
+      "key": "adminAuthHeader",
+      "value": "Basic YWRtaW46YWRtaW4="
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "item": [
+        {
+          "name": "mock healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/healthz",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mock up',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "controller health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+              "protocol": "http",
+              "host": [
+                "{{controllerAdminUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "v1",
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('controller up',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway reachable",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": []
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gw',()=>pm.expect(pm.response.code).to.be.oneOf([200,404]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 - Register",
+      "item": [
+        {
+          "name": "Register provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: rag-e2e-provider\nspec:\n  displayName: RAG E2E Provider\n  version: v1.0\n  template: openai\n  upstream:\n    url: http://host.docker.internal:{{mockPort}}\n  accessControl:\n    mode: allow_all\n"
+            }
+          }
+        },
+        {
+          "name": "Register rag-block",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: rag-block\nspec:\n  displayName: rag-block\n  version: v1.0\n  context: /rag-block\n  provider:\n    id: rag-e2e-provider\n  policies:\n    - name: rag-grounding-guardrail\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            onLowGrounding: block\n            minGroundingScore: 0.45\n            showAssessment: true\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register rag-warn",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: rag-warn\nspec:\n  displayName: rag-warn\n  version: v1.0\n  context: /rag-warn\n  provider:\n    id: rag-e2e-provider\n  policies:\n    - name: rag-grounding-guardrail\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            onLowGrounding: warn\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register rag-annotate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: rag-annotate\nspec:\n  displayName: rag-annotate\n  version: v1.0\n  context: /rag-annotate\n  provider:\n    id: rag-e2e-provider\n  policies:\n    - name: rag-grounding-guardrail\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            onLowGrounding: annotate\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register rag-cite",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: rag-cite\nspec:\n  displayName: rag-cite\n  version: v1.0\n  context: /rag-cite\n  provider:\n    id: rag-e2e-provider\n  policies:\n    - name: rag-grounding-guardrail\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            onLowGrounding: block\n            requireCitations: true\n            minGroundingScore: 0.0\n            checkUnsupportedSpecifics: false\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register rag-specifics",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: rag-specifics\nspec:\n  displayName: rag-specifics\n  version: v1.0\n  context: /rag-specifics\n  provider:\n    id: rag-e2e-provider\n  policies:\n    - name: rag-grounding-guardrail\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            onLowGrounding: block\n            minGroundingScore: 0.0\n            maxUnsupportedSpecifics: 0\n            showAssessment: true\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Grounded answer passes",
+      "item": [
+        {
+          "name": "GROUNDED -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/rag-block/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "rag-block",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Using the passage, answer the question. GROUNDED\"}, {\"role\": \"tool\", \"content\": \"{{passage}}\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200',()=>pm.response.to.have.status(200));",
+                  "pm.test('x-grounding-score header',()=>pm.expect(parseFloat(pm.response.headers.get('x-grounding-score'))).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Ungrounded answer is blocked",
+      "item": [
+        {
+          "name": "UNGROUNDED -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/rag-block/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "rag-block",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Using the passage, answer the question. UNGROUNDED\"}, {\"role\": \"tool\", \"content\": \"{{passage}}\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422',()=>pm.response.to.have.status(422));",
+                  "const j=pm.response.json();",
+                  "pm.test('type',()=>pm.expect(j.type).to.eql('RAG_GROUNDING_GUARDRAIL'));",
+                  "pm.test('direction RESPONSE',()=>pm.expect(j.message.direction).to.eql('RESPONSE'));",
+                  "pm.test('grounding score reported',()=>pm.expect(j.message.groundingScore).to.be.below(0.45));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Fabricated specifics are flagged",
+      "item": [
+        {
+          "name": "SPECIFIC -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/rag-specifics/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "rag-specifics",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Using the passage, answer the question. SPECIFIC\"}, {\"role\": \"tool\", \"content\": \"{{passage}}\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422',()=>pm.response.to.have.status(422));",
+                  "pm.test('assessment names unsupported specifics',()=>pm.expect(JSON.stringify(pm.response.json().message.assessments)).to.include('not found in the context'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Warn appends a disclaimer",
+      "item": [
+        {
+          "name": "UNGROUNDED via rag-warn -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/rag-warn/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "rag-warn",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Using the passage, answer the question. UNGROUNDED\"}, {\"role\": \"tool\", \"content\": \"{{passage}}\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200',()=>pm.response.to.have.status(200));",
+                  "pm.test('disclaimer appended',()=>pm.expect(pm.response.json().choices[0].message.content).to.include('may not be fully supported'));",
+                  "pm.test('x-grounding-action: warned',()=>pm.expect(pm.response.headers.get('x-grounding-action')).to.eql('warned'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Annotate forwards unchanged with headers",
+      "item": [
+        {
+          "name": "UNGROUNDED via rag-annotate -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/rag-annotate/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "rag-annotate",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Using the passage, answer the question. UNGROUNDED\"}, {\"role\": \"tool\", \"content\": \"{{passage}}\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200',()=>pm.response.to.have.status(200));",
+                  "pm.test('x-grounding: low',()=>pm.expect(pm.response.headers.get('x-grounding')).to.eql('low'));",
+                  "pm.test('answer NOT modified',()=>pm.expect(pm.response.json().choices[0].message.content).to.not.include('may not be fully supported'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - requireCitations",
+      "item": [
+        {
+          "name": "NOCITE via rag-cite -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/rag-cite/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "rag-cite",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Using the passage, answer the question. NOCITE\"}, {\"role\": \"tool\", \"content\": \"{{passage}}\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('missing citation -> 422',()=>pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CITED via rag-cite -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/rag-cite/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "rag-cite",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Using the passage, answer the question. CITED\"}, {\"role\": \"tool\", \"content\": \"{{passage}}\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('citation present -> 200',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 - Short answers are not graded",
+      "item": [
+        {
+          "name": "SHORT via rag-block -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/rag-block/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "rag-block",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Using the passage, answer the question. SHORT\"}, {\"role\": \"tool\", \"content\": \"{{passage}}\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('short answer not graded -> 200',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "09 - Invalid config accepted at registration but the route never enforces",
+      "item": [
+        {
+          "name": "register rag-invalid",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: rag-invalid\nspec:\n  displayName: rag-invalid\n  version: v1.0\n  context: /rag-invalid\n  provider:\n    id: rag-e2e-provider\n  policies:\n    - name: rag-grounding-guardrail\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            minGroundingScore: 2.0\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration succeeds',()=>pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "rag-invalid route does not enforce",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/rag-invalid/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "rag-invalid",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Using the passage, answer the question. UNGROUNDED\"}, {\"role\": \"tool\", \"content\": \"{{passage}}\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('misconfigured route: grounding not enforced',()=>{",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200,404,500]);",
+                  "  if (pm.response.code===200) pm.expect(pm.response.text()).to.not.include('RAG_GROUNDING_GUARDRAIL');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10 - Cleanup",
+      "item": [
+        {
+          "name": "Delete rag-block",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/rag-block",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "rag-block"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete rag-warn",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/rag-warn",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "rag-warn"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete rag-annotate",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/rag-annotate",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "rag-annotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete rag-cite",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/rag-cite",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "rag-cite"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete rag-specifics",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/rag-specifics",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "rag-specifics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete rag-invalid",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/rag-invalid",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "rag-invalid"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete provider",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/rag-e2e-provider",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "rag-e2e-provider"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
