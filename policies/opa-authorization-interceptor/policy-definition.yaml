@@ -1,0 +1,121 @@
+name: opa-authorization-interceptor
+version: v0.1.0
+description: |
+  Context-rich, GitOps-managed authorization for agent actions (OWASP Agentic T3
+  Privilege Compromise; zero-trust). "May this agent, acting for this user, in
+  this tenant, during business hours, call `issue_refund` for < 500 on an order
+  it created?" belongs in policy-as-code, not in gateway config that needs a
+  redeploy to change.
+
+  On every request this policy builds an input document and POSTs it to an Open
+  Policy Agent decision endpoint:
+
+    {"input": {
+       "principal": {<claims decoded from the Authorization JWT - NOT verified
+                      here; jwt-auth / oauth policies do that upstream>},
+       "route":   {"api": "...", "method": "POST", "path": "/mcp"},
+       "model":   "<$.model from the body, if present>",
+       "tool":    {"name": "<$.params.name>", "arguments": {...}},
+       "headers": {<the includeHeaders subset>},
+       "attributes": {<static operator-supplied key/values>},
+       "timestamp": "<RFC3339>"
+    }}
+
+  The decision is read from `decisionPath` in the OPA response. It may be a bare
+  boolean, or an object {"allow": bool, "reason": "...", "redact": ["<jsonPath>"]}.
+  When `allow` is not true the request is denied (HTTP 403, generic body - the
+  OPA reason is logged, never returned). Optional `redact` obligations blank the
+  named request fields before forwarding. If OPA is unreachable the request is
+  DENIED unless `failOpen` is true.
+
+parameters:
+  type: object
+  properties:
+    opaUrl:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: Full URL of the OPA decision (e.g. https://opa:8181/v1/data/agentgw/authz).
+      minLength: 1
+    decisionPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: JSONPath into the OPA response body for the decision.
+      default: "$.result"
+    failOpen:
+      type: boolean
+      x-wso2-policy-advanced-param: false
+      description: Allow the request when OPA cannot be reached or errors. Default is fail-closed (deny).
+      default: false
+    onDeny:
+      type: string
+      enum: [block, annotate]
+      x-wso2-policy-advanced-param: false
+      default: block
+    denyStatusCode:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      default: 403
+      minimum: 400
+      maximum: 599
+    timeoutSeconds:
+      type: number
+      x-wso2-policy-advanced-param: true
+      default: 5
+    maxResponseBytes:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      default: 65536
+      minimum: 512
+    cacheTtlSeconds:
+      type: number
+      x-wso2-policy-advanced-param: true
+      description: Cache identical decisions for this long (0 disables the cache).
+      default: 0
+    apiKey:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: Bearer token for the OPA endpoint, if it requires one.
+      default: ""
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+    input:
+      type: object
+      description: Controls what goes into the OPA input document.
+      properties:
+        includeClaims:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: Decode (without verifying) the Authorization bearer JWT into input.principal.
+          default: true
+        includeHeaders:
+          type: array
+          items: { type: string }
+          x-wso2-policy-advanced-param: true
+          description: Request header names to copy into input.headers.
+          default: []
+        toolNameJsonPath:
+          type: string
+          x-wso2-policy-advanced-param: true
+          default: "$.params.name"
+        argumentsJsonPath:
+          type: string
+          x-wso2-policy-advanced-param: true
+          default: "$.params.arguments"
+        modelJsonPath:
+          type: string
+          x-wso2-policy-advanced-param: true
+          default: "$.model"
+        staticAttributes:
+          type: object
+          x-wso2-policy-advanced-param: true
+          description: Constant key/values merged into input.attributes (e.g. {"env":"prod"}).
+          default: {}
+  required:
+    - opaUrl
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

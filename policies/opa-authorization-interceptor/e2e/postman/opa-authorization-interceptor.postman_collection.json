@@ -1,0 +1,1196 @@
+{
+  "info": {
+    "name": "opa-authorization-interceptor e2e",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090"
+    },
+    {
+      "key": "controllerAdminUrl",
+      "value": "localhost:9094"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8443"
+    },
+    {
+      "key": "mockUrl",
+      "value": "localhost:9755"
+    },
+    {
+      "key": "mockPort",
+      "value": "9755"
+    },
+    {
+      "key": "adminAuthHeader",
+      "value": "Basic YWRtaW46YWRtaW4="
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "item": [
+        {
+          "name": "mock healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/healthz",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mock up',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "controller health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+              "protocol": "http",
+              "host": [
+                "{{controllerAdminUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "v1",
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('controller up',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway reachable",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": []
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gw',()=>pm.expect(pm.response.code).to.be.oneOf([200,404]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 - Register",
+      "item": [
+        {
+          "name": "Register provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: opa-e2e-provider\nspec:\n  displayName: OPA E2E Provider\n  version: v1.0\n  template: openai\n  upstream:\n    url: http://host.docker.internal:{{mockPort}}\n  accessControl:\n    mode: allow_all\n"
+            }
+          }
+        },
+        {
+          "name": "Register opa-block",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: opa-block\nspec:\n  displayName: opa-block\n  version: v1.0\n  context: /opa-block\n  provider:\n    id: opa-e2e-provider\n  policies:\n    - name: opa-authorization-interceptor\n      version: v0\n      paths:\n        - path: /mcp\n          methods: [POST]\n          params:\n            opaUrl: \"http://host.docker.internal:{{mockPort}}/v1/data/agentgw/authz\"\n            showAssessment: true\n            input:\n              includeHeaders: [\"x-tenant\"]\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register opa-annotate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: opa-annotate\nspec:\n  displayName: opa-annotate\n  version: v1.0\n  context: /opa-annotate\n  provider:\n    id: opa-e2e-provider\n  policies:\n    - name: opa-authorization-interceptor\n      version: v0\n      paths:\n        - path: /mcp\n          methods: [POST]\n          params:\n            opaUrl: \"http://host.docker.internal:{{mockPort}}/v1/data/agentgw/authz\"\n            onDeny: annotate\n            input:\n              includeHeaders: [\"x-tenant\"]\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register opa-failopen",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: opa-failopen\nspec:\n  displayName: opa-failopen\n  version: v1.0\n  context: /opa-failopen\n  provider:\n    id: opa-e2e-provider\n  policies:\n    - name: opa-authorization-interceptor\n      version: v0\n      paths:\n        - path: /mcp\n          methods: [POST]\n          params:\n            opaUrl: \"http://host.docker.internal:1/x\"\n            failOpen: true\n            timeoutSeconds: 2\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register opa-failclosed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: opa-failclosed\nspec:\n  displayName: opa-failclosed\n  version: v1.0\n  context: /opa-failclosed\n  provider:\n    id: opa-e2e-provider\n  policies:\n    - name: opa-authorization-interceptor\n      version: v0\n      paths:\n        - path: /mcp\n          methods: [POST]\n          params:\n            opaUrl: \"http://host.docker.internal:1/x\"\n            failOpen: false\n            timeoutSeconds: 2\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register opa-err",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: opa-err\nspec:\n  displayName: opa-err\n  version: v1.0\n  context: /opa-err\n  provider:\n    id: opa-e2e-provider\n  policies:\n    - name: opa-authorization-interceptor\n      version: v0\n      paths:\n        - path: /mcp\n          methods: [POST]\n          params:\n            opaUrl: \"http://host.docker.internal:{{mockPort}}/err500\"\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Allow: request reaches the backend",
+      "item": [
+        {
+          "name": "reset mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/reset",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "run_sql SELECT -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/opa-block/mcp",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "opa-block",
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"params\": {\"name\": \"run_sql\", \"arguments\": {\"query\": \"SELECT 1\"}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200',()=>pm.response.to.have.status(200));",
+                  "pm.test('backend responded',()=>pm.expect(pm.response.json().ok).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "backend saw x-opa-authz: allow",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/last",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('allow header forwarded upstream',()=>pm.expect(pm.response.json().headers['x-opa-authz']).to.eql('allow'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Deny: refund over ceiling -> 403",
+      "item": [
+        {
+          "name": "issue_refund 9999 -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/opa-block/mcp",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "opa-block",
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"params\": {\"name\": \"issue_refund\", \"arguments\": {\"amount\": 9999}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403',()=>pm.response.to.have.status(403));",
+                  "const j=pm.response.json();",
+                  "pm.test('type',()=>pm.expect(j.type).to.eql('OPA_AUTHORIZATION'));",
+                  "pm.test('direction REQUEST',()=>pm.expect(j.message.direction).to.eql('REQUEST'));",
+                  "pm.test('assessments carry opa reason',()=>pm.expect(JSON.stringify(j.message.assessments)).to.include('ceiling'));",
+                  "pm.test('generic client message (no raw reason leak)',()=>pm.expect(j.message.actionReason).to.not.include('ceiling'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Allow: small refund -> 200",
+      "item": [
+        {
+          "name": "issue_refund 50 -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/opa-block/mcp",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "opa-block",
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"params\": {\"name\": \"issue_refund\", \"arguments\": {\"amount\": 50}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Redact obligation applied to the request",
+      "item": [
+        {
+          "name": "reset mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/reset",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "lookup with ssn -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/opa-block/mcp",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "opa-block",
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"params\": {\"name\": \"lookup\", \"arguments\": {\"ssn\": \"123-45-6789\", \"id\": \"x\"}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "backend received redacted ssn",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/last",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const seen=pm.response.json();",
+                  "const args=JSON.parse(seen.body).params.arguments;",
+                  "pm.test('ssn redacted before forwarding',()=>pm.expect(args.ssn).to.not.eql('123-45-6789'));",
+                  "pm.test('other args intact',()=>pm.expect(args.id).to.eql('x'));",
+                  "pm.test('allow-redacted header',()=>pm.expect(seen.headers['x-opa-authz']).to.eql('allow-redacted'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Header-based deny",
+      "item": [
+        {
+          "name": "x-tenant: blocked -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-tenant",
+                "value": "blocked"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/opa-block/mcp",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "opa-block",
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"params\": {\"name\": \"run_sql\", \"arguments\": {\"query\": \"SELECT 1\"}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403',()=>pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - onDeny annotate forwards",
+      "item": [
+        {
+          "name": "reset mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/reset",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "opa-annotate: refund 9999 -> 200 forwarded",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/opa-annotate/mcp",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "opa-annotate",
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"params\": {\"name\": \"issue_refund\", \"arguments\": {\"amount\": 9999}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200 (annotated, not blocked)',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "backend saw deny-annotated header",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/last",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deny-annotated forwarded',()=>pm.expect(pm.response.json().headers['x-opa-authz']).to.eql('deny-annotated'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 - Fail-open vs fail-closed when OPA is unreachable",
+      "item": [
+        {
+          "name": "opa-failopen -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/opa-failopen/mcp",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "opa-failopen",
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"params\": {\"name\": \"run_sql\", \"arguments\": {\"query\": \"SELECT 1\"}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OPA down + failOpen -> allowed',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "opa-failclosed -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/opa-failclosed/mcp",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "opa-failclosed",
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"params\": {\"name\": \"run_sql\", \"arguments\": {\"query\": \"SELECT 1\"}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OPA down + failClosed -> denied',()=>pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "09 - OPA HTTP 500 -> fail-closed",
+      "item": [
+        {
+          "name": "opa-err -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/opa-err/mcp",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "opa-err",
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"params\": {\"name\": \"run_sql\", \"arguments\": {\"query\": \"SELECT 1\"}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('non-2xx OPA response -> denied',()=>pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10 - Invalid config accepted at registration but the route never enforces",
+      "item": [
+        {
+          "name": "register opa-invalid (no opaUrl)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: opa-invalid\nspec:\n  displayName: opa-invalid\n  version: v1.0\n  context: /opa-invalid\n  provider:\n    id: opa-e2e-provider\n  policies:\n    - name: opa-authorization-interceptor\n      version: v0\n      paths:\n        - path: /mcp\n          methods: [POST]\n          params:\n            decisionPath: \"$.result\"\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration succeeds',()=>pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "opa-invalid route does not enforce",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/opa-invalid/mcp",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "opa-invalid",
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"params\": {\"name\": \"issue_refund\", \"arguments\": {\"amount\": 9999}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('misconfigured route: authz not enforced',()=>{",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200,404,500]);",
+                  "  if (pm.response.code===200) pm.expect(pm.response.text()).to.not.include('OPA_AUTHORIZATION');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11 - Cleanup",
+      "item": [
+        {
+          "name": "Delete opa-block",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/opa-block",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "opa-block"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete opa-annotate",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/opa-annotate",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "opa-annotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete opa-failopen",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/opa-failopen",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "opa-failopen"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete opa-failclosed",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/opa-failclosed",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "opa-failclosed"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete opa-err",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/opa-err",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "opa-err"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete opa-invalid",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/opa-invalid",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "opa-invalid"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete provider",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/opa-e2e-provider",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "opa-e2e-provider"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
