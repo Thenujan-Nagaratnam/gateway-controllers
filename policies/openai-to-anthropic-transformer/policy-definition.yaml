@@ -21,7 +21,13 @@ parameters:
       x-wso2-policy-advanced-param: false
       description: |
         Anthropic model name used in the translated request (for example
-        claude-sonnet-4-20250514). Overrides the OpenAI "model" field.
+        claude-sonnet-4-20250514). Optional: the client's own model wins
+        when present — read via the "requestModel" systemParameter (the
+        location gateway-controller injects from the proxy's own
+        primary-provider template) if set, else a plain top-level "model"
+        field — and this is used only as a fallback. At least one of the two
+        must resolve to a non-empty value, or the request is rejected with
+        400.
       minLength: 1
     providerId:
       type: string
@@ -43,8 +49,6 @@ parameters:
         Value of the anthropic-version request header sent upstream.
       default: "2023-06-01"
       minLength: 1
-  required:
-    - model
 
 systemParameters:
   type: object

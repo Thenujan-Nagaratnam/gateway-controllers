@@ -48,6 +48,57 @@ func TestGetPolicy_ValidatesParams(t *testing.T) {
 	}
 }
 
+func TestGetPolicy_ParsesRequestModel(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tp := p.(*TranslatorPolicy)
+	if tp.params.RequestModel.Location != "payload" || tp.params.RequestModel.Identifier != "$.model" {
+		t.Fatalf("requestModel not parsed into params: %#v", tp.params.RequestModel)
+	}
+
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err != nil {
+		t.Fatalf("requestModel should be optional: %v", err)
+	}
+
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"requestModel": map[string]interface{}{"location": "header", "identifier": "x-model"},
+	}); err == nil {
+		t.Fatal("expected an error for a non-payload requestModel.location")
+	}
+}
+
+// TestOnRequestBody_UsesInjectedRequestModelJsonPath proves resolveModel
+// actually follows the PROXY's own template's requestModel identifier (here
+// deliberately NOT the default "$.model", so a pass can't be a coincidence of
+// a hardcoded lookup) rather than always reading a fixed top-level field.
+func TestOnRequestBody_UsesInjectedRequestModelJsonPath(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{
+		RequestModel: requestModelConfig{Location: "payload", Identifier: "$.routing.modelName"},
+	}}
+	shared := &policy.SharedContext{Metadata: map[string]interface{}{}}
+	req := &policy.RequestContext{
+		SharedContext: shared,
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"routing":{"modelName":"anthropic.claude-via-custom-path"},"messages":[{"role":"user","content":"hello"}]}`)},
+	}
+	action := p.OnRequestBody(context.Background(), req, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	want := "/model/anthropic.claude-via-custom-path/converse"
+	if mods.Path == nil || *mods.Path != want {
+		t.Fatalf("expected the model read via requestModel's JSONPath, path %q, got %v", want, mods.Path)
+	}
+	if got := shared.Metadata[MetadataKeyEffectiveModel]; got != "anthropic.claude-via-custom-path" {
+		t.Fatalf("effective model was not stored in request metadata: %v", got)
+	}
+}
+
 func TestOnRequestBody_FallsBackToRequestModel(t *testing.T) {
 	p := &TranslatorPolicy{params: PolicyParams{}}
 	shared := &policy.SharedContext{Metadata: map[string]interface{}{}}
@@ -86,6 +137,27 @@ func TestOnRequestBody_FallsBackToRequestModel(t *testing.T) {
 	}
 	if translated["model"] != "us.amazon.nova-lite-v1:0" {
 		t.Fatalf("response did not use the effective request model: %v", translated["model"])
+	}
+}
+
+func TestOnRequestBody_PayloadModelWinsOverConfiguredModel(t *testing.T) {
+	// Both a static model and the request body's own "model" are present -
+	// the request-supplied one must win (e.g. so model-failover's own
+	// per-fallback model reaches Bedrock instead of being silently ignored).
+	p := &TranslatorPolicy{params: PolicyParams{Model: "us.amazon.nova-lite-v1:0"}}
+	req := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"model":"anthropic.claude-3-5-sonnet-20241022-v2:0","messages":[{"role":"user","content":"hello"}]}`)},
+	}
+	action := p.OnRequestBody(context.Background(), req, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	want := "/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse"
+	if mods.Path == nil || *mods.Path != want {
+		t.Fatalf("expected the payload's model to win, path %q, got %v", want, mods.Path)
 	}
 }
 

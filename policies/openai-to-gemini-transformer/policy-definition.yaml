@@ -21,8 +21,11 @@ parameters:
       x-wso2-policy-advanced-param: false
       description: |
         Gemini model name used in the translated request (for example
-        gemini-2.5-pro). Overrides the OpenAI "model" field and is used
-        in the rewritten path.
+        gemini-2.5-pro) and in the rewritten path. Optional: the client's
+        own model wins when present — read via the "requestModel"
+        systemParameter (the location gateway-controller injects from the
+        proxy's own primary-provider template) if set, else a plain
+        top-level "model" field — and this is used only as a fallback.
       minLength: 1
     providerId:
       type: string
@@ -45,8 +48,6 @@ parameters:
         (/{apiVersion}/models/{model}:generateContent).
       default: "v1beta"
       minLength: 1
-  required:
-    - model
 
 systemParameters:
   type: object

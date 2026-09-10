@@ -26,9 +26,12 @@ import (
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-func TestGetPolicy_RequiresModel(t *testing.T) {
-	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err == nil {
-		t.Fatal("expected error when 'model' param is missing")
+func TestGetPolicy_ModelIsOptionalAtConfigTime(t *testing.T) {
+	// Unlike before payload-fallback support, an absent 'model' param is not
+	// a config-time error - resolveModel enforces "payload or config, at
+	// least one" per request instead (see TestOnRequestBody_RejectsMissingFallbackModel).
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err != nil {
+		t.Fatalf("model override should be optional: %v", err)
 	}
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
 		"model": "mistral-large-latest", "providerId": "mistral-provider",
@@ -37,10 +40,59 @@ func TestGetPolicy_RequiresModel(t *testing.T) {
 	}
 }
 
-func TestOnRequestBody_PinsModelAndStripsUnsupportedFields(t *testing.T) {
+func TestGetPolicy_ParsesRequestModel(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tp := p.(*TranslatorPolicy)
+	if tp.params.RequestModel.Location != "payload" || tp.params.RequestModel.Identifier != "$.model" {
+		t.Fatalf("requestModel not parsed into params: %#v", tp.params.RequestModel)
+	}
+
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err != nil {
+		t.Fatalf("requestModel should be optional: %v", err)
+	}
+
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"requestModel": map[string]interface{}{"location": "header", "identifier": "x-model"},
+	}); err == nil {
+		t.Fatal("expected an error for a non-payload requestModel.location")
+	}
+}
+
+// TestOnRequestBody_UsesInjectedRequestModelJsonPath proves resolveModel
+// actually follows the PROXY's own template's requestModel identifier (here
+// deliberately NOT the default "$.model", so a pass can't be a coincidence of
+// a hardcoded lookup) rather than always reading a fixed top-level field.
+func TestOnRequestBody_UsesInjectedRequestModelJsonPath(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{
+		RequestModel: requestModelConfig{Location: "payload", Identifier: "$.routing.modelName"},
+	}}
+	reqCtx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"routing":{"modelName":"mistral-large-via-custom-path"},"messages":[{"role":"user","content":"hi"}]}`)},
+	}
+	action := p.OnRequestBody(context.Background(), reqCtx, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(mods.Body, &body); err != nil {
+		t.Fatalf("translated body not JSON: %v", err)
+	}
+	if body["model"] != "mistral-large-via-custom-path" {
+		t.Errorf("expected the model read via requestModel's JSONPath, got %v", body["model"])
+	}
+}
+
+func TestOnRequestBody_FallsBackToConfiguredModelAndStripsUnsupportedFields(t *testing.T) {
 	p := &TranslatorPolicy{params: PolicyParams{Model: "mistral-large-latest"}}
 	reqBody := `{
-		"model": "gpt-4o",
 		"messages": [{"role": "user", "content": "hi"}],
 		"n": 2,
 		"logprobs": true,
@@ -66,7 +118,7 @@ func TestOnRequestBody_PinsModelAndStripsUnsupportedFields(t *testing.T) {
 		t.Fatalf("translated body not JSON: %v", err)
 	}
 	if body["model"] != "mistral-large-latest" {
-		t.Errorf("expected model pinned to mistral-large-latest, got %v", body["model"])
+		t.Errorf("expected fallback to configured model mistral-large-latest, got %v", body["model"])
 	}
 	// Unsupported fields Mistral rejects must be stripped.
 	for _, field := range []string{"n", "logprobs", "user"} {
@@ -80,6 +132,48 @@ func TestOnRequestBody_PinsModelAndStripsUnsupportedFields(t *testing.T) {
 	}
 	if _, present := body["messages"]; !present {
 		t.Error("expected 'messages' to be preserved")
+	}
+}
+
+// TestOnRequestBody_PayloadModelWinsOverConfiguredModel covers the case
+// where both a static model and the request body's own "model" are present -
+// the request-supplied one must win (e.g. so model-failover's own
+// per-fallback model reaches Mistral instead of being silently ignored).
+func TestOnRequestBody_PayloadModelWinsOverConfiguredModel(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{Model: "mistral-large-latest-configured"}}
+	reqCtx := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"model":"mistral-small-should-win","messages":[{"role":"user","content":"hi"}]}`)},
+	}
+	action := p.OnRequestBody(context.Background(), reqCtx, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(mods.Body, &body); err != nil {
+		t.Fatalf("translated body not JSON: %v", err)
+	}
+	if body["model"] != "mistral-small-should-win" {
+		t.Errorf("expected the payload's model to win, got %v", body["model"])
+	}
+}
+
+func TestOnRequestBody_RejectsMissingFallbackModel(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{}}
+	for _, body := range []string{
+		`{"messages":[]}`,
+		`{"model":"","messages":[]}`,
+		`{"model":42,"messages":[]}`,
+	} {
+		action := p.OnRequestBody(context.Background(), &policy.RequestContext{
+			SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+			Body:          &policy.Body{Present: true, Content: []byte(body)},
+		}, nil)
+		if response, ok := action.(policy.ImmediateResponse); !ok || response.StatusCode != 400 {
+			t.Errorf("expected a 400 response for body %s, got %#v", body, action)
+		}
 	}
 }
 

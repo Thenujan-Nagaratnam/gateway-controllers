@@ -24,6 +24,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
@@ -154,17 +155,16 @@ func (p *Policy) doDial(ctx context.Context, targetURL, method string, src *poli
 // rate limiting, analytics, any request/response transformation, and (when providerID is set)
 // llm-header-router, the matching translator, and the provider's own conditional upstream-auth
 // policy — rather than this policy dialing a backend or resolving anything itself. This is the
-// ONLY dial mechanism a fallback ever uses now (see the package doc for why a same-provider
+// ONLY dial mechanism a fallback ever uses (see the package doc for why a same-provider
 // "reuse primary" fallback is just as much a self-redial as a cross-provider one: a raw direct
 // dial would silently skip every other attached policy's processing for that specific attempt,
 // which is invisible and surprising for anything relying on per-request behavior — rate limits,
 // audit logs, PII masking). providerID and upstreamDefName are mutually exclusive; at most one
 // is ever set:
 //   - Both empty (a same-provider "reuse primary" fallback): no selection header at all, so the
-//     redialed request just falls through to the operation's own default upstream — GetPolicy's
-//     own validation guarantees that's always correct, since a target that redirects its own
-//     primary requires every one of its own fallbacks to set provider or upstreamDefinition too
-//     (there being no "default upstream" left to correctly fall through to in that case).
+//     redialed request just falls through to the operation's own default upstream — always
+//     correct, since the primary attempt itself is never redirected by this policy (see the
+//     package doc), so there's always a real default upstream for a bare retry to reuse.
 //   - providerID set: providerHeaderName is set, read by an operator-attached selector policy
 //     (e.g. llm-header-router) elsewhere in the chain.
 //   - upstreamDefName set (a same-provider, different-backend fallback): modelFailoverUpstreamDefHeader
@@ -175,7 +175,15 @@ func (p *Policy) doDial(ctx context.Context, targetURL, method string, src *poli
 // target/fallback MATCHING logic on its own re-entry (see OnRequestBody and OnResponseHeaders) —
 // it does not prevent OnRequestBody from acting on modelFailoverUpstreamDefHeader, which is a
 // narrower, deliberate exception to that guard (see OnRequestBody's own doc comment).
-func (p *Policy) trySelfRedial(ctx context.Context, selfBaseURL, downstreamPath, method string, headers *policy.Headers, providerID, upstreamDefName string, originalBody []byte, model string) (policy.ImmediateResponse, bool) {
+//
+// Also always sets policy.AttemptNumberHeader to policy.CurrentAttemptNumber(shared) — shared
+// is the SharedContext of whichever request is originating THIS redial (the client's original
+// request for a first-level fallback/override, or an earlier redial's own SharedContext for a
+// target's own provider override that then falls through to ITS OWN further fallbacks), never
+// a value this policy tracks itself. The redial's own fresh SharedContext.AttemptNumber gets
+// populated from that header by the kernel on its own independent stream — see the SDK's own
+// doc for why this can only ever travel on the wire, never in shared memory.
+func (p *Policy) trySelfRedial(ctx context.Context, shared *policy.SharedContext, selfBaseURL, downstreamPath, method string, headers *policy.Headers, providerID, upstreamDefName string, originalBody []byte, model string) (policy.ImmediateResponse, bool) {
 	if selfBaseURL == "" || downstreamPath == "" {
 		slog.WarnContext(ctx, "ModelFailover: no self base URL/downstream path available, cannot redial", "provider", providerID)
 		return policy.ImmediateResponse{}, false
@@ -189,8 +197,9 @@ func (p *Policy) trySelfRedial(ctx context.Context, selfBaseURL, downstreamPath,
 
 	targetURL := strings.TrimSuffix(selfBaseURL, "/") + finalPath
 	extra := map[string]string{
-		internalLoopbackHeader:    "1",
-		modelFailoverRedialHeader: "1",
+		internalLoopbackHeader:     "1",
+		modelFailoverRedialHeader:  "1",
+		policy.AttemptNumberHeader: strconv.Itoa(policy.CurrentAttemptNumber(shared)),
 	}
 	for name, value := range modelHeaders {
 		extra[name] = value

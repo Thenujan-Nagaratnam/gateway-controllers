@@ -19,20 +19,174 @@
 package openaitoanthropic
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-func TestGetPolicy_RequiresModel(t *testing.T) {
-	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err == nil {
-		t.Fatal("expected error when 'model' param is missing")
+func TestGetPolicy_ModelIsOptionalAtConfigTime(t *testing.T) {
+	// Unlike before payload-fallback support, an absent 'model' param is not
+	// a config-time error - resolveModel enforces "payload or config, at
+	// least one" per request instead (see TestOnRequestBody_RejectsMissingFallbackModel).
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err != nil {
+		t.Fatalf("model override should be optional: %v", err)
 	}
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
 		"model": "claude", "providerId": "anthropic-provider",
 	}); err != nil {
 		t.Fatalf("unexpected error for valid params: %v", err)
+	}
+}
+
+func TestGetPolicy_ParsesRequestModel(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tp := p.(*TranslatorPolicy)
+	if tp.params.RequestModel.Location != "payload" || tp.params.RequestModel.Identifier != "$.model" {
+		t.Fatalf("requestModel not parsed into params: %#v", tp.params.RequestModel)
+	}
+
+	// Absent entirely is valid - resolveModel falls back to its own default.
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err != nil {
+		t.Fatalf("requestModel should be optional: %v", err)
+	}
+
+	// A location this transformer can't act on (it only ever reads the JSON
+	// body it's translating) is a config error, not silently ignored.
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"requestModel": map[string]interface{}{"location": "header", "identifier": "x-model"},
+	}); err == nil {
+		t.Fatal("expected an error for a non-payload requestModel.location")
+	}
+}
+
+// TestOnRequestBody_UsesInjectedRequestModelJsonPath proves resolveModel
+// actually follows the PROXY's own template's requestModel identifier (here
+// deliberately NOT the default "$.model", so a pass can't be a coincidence of
+// a hardcoded lookup) rather than always reading a fixed top-level field.
+func TestOnRequestBody_UsesInjectedRequestModelJsonPath(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{
+		AnthropicVersion: DefaultAnthropicVersion,
+		RequestModel:     requestModelConfig{Location: "payload", Identifier: "$.routing.modelName"},
+	}}
+	shared := &policy.SharedContext{Metadata: map[string]interface{}{}}
+	req := &policy.RequestContext{
+		SharedContext: shared,
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"routing":{"modelName":"claude-3-opus-via-custom-path"},"messages":[{"role":"user","content":"hi"}]}`)},
+	}
+	action := p.OnRequestBody(context.Background(), req, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	var sentBody map[string]interface{}
+	if err := json.Unmarshal(mods.Body, &sentBody); err != nil {
+		t.Fatalf("translated body is not valid JSON: %v", err)
+	}
+	if sentBody["model"] != "claude-3-opus-via-custom-path" {
+		t.Fatalf("expected the model read via requestModel's JSONPath, got %v", sentBody["model"])
+	}
+	if got := shared.Metadata[MetadataKeyEffectiveModel]; got != "claude-3-opus-via-custom-path" {
+		t.Fatalf("effective model was not stored in request metadata: %v", got)
+	}
+}
+
+func TestOnRequestBody_FallsBackToRequestModel(t *testing.T) {
+	// No configured model at all - the request body's own "model" field must
+	// carry it through translation and back out into the OpenAI-shaped
+	// response, via the per-request SharedContext (never p.params.Model,
+	// which stays empty for the life of this shared policy instance).
+	p := &TranslatorPolicy{params: PolicyParams{AnthropicVersion: DefaultAnthropicVersion}}
+	shared := &policy.SharedContext{Metadata: map[string]interface{}{}}
+	req := &policy.RequestContext{
+		SharedContext: shared,
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"model":"claude-3-opus-from-payload","messages":[{"role":"user","content":"hi"}]}`)},
+	}
+
+	action := p.OnRequestBody(context.Background(), req, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	var sentBody map[string]interface{}
+	if err := json.Unmarshal(mods.Body, &sentBody); err != nil {
+		t.Fatalf("translated body is not valid JSON: %v", err)
+	}
+	if sentBody["model"] != "claude-3-opus-from-payload" {
+		t.Fatalf("expected the payload's own model, got %v", sentBody["model"])
+	}
+	if got := shared.Metadata[MetadataKeyEffectiveModel]; got != "claude-3-opus-from-payload" {
+		t.Fatalf("effective model was not stored in request metadata: %v", got)
+	}
+
+	response := &policy.ResponseContext{
+		SharedContext:  shared,
+		ResponseStatus: 200,
+		// Deliberately omits its own "model" field - forces translateResponse
+		// to fall back to the resolved effective model, not p.params.Model.
+		ResponseBody: &policy.Body{Present: true, Content: []byte(
+			`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)},
+	}
+	responseAction := p.OnResponseBody(context.Background(), response, nil)
+	responseMods, ok := responseAction.(policy.DownstreamResponseModifications)
+	if !ok {
+		t.Fatalf("expected DownstreamResponseModifications, got %T", responseAction)
+	}
+	var translated map[string]interface{}
+	if err := json.Unmarshal(responseMods.Body, &translated); err != nil {
+		t.Fatalf("translated response is not valid JSON: %v", err)
+	}
+	if translated["model"] != "claude-3-opus-from-payload" {
+		t.Fatalf("response did not use the effective request model: %v", translated["model"])
+	}
+}
+
+func TestOnRequestBody_PayloadModelWinsOverConfiguredModel(t *testing.T) {
+	// A statically configured model is now only a fallback default - a
+	// request-supplied model must override it, e.g. so model-failover's own
+	// per-fallback model reaches Anthropic instead of being silently ignored.
+	p := &TranslatorPolicy{params: PolicyParams{AnthropicVersion: DefaultAnthropicVersion, Model: "claude-sonnet-4-5-20250929"}}
+	req := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"model":"claude-3-opus-should-win","messages":[{"role":"user","content":"hi"}]}`)},
+	}
+	action := p.OnRequestBody(context.Background(), req, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	var sentBody map[string]interface{}
+	if err := json.Unmarshal(mods.Body, &sentBody); err != nil {
+		t.Fatalf("translated body is not valid JSON: %v", err)
+	}
+	if sentBody["model"] != "claude-3-opus-should-win" {
+		t.Fatalf("expected the payload's model to win over the configured one, got %v", sentBody["model"])
+	}
+}
+
+func TestOnRequestBody_RejectsMissingFallbackModel(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{AnthropicVersion: DefaultAnthropicVersion}}
+	for _, body := range []string{
+		`{"messages":[]}`,
+		`{"model":"","messages":[]}`,
+		`{"model":42,"messages":[]}`,
+	} {
+		action := p.OnRequestBody(context.Background(), &policy.RequestContext{
+			SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+			Body:          &policy.Body{Present: true, Content: []byte(body)},
+		}, nil)
+		if response, ok := action.(policy.ImmediateResponse); !ok || response.StatusCode != 400 {
+			t.Errorf("expected a 400 response for body %s, got %#v", body, action)
+		}
 	}
 }
 

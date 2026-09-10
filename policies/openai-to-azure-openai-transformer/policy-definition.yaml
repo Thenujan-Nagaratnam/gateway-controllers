@@ -21,8 +21,12 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: false
       description: |
-        Azure deployment id used in the rewritten path. When omitted, the
-        request body's "model" field is used as the deployment id.
+        Azure deployment id used in the rewritten path. Optional: the
+        client's own model wins when present — read via the "requestModel"
+        systemParameter (the location gateway-controller injects from the
+        proxy's own primary-provider template) if set, else a plain
+        top-level "model" field — and this is used only as a fallback
+        deployment id.
       minLength: 1
     providerId:
       type: string

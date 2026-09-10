@@ -1,0 +1,147 @@
+name: Guardrail / Policy Security Finding
+description: Report a security or threat-model finding for a gateway policy (guardrail, transformer, router, etc.)
+title: "[Security Finding] <policy-name>: <one-line summary>"
+labels:
+  - security
+  - guardrail-finding
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to report a single security/threat-model finding for one policy.
+        File one issue per finding — don't bundle multiple unrelated findings into one issue.
+
+  - type: dropdown
+    id: policy
+    attributes:
+      label: Policy
+      description: Which policy does this finding apply to?
+      options:
+        - pii-masking-regex
+        - prompt-decorator
+        - prompt-template
+        - url-guardrail
+        - word-count-guardrail
+        - sentence-count-guardrail
+        - model-round-robin
+        - model-weighted-round-robin
+        - model-failover
+        - aws-bedrock-guardrail
+        - azure-content-safety-content-moderation
+        - content-length-guardrail
+        - json-schema-guardrail
+        - regex-guardrail
+        - semantic-cache
+        - semantic-prompt-guard
+        - semantic-tool-filtering
+        - granite-guardian-prompt-injection
+        - nvidia-nemoguard-content-safety
+        - advanced-ratelimit
+        - openai-to-anthropic-transformer
+        - openai-to-azure-openai-transformer
+        - openai-to-bedrock-transformer
+        - openai-to-gemini-transformer
+        - openai-to-mistral-transformer
+        - Cross-cutting / multiple policies (describe below)
+        - Other (specify in description)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: interaction-point
+    attributes:
+      label: Interaction Point
+      description: Which stage of the policy's lifecycle does this finding occur at?
+      options:
+        - "01. Apply policy to LLM Provider/Proxy (config-time, gateway-controller management API)"
+        - "02. Invoke the Upstream LLM (runtime, request/response mediation)"
+        - Both / not clearly separable
+    validations:
+      required: true
+
+  - type: input
+    id: category
+    attributes:
+      label: Category
+      description: Short classification of the finding, e.g. "Information Disclosure", "SSRF", "Denial of Service", "Detection Bypass", "Access Control", "Prompt Injection".
+      placeholder: e.g. Information Disclosure
+    validations:
+      required: true
+
+  - type: textarea
+    id: threat
+    attributes:
+      label: Threat Description
+      description: What is the concrete threat? Describe the mechanism, not just the symptom.
+      placeholder: |
+        e.g. "A JSONPath extraction failure returns the raw internal Go error text directly to the client, exposing internal field/path names."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: materializable
+    attributes:
+      label: Materializable
+      description: Can this actually be triggered in practice, and how easily?
+      options:
+        - "Yes — trivially reachable by any client"
+        - "Yes — reachable under normal/expected conditions (e.g. an ordinary upstream error)"
+        - "Yes — requires a specific config choice by the operator"
+        - "Partial — requires unlikely preconditions"
+        - "No / theoretical only"
+        - Unconfirmed — needs verification
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to Materialize / Reproduce
+      description: Concrete steps, example request/config, or conditions that trigger this finding.
+      placeholder: |
+        e.g. POST with {"messages": []} to trigger an out-of-range JSONPath error, or:
+        the upstream LLM returns a 429/500 with no "choices" field.
+    validations:
+      required: false
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence / Code Citation
+      description: File paths and line numbers backing this finding. Do not paste large code blocks — cite location and quote only the relevant line(s).
+      placeholder: |
+        e.g. piimaskingregex.go:401-404 — buildErrorResponse(fmt.Sprintf("error extracting value from JSONPath: %v", err))
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: mitigation
+    attributes:
+      label: Suggested Mitigation
+      description: What would close this gap? Be specific enough that a fix PR could be scoped from this alone.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Suggested Severity
+      description: Your best-effort triage rating — reviewers may adjust this.
+      options:
+        - Critical
+        - High
+        - Medium
+        - Low
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I verified this against the actual source code (not just inferred from docs or behavior elsewhere)
+          required: true
+        - label: This is not a duplicate of an existing open issue
+          required: true

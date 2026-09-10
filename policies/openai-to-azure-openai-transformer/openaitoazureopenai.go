@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	utils "github.com/wso2/api-platform/sdk/core/utils"
 )
 
 const (
@@ -49,6 +50,27 @@ type PolicyParams struct {
 	// (case-insensitive) against SharedContext.Metadata["selected_provider"]
 	// in multi-provider mode.
 	ProviderID string
+	// RequestModel identifies where the client's own model lives in the
+	// request body — a systemParameter gateway-controller injects from the
+	// PROXY's OWN (primary provider's) template, never the additional
+	// provider's, since that's the one location the client actually sends
+	// its model in, regardless of which provider ends up handling the
+	// request (see readModelFromBody). Zero value (Location == "") means it
+	// wasn't injected (e.g. this policy attached outside gateway-controller,
+	// or an older build) — readModelFromBody falls back to a plain top-level
+	// "model" lookup in that case.
+	RequestModel requestModelConfig
+}
+
+// requestModelConfig mirrors the convention model-failover/model-round-robin/
+// model-weighted-round-robin already use for the same systemParameter — see
+// their own requestmodel.go. This transformer only ever reads the client's
+// model out of the JSON body it's about to translate (never a header/query/
+// path), so only "payload" is a meaningful location here; anything else is a
+// config error caught at parse time.
+type requestModelConfig struct {
+	Location   string
+	Identifier string
 }
 
 type TranslatorPolicy struct {
@@ -64,8 +86,8 @@ func GetPolicy(_ policy.PolicyMetadata, rawParams map[string]interface{}) (polic
 }
 
 // Mode buffers the request body even though we don't modify it — the
-// deployment id may have to be read from the body's "model" field when the
-// operator hasn't pinned one.
+// deployment id is read from the body's "model" field first, falling back
+// to the operator's configured one only when the request doesn't carry it.
 func (p *TranslatorPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeSkip,
@@ -84,9 +106,12 @@ func (p *TranslatorPolicy) OnRequestBody(
 		return policy.UpstreamRequestModifications{}
 	}
 
-	deployment := p.params.Model
+	// The request body's own model field wins when present (e.g. a
+	// per-attempt override from a policy like model-failover); the
+	// statically configured deployment is used only as a fallback.
+	deployment := readModelFromBody(reqCtx, p.params.RequestModel)
 	if deployment == "" {
-		deployment = readModelFromBody(reqCtx)
+		deployment = p.params.Model
 	}
 	if deployment == "" {
 		return errResponse(400,
@@ -135,8 +160,24 @@ func selectedProvider(reqCtx *policy.RequestContext) string {
 	return strings.TrimSpace(v)
 }
 
-func readModelFromBody(reqCtx *policy.RequestContext) string {
+// readModelFromBody reads the client's own model out of the request body.
+//
+// When reqModel is set (gateway-controller injected it from the PROXY's own
+// template — see PolicyParams.RequestModel), the client's model is read via
+// JSONPath at reqModel.Identifier against the raw body, exactly like the
+// template says. Absent that (this policy attached outside gateway-
+// controller, or an older build with no such injection), falls back to a
+// plain top-level "model" field lookup — every current built-in template
+// resolves to that same shape anyway, so this is never a behavior change for
+// the common case, only a safety net.
+func readModelFromBody(reqCtx *policy.RequestContext, reqModel requestModelConfig) string {
 	if reqCtx.Body == nil || !reqCtx.Body.Present || len(reqCtx.Body.Content) == 0 {
+		return ""
+	}
+	if reqModel.Location == "payload" {
+		if val, err := utils.ExtractStringValueFromJsonpath(reqCtx.Body.Content, reqModel.Identifier); err == nil {
+			return strings.TrimSpace(val)
+		}
 		return ""
 	}
 	var payload map[string]interface{}
@@ -192,6 +233,12 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 		result.ProviderID = v
 	}
 
+	requestModel, err := parseRequestModelConfig(params)
+	if err != nil {
+		return result, err
+	}
+	result.RequestModel = requestModel
+
 	return result, nil
 }
 
@@ -205,6 +252,41 @@ func optionalString(params map[string]interface{}, key string) (string, error) {
 		return "", fmt.Errorf("'%s' must be a string", key)
 	}
 	return strings.TrimSpace(v), nil
+}
+
+// parseRequestModelConfig parses the optional 'requestModel' systemParameter
+// (see PolicyParams.RequestModel's own doc). Absent entirely is valid — the
+// zero value signals readModelFromBody to use its own fallback. Present-but-
+// malformed is a config error: gateway-controller injecting a location this
+// transformer can't act on (i.e. anything but "payload") means something is
+// misconfigured upstream, not a case to silently ignore.
+func parseRequestModelConfig(params map[string]interface{}) (requestModelConfig, error) {
+	raw, ok := params["requestModel"]
+	if !ok || raw == nil {
+		return requestModelConfig{}, nil
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return requestModelConfig{}, fmt.Errorf("'requestModel' must be an object")
+	}
+	location, err := optionalString(m, "location")
+	if err != nil {
+		return requestModelConfig{}, err
+	}
+	identifier, err := optionalString(m, "identifier")
+	if err != nil {
+		return requestModelConfig{}, err
+	}
+	if location == "" && identifier == "" {
+		return requestModelConfig{}, nil
+	}
+	if location != "payload" {
+		return requestModelConfig{}, fmt.Errorf("'requestModel.location' must be \"payload\" for %s (the client's model is always read from the JSON body being translated), got %q", PolicyName, location)
+	}
+	if identifier == "" {
+		return requestModelConfig{}, fmt.Errorf("'requestModel.identifier' is required when requestModel is set")
+	}
+	return requestModelConfig{Location: location, Identifier: identifier}, nil
 }
 
 func errResponse(statusCode int, message string) policy.ImmediateResponse {

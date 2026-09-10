@@ -16,33 +16,51 @@
  */
 
 // Package modelfailover provides a policy that transparently retries a failed LLM request
-// against an ordered fallback chain — one independently-selectable chain per target model,
-// selected by matching the client's own model identifier (located per requestModel, see
-// requestmodel.go) against a declared target.
+// against an ordered fallback chain — one independently-selectable chain per target, selected
+// by matching the client's own model identifier (located per requestModel, see requestmodel.go)
+// against a declared target's model, and — for a multi-provider proxy where the same model name
+// can legitimately arrive via more than one provider — its provider too. Provider is read from
+// the primary request's own providerHeaderName header (the same header a selector like
+// llm-header-router reads to route it), never configured or redirected by this policy (see
+// groupByModel). A target with no provider set is a catch-all for that model: it matches when
+// no more specific (model, provider) target exists, or when the primary request carried no
+// provider header at all — the common case for a single-provider proxy, where this
+// disambiguation never comes into play.
+//
+// The client's own primary request is NEVER intercepted, redirected, or otherwise modified by
+// this policy. It reaches whatever upstream the rest of the operation's own policy chain (and
+// Envoy's own default routing) already resolves it to, exactly as if this policy weren't
+// attached at all. This policy only ever acts from OnResponseHeaders, and only once that
+// primary attempt has genuinely been dialed and come back with a status in statusCodes — there
+// is no "target-level" pre-dial redirect of any kind. This is a deliberate simplification: an
+// earlier version of this policy also let a target redirect its own primary attempt before
+// ever dialing (to avoid a wasted round-trip to a backend that could never have worked for that
+// model) — that pre-dial path has been removed. What used to be a target's own primary
+// override is now just its first configured fallback, tried after one real (if foreseeably
+// futile) primary attempt like any other.
 //
 // Mechanism (response-path retry — NOT Envoy aggregate-cluster/upstream-ext_proc): every
-// fallback/override attempt this policy originates itself — cross-provider or same-provider —
-// is a SELF-REDIAL (see below): this operation's own externally-facing URL, dialed again, so
-// the attempt runs through the full policy chain like any other request. A raw direct call
-// would silently skip every OTHER attached policy's processing for that one attempt — rate
-// limiting, analytics, any request/response transformation — which is invisible and surprising
-// for anything relying on per-request behavior. On success the attempt's response is returned
-// via ImmediateResponse.
-// The one exception is a TARGET's own upstreamDefinition-redirected primary attempt: a bare
-// in-process Envoy UpstreamName swap, since that happens before any dial at all (OnRequestBody,
-// pre-primary) and needs no self-redial. A FALLBACK's own upstreamDefinition (same-provider,
-// different backend) can't use that same shortcut — the primary has already been dialed and
-// failed by the time a fallback runs — so it rides the self-redial too, distinguished from a
-// provider fallback by which header it sets (see modelFailoverUpstreamDefHeader in dispatch.go).
+// fallback this policy originates itself — cross-provider or same-provider — is a SELF-REDIAL
+// (see below): this operation's own externally-facing URL, dialed again, so the attempt runs
+// through the full policy chain like any other request. A raw direct call would silently skip
+// every OTHER attached policy's processing for that one attempt — rate limiting, analytics, any
+// request/response transformation — which is invisible and surprising for anything relying on
+// per-request behavior. On success the attempt's response is returned via ImmediateResponse.
+// A fallback's own upstreamDefinition (same-provider, different backend) has no pre-dial moment
+// of its own to apply an in-process UpstreamName swap directly — the primary has already been
+// dialed and failed by the time a fallback runs — so it rides the self-redial, distinguished
+// from a provider fallback by which header it sets (see modelFailoverUpstreamDefHeader in
+// dispatch.go), and the redialed request's own (fresh, independent) pass through OnRequestBody
+// applies the UpstreamName swap for THAT dial.
 //
 // This policy is entirely standalone — gateway-controller has no awareness of it, injects no
 // params for it, and validates nothing about its config. Everything below is a runtime
 // convention between this policy and whatever else the operator has attached, not a code
 // coupling.
 //
-// Cross-provider targets/fallbacks (declaring provider) never carry their own url/auth/
-// template. A provider reference is resolved entirely by a SELF-REDIAL: this policy dials its
-// OWN operation's externally-facing URL again (selfBaseURL — defaults to defaultSelfBaseURL,
+// Cross-provider fallbacks (declaring provider) never carry their own url/auth/template. A
+// provider reference is resolved entirely by a SELF-REDIAL: this policy dials its OWN
+// operation's externally-facing URL again (selfBaseURL — defaults to defaultSelfBaseURL,
 // operator-overridable via the policy's own params — plus the original downstream path) with
 // the providerHeaderName header set to the chosen provider id (dispatch.go). Because that's a
 // genuinely fresh inbound request as far as Envoy is concerned, it re-runs the FULL policy
@@ -70,29 +88,29 @@
 //     exist.
 //
 // Same-provider, different-backend routing (e.g. a backup region) is unrelated to cross-provider
-// routing, and stays fully decoupled from gateway-controller in the same way at both levels: a
-// bare name, used as an in-process Envoy UpstreamName redirect (no auth/template complexity
-// since it's the same provider) — Envoy's own routing resolves it at runtime against this same
-// resource's own already-declared spec.upstreamDefinitions, so this policy needs nothing
-// resolved ahead of time and never sees a raw URL. At target level that redirect applies
-// directly to the primary attempt (OnRequestBody, pre-dial). At fallback level there is no
-// primary attempt left to redirect — the self-redial carries the chosen name in
-// modelFailoverUpstreamDefHeader instead, and the redialed request's own OnRequestBody applies
-// the SAME UpstreamName redirect on its own (fresh, independent) pass.
+// routing, and stays fully decoupled from gateway-controller in the same way: a bare name, used
+// as an in-process Envoy UpstreamName redirect (no auth/template complexity since it's the same
+// provider) — Envoy's own routing resolves it at runtime against this same resource's own
+// already-declared spec.upstreamDefinitions, so this policy needs nothing resolved ahead of
+// time and never sees a raw URL. The self-redial carries the chosen name in
+// modelFailoverUpstreamDefHeader, and the redialed request's own OnRequestBody applies the
+// UpstreamName redirect on its own (fresh, independent) pass.
 //
-// OnRequestBody's modelFailoverRedialHeader guard exists because a self-redial re-enters this
-// SAME operation, which still has this policy attached: without the guard, the redialed
-// request's own OnRequestBody pass would see the SAME unchanged client model and try to
-// redirect it all over again, forever. The guard's only job is breaking that recursion — a
-// client spoofing the header themselves just means failover doesn't apply to that one request,
-// never a routing or auth bypass (see dispatch.go).
+// OnRequestBody's ONLY job, therefore, is routing this policy's own self-redials to the right
+// same-provider upstream on their own fresh pass (modelFailoverUpstreamDefHeader) — it never
+// inspects, matches, or redirects a genuine client request. OnResponseHeaders' own
+// modelFailoverRedialHeader guard exists for the same reason at the response end: a self-redial
+// re-enters this SAME operation, which still has this policy attached, so without the guard the
+// redial's own (possibly still-failing) response would trigger a second, nested fallback walk
+// from inside the first one's own processing. The guard's only job is breaking that recursion —
+// a client spoofing the header themselves just means failover doesn't apply to that one
+// request, never a routing or auth bypass (see dispatch.go).
 package modelfailover
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -116,12 +134,6 @@ const defaultDialTimeout = 10 * time.Second
 // doc), so a deployment that changes the listener port away from its default must set
 // selfBaseURL on the policy itself.
 const defaultSelfBaseURL = "http://127.0.0.1:8080"
-
-// noProviderAvailableBody is returned when a target's own provider override, and every one of
-// its own declared fallbacks, all fail — there is no "original" primary response to let through
-// unchanged (that's the whole reason this target declared an override in the first place), so
-// this is an honest, generic failure rather than a fabricated one.
-const noProviderAvailableBody = `{"error":{"message":"all configured providers for this model are unavailable","type":"upstream_error"}}`
 
 // originalBodyMetadataKey is where OnRequestBody stashes the request body it already decoded,
 // for OnResponseHeaders to reuse later instead of re-reading rhctx.RequestBody. Namespaced
@@ -149,41 +161,41 @@ type fallbackTarget struct {
 	upstreamDefinition string
 }
 
-// hasExplicitOverride reports whether this fallback has a well-defined redirect target of its
-// own (provider or upstreamDefinition) — one that's correct regardless of what the target's own
-// primary attempt did — as opposed to the bare "reuse the primary" case, which is only correct
-// when the primary was never itself redirected (see GetPolicy's own validation).
-func (fb fallbackTarget) hasExplicitOverride() bool {
-	return fb.provider != "" || fb.upstreamDefinition != ""
-}
-
 // targetGroup is one independently-selectable target: model is the client-requested value
 // that selects this whole group, and fallbacks is that group's own ordered failover chain —
-// entirely independent of every other group's chain (own suspend state). provider and
-// upstreamDefinition are mutually exclusive; at most one is ever set.
+// entirely independent of every other group's chain (own suspend state). The primary attempt
+// for this model is always the operation's own default routing, untouched by this policy;
+// fallbacks is tried only after that primary attempt genuinely fails (see the package doc).
+//
+// provider is a MATCH qualifier, not a redirect instruction (unlike a fallback's own provider
+// field — see fallbackTarget): it disambiguates which target applies when the same model name
+// can legitimately reach this operation via more than one provider (e.g. a multi-provider proxy
+// where "claude-3-5-sonnet" means something different depending on which provider the primary
+// attempt actually went to). Read from the ACTUAL primary request's own providerHeaderName
+// header at match time (see OnResponseHeaders) — never configured routing, since this policy
+// never decides where the primary goes. Empty means "match this model regardless of provider",
+// and is the common case for a single-provider proxy where this disambiguation never matters.
 type targetGroup struct {
-	model string
-
-	// provider is empty unless this target's primary attempt itself crosses providers (no
-	// same-provider default makes sense for this model at all). Resolved via the same
-	// self-redial mechanism as a fallback's own provider reference (see the package doc).
-	provider string
-
-	// upstreamDefinition is empty unless this target's primary attempt should go directly to
-	// a specific same-provider backend (a plain upstreamDefinition name) rather than the
-	// operation's own default upstream. Redirected via an in-process UpstreamName redirect —
-	// same provider, so there's no auth/template complexity to route around.
-	upstreamDefinition string
-
+	model     string
+	provider  string
 	fallbacks []fallbackTarget
 }
 
-// Policy holds the parsed, validated model-failover configuration consumed by OnRequestBody
-// (a target's own provider/upstreamDefinition override) and OnResponseHeaders (the fallback
-// retry loop after a normal primary failure).
+// targetKey is the compound lookup key for Policy.targetByModel: (model, provider). A target
+// with an empty provider is a catch-all for that model, used when either the operator declared
+// no provider-specific targets for it, or the primary request carried no providerHeaderName
+// header at all — see groupByModel.
+type targetKey struct {
+	model    string
+	provider string
+}
+
+// Policy holds the parsed, validated model-failover configuration consumed by OnResponseHeaders
+// (the fallback retry loop after a normal primary failure) and, minimally, by OnRequestBody
+// (routing this policy's own self-redials on their own fresh pass — see the package doc).
 type Policy struct {
 	targets          []targetGroup
-	targetByModel    map[string]int // client-requested model name -> index into targets
+	targetByModel    map[targetKey]int // (client-requested model, primary's own provider) -> index into targets
 	statusCodes      map[int]struct{}
 	requestTimeout   time.Duration // per-attempt dial timeout; 0 = use defaultDialTimeout
 	suspendDuration  time.Duration // zero = suspend tracking disabled
@@ -207,7 +219,7 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 	}
 
 	targets := make([]targetGroup, 0, len(rawTargets))
-	targetByModel := make(map[string]int, len(rawTargets))
+	targetByModel := make(map[targetKey]int, len(rawTargets))
 	for i, raw := range rawTargets {
 		t, ok := raw.(map[string]interface{})
 		if !ok {
@@ -217,8 +229,13 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 		if model == "" {
 			return nil, fmt.Errorf("model-failover: targets[%d].model is required", i)
 		}
-		if _, exists := targetByModel[model]; exists {
-			return nil, fmt.Errorf("model-failover: targets[%d].model %q is declared more than once", i, model)
+		provider := getStringParam(t, "provider")
+		key := targetKey{model: model, provider: provider}
+		if _, exists := targetByModel[key]; exists {
+			if provider == "" {
+				return nil, fmt.Errorf("model-failover: targets[%d].model %q is declared more than once with no provider set", i, model)
+			}
+			return nil, fmt.Errorf("model-failover: targets[%d]: model %q + provider %q is declared more than once", i, model, provider)
 		}
 
 		rawFallbacks, _ := t["fallbacks"].([]interface{})
@@ -231,29 +248,11 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]interface{}) (p
 			fallbacks = append(fallbacks, fb)
 		}
 
-		provider := getStringParam(t, "provider")
-		upstreamDefinition := getStringParam(t, "upstreamDefinition")
-		if provider != "" && upstreamDefinition != "" {
-			return nil, fmt.Errorf("model-failover: targets[%d] sets both provider and upstreamDefinition — mutually exclusive", i)
-		}
-		if provider != "" || upstreamDefinition != "" {
-			// Once the target's own primary attempt is redirected, there is no primary
-			// response left for a bare "reuse the primary" fallback to reuse — require every
-			// one of its own fallbacks to have an explicit redirect target of their own too,
-			// rather than silently falling through to the wrong (plain default) upstream.
-			for j, fb := range fallbacks {
-				if !fb.hasExplicitOverride() {
-					return nil, fmt.Errorf("model-failover: targets[%d] redirects its own primary attempt (provider/upstreamDefinition set) — targets[%d].fallbacks[%d] must also set provider or upstreamDefinition; there is no primary attempt left to reuse", i, i, j)
-				}
-			}
-		}
-
-		targetByModel[model] = len(targets)
+		targetByModel[key] = len(targets)
 		targets = append(targets, targetGroup{
-			model:              model,
-			provider:           provider,
-			upstreamDefinition: upstreamDefinition,
-			fallbacks:          fallbacks,
+			model:     model,
+			provider:  provider,
+			fallbacks: fallbacks,
 		})
 	}
 
@@ -376,9 +375,10 @@ func getStringParam(params map[string]interface{}, key string) string {
 	return ""
 }
 
-// Mode: needs the request body buffered — to decide a target-level provider/upstreamDefinition
-// redirect in OnRequestBody, and so it survives into ResponseHeaderContext.RequestBody for
-// replay in OnResponseHeaders. No request-HEADER phase hook: provider-selection publishing is
+// Mode: needs the request body buffered so it survives into ResponseHeaderContext.RequestBody,
+// where OnResponseHeaders re-extracts the client's model to select a target group on a genuine
+// primary failure — NOT because OnRequestBody itself needs the body; it never reads it (see the
+// package doc). No request-HEADER phase hook: provider-selection publishing is
 // llm-header-router's job (see the package doc), not this policy's. Never needs the response
 // body — a failing response's body is discarded, an ImmediateResponse replaces it before the
 // kernel forwards a single byte downstream.
@@ -391,13 +391,35 @@ func (p *Policy) Mode() policy.ProcessingMode {
 	}
 }
 
-// groupByModel looks up a target group by the client-requested model name.
-func (p *Policy) groupByModel(model string) (targetGroup, bool) {
-	idx, ok := p.targetByModel[model]
-	if !ok {
-		return targetGroup{}, false
+// groupByModel looks up a target group by the client-requested model name and the primary
+// request's own provider (empty if the primary request carried no providerHeaderName header —
+// see requestedProvider in OnResponseHeaders). An exact (model, provider) match wins; if none
+// exists, falls back to a provider-agnostic (model, "") target so a config that never declares
+// per-provider targets — the common single-provider-proxy case — is unaffected by any of this.
+func (p *Policy) groupByModel(model, provider string) (targetGroup, bool) {
+	if provider != "" {
+		if idx, ok := p.targetByModel[targetKey{model: model, provider: provider}]; ok {
+			return p.targets[idx], true
+		}
 	}
-	return p.targets[idx], true
+	if idx, ok := p.targetByModel[targetKey{model: model}]; ok {
+		return p.targets[idx], true
+	}
+	return targetGroup{}, false
+}
+
+// requestedProvider reads providerHeaderName off the primary request's own headers — the same
+// header llm-header-router reads to decide which provider the primary attempt actually went to
+// (see the package doc). Empty if absent, which groupByModel treats as "no provider to match
+// against" rather than an error.
+func requestedProvider(headers *policy.Headers) string {
+	if headers == nil {
+		return ""
+	}
+	if vals := headers.Get(providerHeaderName); len(vals) > 0 {
+		return vals[0]
+	}
+	return ""
 }
 
 // dialTimeout returns the configured per-attempt timeout, or defaultDialTimeout if unset.
@@ -433,89 +455,46 @@ func downstreamHeaders(d *policy.DownstreamContext) *policy.Headers {
 	return d.Request.Headers
 }
 
-// OnRequestBody redirects a target's PRIMARY attempt to its own declared provider or
-// upstreamDefinition, if any — a target with neither (the common case) is left completely
-// untouched: no mutation, exactly today's default-routing behavior.
+// downstreamBody returns the client's own request body as a snapshot captured by the
+// kernel BEFORE any policy's body-phase hook ran — the body-phase counterpart to
+// downstreamHeaders above, and unused for the exact same reason it exists: whatever an
+// earlier body-mutating policy already turned the request into (e.g. a translator or a
+// prompt-decorator rewriting the payload for the PRIMARY's own dispatch) must never be
+// accidentally carried into a redial meant for a completely different backend — every
+// fallback/override attempt replays the client's TRUE original body, not whatever the
+// live, mutable RequestContext.Body/ResponseHeaderContext.RequestBody currently holds.
+// nil if unavailable (in particular: a streaming request body, where no single complete
+// body ever exists to snapshot).
+func downstreamBody(d *policy.DownstreamContext) []byte {
+	if d == nil || d.Request == nil || d.Request.Body == nil {
+		return nil
+	}
+	return d.Request.Body.Content
+}
+
+// OnRequestBody never touches, redirects, or even reads the body of a genuine client request —
+// the client's primary attempt always reaches whatever the rest of the operation's own policy
+// chain and Envoy's own default routing already resolve it to (see the package doc). Its only
+// possible action is routing this policy's OWN self-redial, on that redial's fresh pass back
+// through this same operation, to the same-provider upstream its originating fallback declared.
 //
-// The modelFailoverRedialHeader guard is checked first: it's set on every self-redial this
+// The modelFailoverRedialHeader guard identifies that case: it's set on every self-redial this
 // policy originates itself (see dispatch.go), so seeing it here means this IS one of this
-// policy's own redials re-entering the operation, not a genuine client request — pass it
-// through untouched rather than trying to redirect it all over again (see the package doc). The
-// one exception is modelFailoverUpstreamDefHeader: a same-provider FALLBACK's own
-// upstreamDefinition redirect has no pre-dial moment of its own to apply the in-process
-// UpstreamName swap (the primary already failed by the time a fallback runs — see the package
-// doc), so it rides the self-redial and applies the swap here instead, on the redial's own
-// fresh pass. This is a narrow, deliberate carve-out from the guard's usual blanket passthrough
-// — it never re-triggers target-matching, so it can't recurse.
-func (p *Policy) OnRequestBody(ctx context.Context, rctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
+// policy's own redials re-entering the operation, never a genuine client request. A cross-
+// provider redial needs nothing further from this policy (routing is llm-header-router's job,
+// via providerHeaderName, not this one's — see the package doc), so it falls through to the
+// same untouched passthrough as everything else. A same-provider redial carries
+// modelFailoverUpstreamDefHeader instead: that fallback's upstreamDefinition has no pre-dial
+// moment of its own to apply the in-process UpstreamName swap (the primary already failed by
+// the time a fallback runs), so it applies the swap here, on the redial's own fresh pass.
+func (p *Policy) OnRequestBody(_ context.Context, rctx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	if rctx.Headers != nil && rctx.Headers.Has(modelFailoverRedialHeader) {
 		if vals := rctx.Headers.Get(modelFailoverUpstreamDefHeader); len(vals) > 0 && vals[0] != "" {
 			upstreamName := vals[0]
 			return policy.UpstreamRequestModifications{UpstreamName: &upstreamName}
 		}
-		return policy.UpstreamRequestModifications{}
 	}
-	if rctx.Body == nil || !rctx.Body.Present {
-		return policy.UpstreamRequestModifications{}
-	}
-
-	requestedModel, err := extractRequestedModel(p.requestModel, rctx.Body.Content, rctx.Headers, rctx.Path)
-	if err != nil {
-		slog.WarnContext(ctx, "ModelFailover: could not extract request model, failing open (no redirect)", "error", err)
-		return policy.UpstreamRequestModifications{}
-	}
-
-	group, matched := p.groupByModel(requestedModel)
-	if !matched {
-		return policy.UpstreamRequestModifications{}
-	}
-
-	switch {
-	case group.provider != "":
-		return p.redirectTargetProvider(ctx, rctx, group)
-
-	case group.upstreamDefinition != "":
-		// Same-provider redirect — plain in-process routing, no auth/template complexity.
-		upstreamName := group.upstreamDefinition
-		return policy.UpstreamRequestModifications{UpstreamName: &upstreamName}
-
-	default:
-		return policy.UpstreamRequestModifications{}
-	}
-}
-
-// redirectTargetProvider handles a target whose own primary attempt crosses providers: try the
-// declared provider via a self-redial, and if that fails, walk the target's own fallback chain
-// (GetPolicy already requires every one of those to have an explicit redirect target too — see
-// the package doc). If nothing succeeds, there is no sensible default to fall through to (that's
-// why this target declared an override in the first place), so this returns an honest, generic
-// failure rather than fabricating or silently passing through an unrelated response.
-func (p *Policy) redirectTargetProvider(ctx context.Context, rctx *policy.RequestContext, group targetGroup) policy.RequestAction {
-	path := downstreamPath(rctx.Downstream)
-	if resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, group.provider, "", rctx.Body.Content, group.model); ok {
-		return resp
-	}
-
-	order := p.orderedFallbackIndices(ctx, rctx.SharedContext, group)
-	for _, idx := range order {
-		fb := group.fallbacks[idx]
-		// fb always hasExplicitOverride() here — GetPolicy rejects a bare "reuse primary"
-		// fallback under a target that itself redirects.
-		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rctx.Method, rctx.Headers, fb.provider, fb.upstreamDefinition, rctx.Body.Content, fb.model)
-		if !ok {
-			if p.suspendDuration > 0 {
-				p.suspend.Suspend(ctx, suspendKey(rctx.SharedContext, group.model, idx), p.suspendDuration)
-			}
-			continue
-		}
-		return resp
-	}
-
-	return policy.ImmediateResponse{
-		StatusCode: http.StatusBadGateway,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       []byte(noProviderAvailableBody),
-	}
+	return policy.UpstreamRequestModifications{}
 }
 
 // OnResponseHeaders drives the fallback retry loop after a NORMAL primary attempt has already
@@ -552,20 +531,22 @@ func (p *Policy) OnResponseHeaders(ctx context.Context, rhctx *policy.ResponseHe
 		return policy.DownstreamResponseHeaderModifications{}
 	}
 
-	group, matched := p.groupByModel(requestedModel)
+	group, matched := p.groupByModel(requestedModel, requestedProvider(rhctx.RequestHeaders))
 	if !matched || len(group.fallbacks) == 0 {
 		return policy.DownstreamResponseHeaderModifications{}
 	}
 
 	path := downstreamPath(rhctx.Downstream)
+	headers := downstreamHeaders(rhctx.Downstream)
+	body := downstreamBody(rhctx.Downstream)
 	order := p.orderedFallbackIndices(ctx, rhctx.SharedContext, group)
 	for _, idx := range order {
 		fb := group.fallbacks[idx]
 
-		resp, ok := p.trySelfRedial(ctx, p.selfBaseURL, path, rhctx.RequestMethod, rhctx.RequestHeaders, fb.provider, fb.upstreamDefinition, rhctx.RequestBody.Content, fb.model)
+		resp, ok := p.trySelfRedial(ctx, rhctx.SharedContext, p.selfBaseURL, path, rhctx.RequestMethod, headers, fb.provider, fb.upstreamDefinition, body, fb.model)
 		if !ok {
 			if p.suspendDuration > 0 {
-				p.suspend.Suspend(ctx, suspendKey(rhctx.SharedContext, group.model, idx), p.suspendDuration)
+				p.suspend.Suspend(ctx, suspendKey(rhctx.SharedContext, group.model, group.provider, idx), p.suspendDuration)
 			}
 			continue
 		}
@@ -591,7 +572,7 @@ func (p *Policy) orderedFallbackIndices(ctx context.Context, shared *policy.Shar
 	}
 	var suspended []int
 	for i := 0; i < n; i++ {
-		if p.suspend.IsSuspended(ctx, suspendKey(shared, group.model, i)) {
+		if p.suspend.IsSuspended(ctx, suspendKey(shared, group.model, group.provider, i)) {
 			suspended = append(suspended, i)
 			continue
 		}
@@ -600,14 +581,15 @@ func (p *Policy) orderedFallbackIndices(ctx context.Context, shared *policy.Shar
 	return append(order, suspended...)
 }
 
-// suspendKey scopes suspend state to this specific API/operation, target group, and fallback
-// index — two different groups (or two different operations) using model-failover must never
-// share suspend state.
-func suspendKey(shared *policy.SharedContext, groupModel string, fallbackIndex int) string {
+// suspendKey scopes suspend state to this specific API/operation, target group (model +
+// provider — two targets sharing a model but disambiguated by provider must never share suspend
+// state either), and fallback index — two different groups (or two different operations) using
+// model-failover must never share suspend state.
+func suspendKey(shared *policy.SharedContext, groupModel, groupProvider string, fallbackIndex int) string {
 	if shared == nil {
-		return fmt.Sprintf("model-failover:unknown:unknown:%s:%d", groupModel, fallbackIndex)
+		return fmt.Sprintf("model-failover:unknown:unknown:%s:%s:%d", groupModel, groupProvider, fallbackIndex)
 	}
-	return fmt.Sprintf("model-failover:%s:%s:%s:%d", shared.APIId, shared.OperationPath, groupModel, fallbackIndex)
+	return fmt.Sprintf("model-failover:%s:%s:%s:%s:%d", shared.APIId, shared.OperationPath, groupModel, groupProvider, fallbackIndex)
 }
 
 // ─── Suspend store ─────────────────────────────────────────────────────────────

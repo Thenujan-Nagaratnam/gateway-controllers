@@ -22,9 +22,11 @@ parameters:
       description: |
         Bedrock model or inference-profile id placed in the request path
         (for example anthropic.claude-3-5-sonnet-20241022-v2:0 or
-        us.anthropic.claude-sonnet-4-5-20250929-v1:0). When configured, it
-        overrides the OpenAI "model" field; when omitted, the request's model
-        field is used.
+        us.anthropic.claude-sonnet-4-5-20250929-v1:0). Optional: the
+        client's own model wins when present — read via the "requestModel"
+        systemParameter (the location gateway-controller injects from the
+        proxy's own primary-provider template) if set, else a plain
+        top-level "model" field — and this is used only as a fallback.
       minLength: 1
     providerId:
       type: string

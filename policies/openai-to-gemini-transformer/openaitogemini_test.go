@@ -19,20 +19,133 @@
 package openaitogemini
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
-func TestGetPolicy_RequiresModel(t *testing.T) {
-	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err == nil {
-		t.Fatal("expected error when 'model' param is missing")
+func TestGetPolicy_ModelIsOptionalAtConfigTime(t *testing.T) {
+	// Unlike before payload-fallback support, an absent 'model' param is not
+	// a config-time error - resolveModel enforces "payload or config, at
+	// least one" per request instead (see TestOnRequestBody_RejectsMissingFallbackModel).
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err != nil {
+		t.Fatalf("model override should be optional: %v", err)
 	}
 	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
 		"model": "gemini-2.5-flash", "providerId": "gemini-provider",
 	}); err != nil {
 		t.Fatalf("unexpected error for valid params: %v", err)
+	}
+}
+
+func TestGetPolicy_ParsesRequestModel(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"requestModel": map[string]interface{}{"location": "payload", "identifier": "$.model"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tp := p.(*TranslatorPolicy)
+	if tp.params.RequestModel.Location != "payload" || tp.params.RequestModel.Identifier != "$.model" {
+		t.Fatalf("requestModel not parsed into params: %#v", tp.params.RequestModel)
+	}
+
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{}); err != nil {
+		t.Fatalf("requestModel should be optional: %v", err)
+	}
+
+	if _, err := GetPolicy(policy.PolicyMetadata{}, map[string]interface{}{
+		"requestModel": map[string]interface{}{"location": "header", "identifier": "x-model"},
+	}); err == nil {
+		t.Fatal("expected an error for a non-payload requestModel.location")
+	}
+}
+
+// TestOnRequestBody_UsesInjectedRequestModelJsonPath proves resolveModel
+// actually follows the PROXY's own template's requestModel identifier (here
+// deliberately NOT the default "$.model", so a pass can't be a coincidence of
+// a hardcoded lookup) rather than always reading a fixed top-level field.
+func TestOnRequestBody_UsesInjectedRequestModelJsonPath(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{
+		APIVersion:   DefaultAPIVersion,
+		RequestModel: requestModelConfig{Location: "payload", Identifier: "$.routing.modelName"},
+	}}
+	shared := &policy.SharedContext{Metadata: map[string]interface{}{}}
+	req := &policy.RequestContext{
+		SharedContext: shared,
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"routing":{"modelName":"gemini-2.5-pro-via-custom-path"},"messages":[{"role":"user","content":"hi"}]}`)},
+	}
+	action := p.OnRequestBody(context.Background(), req, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	want := "/v1beta/models/gemini-2.5-pro-via-custom-path:generateContent"
+	if mods.Path == nil || *mods.Path != want {
+		t.Fatalf("expected the model read via requestModel's JSONPath, path %q, got %v", want, mods.Path)
+	}
+	if got := shared.Metadata[MetadataKeyEffectiveModel]; got != "gemini-2.5-pro-via-custom-path" {
+		t.Fatalf("effective model was not stored in request metadata: %v", got)
+	}
+}
+
+func TestOnRequestBody_FallsBackToRequestModel(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{APIVersion: DefaultAPIVersion}}
+	shared := &policy.SharedContext{Metadata: map[string]interface{}{}}
+	req := &policy.RequestContext{
+		SharedContext: shared,
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"model":"gemini-2.5-pro-from-payload","messages":[{"role":"user","content":"hi"}]}`)},
+	}
+	action := p.OnRequestBody(context.Background(), req, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	want := "/v1beta/models/gemini-2.5-pro-from-payload:generateContent"
+	if mods.Path == nil || *mods.Path != want {
+		t.Fatalf("expected fallback path %q, got %v", want, mods.Path)
+	}
+	if got := shared.Metadata[MetadataKeyEffectiveModel]; got != "gemini-2.5-pro-from-payload" {
+		t.Fatalf("effective model was not stored in request metadata: %v", got)
+	}
+}
+
+func TestOnRequestBody_PayloadModelWinsOverConfiguredModel(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{APIVersion: DefaultAPIVersion, Model: "gemini-2.5-flash-configured"}}
+	req := &policy.RequestContext{
+		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+		Body: &policy.Body{Present: true, Content: []byte(
+			`{"model":"gemini-2.5-pro-should-win","messages":[{"role":"user","content":"hi"}]}`)},
+	}
+	action := p.OnRequestBody(context.Background(), req, nil)
+	mods, ok := action.(policy.UpstreamRequestModifications)
+	if !ok {
+		t.Fatalf("expected UpstreamRequestModifications, got %T", action)
+	}
+	want := "/v1beta/models/gemini-2.5-pro-should-win:generateContent"
+	if mods.Path == nil || *mods.Path != want {
+		t.Fatalf("expected the payload's model to win, path %q, got %v", want, mods.Path)
+	}
+}
+
+func TestOnRequestBody_RejectsMissingFallbackModel(t *testing.T) {
+	p := &TranslatorPolicy{params: PolicyParams{APIVersion: DefaultAPIVersion}}
+	for _, body := range []string{
+		`{"messages":[]}`,
+		`{"model":"","messages":[]}`,
+		`{"model":42,"messages":[]}`,
+	} {
+		action := p.OnRequestBody(context.Background(), &policy.RequestContext{
+			SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}},
+			Body:          &policy.Body{Present: true, Content: []byte(body)},
+		}, nil)
+		if response, ok := action.(policy.ImmediateResponse); !ok || response.StatusCode != 400 {
+			t.Errorf("expected a 400 response for body %s, got %#v", body, action)
+		}
 	}
 }
 
