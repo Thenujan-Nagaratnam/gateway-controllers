@@ -1,0 +1,151 @@
+name: byo-guardrail
+version: v0.1.0
+description: |
+  Bring Your Own Guardrail: validate LLM request and/or response content against a
+  guardrail service you write and host yourself, via a simple JSON/HTTP contract.
+
+  The gateway POSTs the extracted text to `endpoint` as:
+    {"content": "<text>", "direction": "REQUEST"|"RESPONSE", "requestId": "<id>"}
+
+  Your service responds with:
+    {
+      "verdict": "ALLOW" | "BLOCK" | "MODIFY",
+      "reason": "human-readable explanation, used when verdict is BLOCK",
+      "modifiedContent": "replacement text, required when verdict is MODIFY",
+      "assessment": {"any": "string key/value pairs"},
+      "interveningGuardrail": "optional override of the guardrailName below"
+    }
+
+  ALLOW passes the request/response through unchanged. BLOCK short-circuits with a 422
+  response. MODIFY transparently rewrites the same JSON field the content was extracted
+  from with `modifiedContent` and continues processing.
+
+  SECURITY NOTE: `endpoint` is an arbitrary, policy-instance-configured URL - unlike the
+  fixed vendor endpoints used by other guardrail policies. This policy currently validates
+  it statically at deploy time (http/https scheme only, no embedded userinfo) but does not
+  yet apply a dial-time SSRF guard against private/loopback/link-local/metadata addresses
+  (that capability, utils.SharedHTTPClient's optional SSRF guard, isn't in a published
+  sdk/core release yet). Only expose this policy to API authors you'd trust to configure an
+  arbitrary outbound destination until that guard is wired in.
+
+parameters:
+  type: object
+  properties:
+    endpoint:
+      type: string
+      minLength: 1
+      x-wso2-policy-advanced-param: false
+      description: |
+        Full URL of your guardrail service's evaluation endpoint
+        (e.g. "https://my-guardrail.example.com/evaluate"). Must be an absolute
+        http:// or https:// URL with no embedded userinfo.
+    guardrailName:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        Name used in the "interveningGuardrail" field of the 422 error response,
+        unless a GuardrailDecision overrides it via its own interveningGuardrail field.
+      default: "BYOGuardrail"
+    auth:
+      type: object
+      description: Authentication to attach to every call to `endpoint`.
+      x-wso2-policy-advanced-param: true
+      properties:
+        type:
+          type: string
+          enum: ["none", "apiKey"]
+          default: "none"
+          description: |
+            "none" sends no credential. "apiKey" attaches apiKeyValue as a header.
+        headerName:
+          type: string
+          default: "Authorization"
+          description: Header name used to carry the API key when auth.type is "apiKey".
+        valuePrefix:
+          type: string
+          default: "Bearer "
+          description: |
+            Prefix prepended to apiKeyValue before setting the header
+            (e.g. "Bearer " for an Authorization header, "" for a raw x-api-key value).
+        apiKeyValue:
+          type: string
+          description: The API key/token value. Required when auth.type is "apiKey".
+      required:
+        - type
+    request:
+      type: object
+      description: Configuration for request phase evaluation.
+      properties:
+        enabled:
+          type: boolean
+          x-wso2-policy-advanced-param: false
+          default: true
+          description: Enables evaluation for the request flow.
+        jsonPath:
+          type: string
+          x-wso2-policy-advanced-param: false
+          default: "$.messages[-1].content"
+          description: JSONPath expression identifying the text to extract/rewrite.
+        passthroughOnError:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          default: false
+          description: |
+            If true, allows requests to proceed if your guardrail service call fails
+            (unreachable, times out, oversized response, malformed reply, unknown
+            verdict). If false (default), blocks requests on such errors.
+        showAssessment:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          default: false
+          description: |
+            If true, includes the "assessment" map returned by your guardrail service
+            in the 422 error response body.
+    response:
+      type: object
+      description: Configuration for response phase evaluation.
+      properties:
+        enabled:
+          type: boolean
+          x-wso2-policy-advanced-param: false
+          default: false
+          description: Enables evaluation for the response flow.
+        jsonPath:
+          type: string
+          x-wso2-policy-advanced-param: false
+          default: "$.choices[0].message.content"
+          description: JSONPath expression identifying the text to extract/rewrite.
+        passthroughOnError:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          default: false
+          description: |
+            If true, allows responses to proceed if your guardrail service call fails.
+            If false (default), blocks responses on such errors.
+        showAssessment:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          default: false
+          description: |
+            If true, includes the "assessment" map returned by your guardrail service
+            in the 422 error response body.
+    requestTimeout:
+      type: number
+      x-wso2-policy-advanced-param: true
+      default: 10
+      description: HTTP request timeout in seconds for calls to `endpoint`.
+    maxResponseBytes:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      default: 1048576
+      description: |
+        Maximum number of bytes read from your guardrail service's response.
+        Protects against unbounded memory use. A response exceeding this limit is
+        treated as an error (subject to passthroughOnError).
+  required:
+    - endpoint
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

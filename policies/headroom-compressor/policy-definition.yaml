@@ -1,0 +1,73 @@
+name: headroom-compressor
+version: v0.1.0
+displayName: Headroom Compressor
+description: |
+  Compresses the request's message history via Headroom
+  (https://github.com/headroomlabs-ai/headroom) just before the upstream LLM
+  call, to reduce token usage. Unlike a single-field text compressor, this
+  policy targets the whole messages array (selected by jsonPath) and lets
+  Headroom's pipeline decide what to compress per-message (tool outputs,
+  logs, and RAG-style content are prioritized; the most recent turns are
+  protected by default).
+
+  The policy is request-side only - Headroom compresses what the model
+  reads, not what it writes back.
+
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    jsonPath:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        JSONPath expression that resolves to the messages array to compress.
+        Must resolve to a JSON array of {role, content, ...} message objects.
+      default: "$.messages"
+    model:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: |
+        Model name used for token counting/compression tuning. If omitted,
+        the policy uses the request body's own top-level "model" field; if
+        neither is available, the request is left uncompressed.
+    modelLimit:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: |
+        The model's context window size in tokens, used by Headroom to scale
+        compression aggressiveness.
+      default: 200000
+    targetRatio:
+      type: number
+      x-wso2-policy-advanced-param: true
+      description: |
+        Fraction of tokens to retain in compressed (text) segments, e.g. 0.5
+        keeps roughly half. Must be in the range (0, 1]. Omit to let
+        Headroom decide (~15% kept by default - aggressive).
+    compressUserMessages:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: |
+        Also compress user-authored messages, not just tool/assistant
+        output. Off by default, since coding-agent-style traffic usually
+        wants user turns preserved verbatim.
+      default: false
+    protectRecent:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: |
+        Number of most recent messages to leave uncompressed (the active
+        turn of the conversation). Omit to use Headroom's own default (4).
+    minTokensToCompress:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: |
+        Minimum estimated token count for a message to be considered for
+        compression; shorter messages are always left unchanged. Omit to
+        use Headroom's own default (250).
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
