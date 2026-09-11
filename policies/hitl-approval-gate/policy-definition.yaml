@@ -1,0 +1,103 @@
+name: hitl-approval-gate
+version: v0.1.0
+description: |
+  Human-in-the-loop approval checkpoint for high-risk agent tool calls
+  (Agentic AI T2 Tool Misuse / T3 Privilege Compromise, OWASP LLM06 Excessive
+  Agency). An autonomous agent that can call issue_refund, delete_database,
+  send_wire_transfer, etc. on its own is one bad plan away from a real-world
+  incident; this policy makes those specific tools require a recorded human
+  decision before the call ever reaches the backend.
+
+  Request-phase, self-contained (no new listener needed):
+    1. An agent calls a tool matching `highRiskTools` with no approval token
+       -> the policy mints a random approval id, optionally POSTs a
+       notification to `notifyUrl` (Slack/Teams/custom webhook - best effort,
+       never blocks on notify failure), and blocks with 403 PENDING_APPROVAL
+       carrying that id.
+    2. An approver (a human via a small internal tool, or a bot) submits the
+       decision back through the SAME route, as a body shaped
+       `{"approvalDecision": {"approvalId": "...", "decision": "approve|deny",
+       "approver": "...", "reason": "..."}}`, authenticated by a shared
+       secret header (`approverSecretHeader`, compared in constant time) -
+       never by anything the original agent could have seen. This call is
+       answered directly by the policy and never forwarded upstream.
+    3. The agent resubmits the identical tool call with the approval id in
+       `approvalTokenHeader`. The policy recomputes the tool+arguments hash
+       and only forwards if it matches what was actually approved - an
+       approval never covers a different call than the one a human reviewed.
+       A denied or expired decision blocks permanently / re-prompts.
+
+  Pending/decided state is kept in an in-process map guarded by a mutex,
+  bounded by `expirySeconds` and an absolute tracked-approval cap - correct
+  for a single gateway-runtime replica; a future version can move it to the
+  SDK's shared store once one is available.
+
+parameters:
+  type: object
+  properties:
+    highRiskTools:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: Tool names requiring human approval. Glob patterns ('*', '?') are supported (e.g. "delete_*").
+      items:
+        type: string
+      minItems: 1
+    approverSecret:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: Shared secret an approver must present (in approverSecretHeader) to record a decision. Required - there is no default, so a misconfigured deployment fails to register rather than silently accepting unauthenticated approvals.
+      minLength: 16
+    approverSecretHeader:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "x-approver-secret"
+    approvalTokenHeader:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: Header the ORIGINAL caller resubmits with the approval id once a decision has been made.
+      default: "x-approval-token"
+    decisionMarkerPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: JSONPath whose presence in the body identifies an approval-decision submission rather than a tool call.
+      default: "$.approvalDecision"
+    toolNameJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.params.name"
+    argumentsJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.params.arguments"
+    expirySeconds:
+      type: number
+      x-wso2-policy-advanced-param: false
+      description: How long a pending or decided approval stays valid.
+      default: 300
+      minimum: 30
+    notifyUrl:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: Optional webhook (Slack/Teams/custom) POSTed a JSON notification when a new approval is needed. Best-effort - a failed notification never blocks the pending response.
+    notifyTimeoutSeconds:
+      type: number
+      x-wso2-policy-advanced-param: true
+      default: 5
+      minimum: 1
+    pendingStatusCode:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      default: 403
+    includeArguments:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: Include the tool's arguments in the pending-approval response body shown to the caller. Off by default to avoid echoing sensitive call arguments back over the wire.
+      default: false
+  required:
+    - highRiskTools
+    - approverSecret
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
