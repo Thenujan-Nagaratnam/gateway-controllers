@@ -1,0 +1,1106 @@
+{
+  "info": {
+    "name": "ai-content-disclosure e2e",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090"
+    },
+    {
+      "key": "controllerAdminUrl",
+      "value": "localhost:9094"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8443"
+    },
+    {
+      "key": "mockUrl",
+      "value": "localhost:9761"
+    },
+    {
+      "key": "mockPort",
+      "value": "9761"
+    },
+    {
+      "key": "adminAuthHeader",
+      "value": "Basic YWRtaW46YWRtaW4="
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "item": [
+        {
+          "name": "mock healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/healthz",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mock up',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "controller health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+              "protocol": "http",
+              "host": [
+                "{{controllerAdminUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "v1",
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('controller up',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway reachable",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": []
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gw',()=>pm.expect(pm.response.code).to.be.oneOf([200,404]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 - Register",
+      "item": [
+        {
+          "name": "Register provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: disclosure-e2e-provider\nspec:\n  displayName: AI Content Disclosure E2E Provider\n  version: v1.0\n  template: openai\n  upstream:\n    url: http://host.docker.internal:{{mockPort}}\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register disclosure-append",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: disclosure-append\nspec:\n  displayName: disclosure-append\n  version: v1.0\n  context: /disclosure-append\n  provider:\n    id: disclosure-e2e-provider\n  policies:\n    - name: ai-content-disclosure\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            disclosureText: \"This content was generated by an AI system.\"\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register disclosure-prepend",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: disclosure-prepend\nspec:\n  displayName: disclosure-prepend\n  version: v1.0\n  context: /disclosure-prepend\n  provider:\n    id: disclosure-e2e-provider\n  policies:\n    - name: ai-content-disclosure\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            disclosureText: \"AI-GENERATED CONTENT\"\n            placement: prepend\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register disclosure-metadata",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: disclosure-metadata\nspec:\n  displayName: disclosure-metadata\n  version: v1.0\n  context: /disclosure-metadata\n  provider:\n    id: disclosure-e2e-provider\n  policies:\n    - name: ai-content-disclosure\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            placement: metadata-only\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register disclosure-invisible",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: disclosure-invisible\nspec:\n  displayName: disclosure-invisible\n  version: v1.0\n  context: /disclosure-invisible\n  provider:\n    id: disclosure-e2e-provider\n  policies:\n    - name: ai-content-disclosure\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            placement: metadata-only\n            embedInvisibleMarker: true\n            invisibleMarkerTag: \"AI-GEN\"\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register disclosure-custom-standard",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: disclosure-custom-standard\nspec:\n  displayName: disclosure-custom-standard\n  version: v1.0\n  context: /disclosure-custom-standard\n  provider:\n    id: disclosure-e2e-provider\n  policies:\n    - name: ai-content-disclosure\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            disclosureStandard: \"ca-ai-transparency-act\"\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register disclosure-min-chars",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: disclosure-min-chars\nspec:\n  displayName: disclosure-min-chars\n  version: v1.0\n  context: /disclosure-min-chars\n  provider:\n    id: disclosure-e2e-provider\n  policies:\n    - name: ai-content-disclosure\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            disclosureText: \"AI NOTICE\"\n            minContentChars: 20\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register disclosure-invalid",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: disclosure-invalid\nspec:\n  displayName: disclosure-invalid\n  version: v1.0\n  context: /disclosure-invalid\n  provider:\n    id: disclosure-e2e-provider\n  policies:\n    - name: ai-content-disclosure\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            embedInvisibleMarker: true\n            invisibleMarkerTag: \"\"\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Default placement (append) adds a visible notice and headers",
+      "item": [
+        {
+          "name": "call -> 200, notice appended, headers set",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/disclosure-append/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "disclosure-append",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"hello world\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200',()=>pm.response.to.have.status(200));",
+                  "const j=pm.response.json();",
+                  "const content=j.choices[0].message.content;",
+                  "pm.test('original reply preserved at the start',()=>pm.expect(content.startsWith('hello world')).to.eql(true));",
+                  "pm.test('notice appended',()=>pm.expect(content.endsWith('This content was generated by an AI system.')).to.eql(true));",
+                  "pm.test('x-ai-generated header',()=>pm.expect(pm.response.headers.get('x-ai-generated')).to.eql('true'));",
+                  "pm.test('x-ai-disclosure-standard header',()=>pm.expect(pm.response.headers.get('x-ai-disclosure-standard')).to.eql('eu-ai-act-art50'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a reply that already carries the notice is not disclosed twice",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/disclosure-append/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "disclosure-append",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"already disclosed reply\\n\\nThis content was generated by an AI system.\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "const content=j.choices[0].message.content;",
+                  "const count=(content.match(/This content was generated by an AI system\\./g)||[]).length;",
+                  "pm.test('notice appears exactly once, not duplicated',()=>pm.expect(count).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - placement=prepend adds the notice before the reply",
+      "item": [
+        {
+          "name": "call -> notice appears first",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/disclosure-prepend/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "disclosure-prepend",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"the actual answer\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "const content=j.choices[0].message.content;",
+                  "pm.test('starts with the notice',()=>pm.expect(content.startsWith('AI-GENERATED CONTENT')).to.eql(true));",
+                  "pm.test('ends with the original reply',()=>pm.expect(content.endsWith('the actual answer')).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - placement=metadata-only leaves the reply text untouched",
+      "item": [
+        {
+          "name": "call -> text unchanged, header still set",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/disclosure-metadata/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "disclosure-metadata",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"unchanged text\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "pm.test('content is exactly the original reply',()=>pm.expect(j.choices[0].message.content).to.eql('unchanged text'));",
+                  "pm.test('header still set',()=>pm.expect(pm.response.headers.get('x-ai-generated')).to.eql('true'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Invisible marker is embedded but not visible",
+      "item": [
+        {
+          "name": "call -> zero-width tag embedded, visible text unchanged when stripped",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/disclosure-invisible/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "disclosure-invisible",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"plain reply\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "const content=j.choices[0].message.content;",
+                  "pm.test('longer than the original (invisible chars added)',()=>pm.expect(content.length).to.be.above('plain reply'.length));",
+                  "const stripped=content.replace(/[\\u2060\\u200B\\u200C]/g,'');",
+                  "pm.test('visible text unchanged once zero-width chars are stripped',()=>pm.expect(stripped).to.eql('plain reply'));",
+                  "const delimiters=(content.match(/\\u2060/g)||[]).length;",
+                  "pm.test('exactly two WORD JOINER delimiters (start+end)',()=>pm.expect(delimiters).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - disclosureStandard is reflected in the header",
+      "item": [
+        {
+          "name": "call -> custom standard header",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/disclosure-custom-standard/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "disclosure-custom-standard",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('custom standard header',()=>pm.expect(pm.response.headers.get('x-ai-disclosure-standard')).to.eql('ca-ai-transparency-act'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - minContentChars skips disclosure for very short replies",
+      "item": [
+        {
+          "name": "short reply -> no disclosure",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/disclosure-min-chars/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "disclosure-min-chars",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "pm.test('content unchanged',()=>pm.expect(j.choices[0].message.content).to.eql('hi'));",
+                  "pm.test('no header',()=>pm.expect(pm.response.headers.has('x-ai-generated')).to.eql(false));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "long reply -> disclosed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/disclosure-min-chars/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "disclosure-min-chars",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"this reply is definitely long enough\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "pm.test('notice appended',()=>pm.expect(j.choices[0].message.content).to.include('AI NOTICE'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 - Invalid config accepted at registration but the route never discloses",
+      "item": [
+        {
+          "name": "disclosure-invalid route forwards without any disclosure",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/disclosure-invalid/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "disclosure-invalid",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('misconfigured route: never blocks, but also never discloses',()=>{",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200,404,500]);",
+                  "  if (pm.response.code===200) pm.expect(pm.response.headers.has('x-ai-generated')).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "09 - Cleanup",
+      "item": [
+        {
+          "name": "Delete disclosure-append",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/disclosure-append",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "disclosure-append"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete disclosure-prepend",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/disclosure-prepend",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "disclosure-prepend"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete disclosure-metadata",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/disclosure-metadata",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "disclosure-metadata"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete disclosure-invisible",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/disclosure-invisible",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "disclosure-invisible"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete disclosure-custom-standard",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/disclosure-custom-standard",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "disclosure-custom-standard"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete disclosure-min-chars",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/disclosure-min-chars",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "disclosure-min-chars"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete disclosure-invalid",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/disclosure-invalid",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "disclosure-invalid"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete provider",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/disclosure-e2e-provider",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "disclosure-e2e-provider"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
