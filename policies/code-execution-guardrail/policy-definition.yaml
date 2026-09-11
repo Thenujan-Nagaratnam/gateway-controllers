@@ -1,0 +1,82 @@
+name: code-execution-guardrail
+version: v0.1.0
+description: |
+  Static firewall for code-interpreter-style tool calls (OWASP Agentic AI Top
+  10: ASI05 - Unexpected Code Execution). Agents increasingly carry a
+  `run_code`/`run_python`/`execute_shell`-style tool, and whatever code goes
+  into that tool call - agent-generated, or smuggled in via an indirect
+  prompt injection the agent never questioned - executes with whatever
+  privilege the interpreter backend has. This policy inspects that code
+  BEFORE the call reaches the backend and blocks the patterns that turn "run
+  this snippet" into a real incident.
+
+  Deterministic pattern matching, not a language parser or a sandbox:
+    - shell/OS command execution (`os.system`, `subprocess`, backticks,
+      `exec`/`eval`, pipe-to-shell idioms)
+    - outbound network access to private/loopback/link-local/cloud-metadata
+      addresses (the same SSRF-shaped address classes every other network
+      guardrail in this gateway blocks)
+    - destructive or escaping filesystem operations (recursive deletes,
+      writes outside an allow-listed prefix, credential-file paths like
+      `~/.aws/credentials` or `~/.ssh`)
+    - privilege escalation (`sudo`, `chmod +s`, `setuid`)
+    - dynamic code loading / obfuscated eval chains
+    - reading environment variables or common secret-file locations
+
+  Only applies to tool calls whose name matches `codeToolNames` - everything
+  else passes through untouched. A pattern match blocks (422) or annotates,
+  your choice; the specific matched category always goes to
+  AnalyticsMetadata, never into the client-facing reason by default.
+
+parameters:
+  type: object
+  properties:
+    codeToolNames:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: Tool names that carry executable code. Glob patterns ('*', '?') are supported (e.g. "run_*").
+      items:
+        type: string
+      minItems: 1
+    toolNameJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.params.name"
+    codeJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: JSONPath (from the request body root) to the code string.
+      default: "$.params.arguments.code"
+    allowedFsPrefixes:
+      type: array
+      x-wso2-policy-advanced-param: true
+      description: Filesystem path prefixes destructive/write operations are allowed to target. A write/delete referencing a path outside all configured prefixes is blocked.
+      items:
+        type: string
+      default: ["/tmp", "/workspace"]
+    maxCodeBytes:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: Code bodies larger than this are blocked outright rather than scanned (a pathologically large snippet is itself a signal).
+      default: 65536
+      minimum: 1
+    onViolation:
+      type: string
+      enum: [block, annotate]
+      x-wso2-policy-advanced-param: false
+      default: block
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+    passthroughOnError:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+  required:
+    - codeToolNames
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
