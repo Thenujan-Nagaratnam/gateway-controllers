@@ -1,0 +1,80 @@
+name: mcp-tool-integrity-guard
+version: v0.1.0
+description: |
+  Integrity check for MCP `tools/list` responses (OWASP Agentic AI Top 10:
+  ASI04 - Agentic Supply Chain Compromise). An MCP server's tool catalog is
+  itself part of the agent's trust boundary: a compromised or malicious
+  server can silently rename a tool's description or widen its input schema
+  between calls - "rug pull" tool poisoning - and an agent that only ever
+  checked the tool's name never notices. Access-control policies decide who
+  may call a tool; this policy decides whether the tool definition itself is
+  still the one you approved.
+
+  Operators pin a SHA-256 hash of each trusted tool's canonical
+  `{name, description, inputSchema}` in `pinnedTools`. Every `tools/list`
+  response is checked against that map:
+    - a tool whose computed hash matches its pin passes through unchanged
+    - a tool present in the response but absent from `pinnedTools` is an
+      "unknown tool" (`onUnknownTool`)
+    - a tool whose computed hash differs from its pin has drifted since it
+      was approved (`onMismatch`)
+
+  Each of those two outcomes is independently configurable: `strip` removes
+  just that tool from the list (default - the rest of the catalog still
+  reaches the agent), `block` fails the whole response, `annotate` lets it
+  through flagged via AnalyticsMetadata only, `allow` is a silent no-op.
+  `mode: discover` never strips or blocks anything - it computes and reports
+  each tool's current hash via AnalyticsMetadata so an operator can populate
+  `pinnedTools` from real traffic before switching to `enforce`.
+
+parameters:
+  type: object
+  properties:
+    pinnedTools:
+      type: object
+      x-wso2-policy-advanced-param: false
+      description: >-
+        Map of trusted tool name -> SHA-256 hex digest of that tool's
+        canonical {name, description, inputSchema} JSON. Leave empty while
+        bootstrapping in "discover" mode.
+      additionalProperties:
+        type: string
+        pattern: "^[0-9a-fA-F]{64}$"
+      default: {}
+    mode:
+      type: string
+      enum: [enforce, discover]
+      x-wso2-policy-advanced-param: false
+      default: enforce
+    onMismatch:
+      type: string
+      enum: [strip, block, annotate, allow]
+      x-wso2-policy-advanced-param: false
+      description: Action when a tool's computed hash differs from its pin.
+      default: strip
+    onUnknownTool:
+      type: string
+      enum: [strip, block, annotate, allow]
+      x-wso2-policy-advanced-param: false
+      description: Action when a tool in the response has no entry in pinnedTools.
+      default: strip
+    resultToolsJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: JSONPath (from the response body root) to the tools array.
+      default: "$.result.tools"
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+    passthroughOnError:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      description: On a response that isn't valid JSON, or where resultToolsJsonPath resolves to a non-array, forward it unchanged instead of blocking.
+      default: false
+  required: []
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
