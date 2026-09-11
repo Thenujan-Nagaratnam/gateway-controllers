@@ -1,0 +1,98 @@
+name: agentic-loop-budget-governor
+version: v0.1.0
+description: |
+  Circuit-breaker for runaway agents (OWASP LLM10 Unbounded Consumption, Agentic
+  T4 Resource Overload, LLM06 Excessive Agency). An autonomous agent stuck in a
+  plan-act-observe loop burns thousands of dollars and hammers backends - and
+  there is no single request to rate-limit, it is a whole SESSION of calls.
+
+  This request-phase policy keeps per-session counters and enforces ceilings:
+    - maxCalls                          : total requests in the session
+    - maxTokens                         : cumulative estimated tokens (chars/4)
+    - maxDurationSeconds                : wall-clock since the session's first call
+    - maxConsecutiveIdenticalToolCalls  : same tool + same arguments repeated
+                                          back-to-back (loop detection)
+
+  The session is identified from `sessionKey.header`, else `sessionKey.jsonPath`
+  in the body, else (if `sessionKey.fallbackToHash`) a hash of the system prompt
+  plus the caller's Authorization. State is kept in-process with a `windowSeconds`
+  TTL - correct for a single replica; when the sdk/core shared store is
+  available a future version can move it there.
+
+  On breach:
+    - block    : HTTP 429 with a structured body naming the exceeded limit
+    - annotate : forward with x-loop-budget-* headers + analytics
+
+parameters:
+  type: object
+  properties:
+    maxCalls:
+      type: integer
+      x-wso2-policy-advanced-param: false
+      description: Max total requests per session (0 = unlimited).
+      default: 40
+      minimum: 0
+    maxTokens:
+      type: integer
+      x-wso2-policy-advanced-param: false
+      description: Max cumulative estimated tokens per session (0 = unlimited).
+      default: 200000
+      minimum: 0
+    maxDurationSeconds:
+      type: number
+      x-wso2-policy-advanced-param: false
+      description: Max wall-clock seconds from the session's first call (0 = unlimited).
+      default: 900
+      minimum: 0
+    maxConsecutiveIdenticalToolCalls:
+      type: integer
+      x-wso2-policy-advanced-param: false
+      description: Max identical (tool name + arguments) calls in a row (0 = unlimited).
+      default: 3
+      minimum: 0
+    windowSeconds:
+      type: number
+      x-wso2-policy-advanced-param: true
+      description: Idle TTL - a session with no calls for this long is forgotten.
+      default: 1800
+      minimum: 1
+    onBreach:
+      type: string
+      enum: [block, annotate]
+      x-wso2-policy-advanced-param: false
+      default: block
+    sessionKey:
+      type: object
+      properties:
+        header:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: Request header carrying the session id.
+          default: "x-agent-session-id"
+        jsonPath:
+          type: string
+          x-wso2-policy-advanced-param: true
+          description: Body JSONPath carrying the session/conversation id, used when the header is absent.
+          default: "$.session_id"
+        fallbackToHash:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: If neither the header nor the jsonPath resolves, derive a key from the system prompt + Authorization.
+          default: true
+    toolNameJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.params.name"
+    argumentsJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.params.arguments"
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
