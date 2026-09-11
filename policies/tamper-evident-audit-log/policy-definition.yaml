@@ -1,0 +1,95 @@
+name: tamper-evident-audit-log
+version: v0.1.0
+description: |
+  Hash-chained audit trail for agent traffic (Agentic AI T8 Repudiation &
+  Untraceability; supports the audit-trail expectations in ISO/IEC 42001,
+  the NIST AI RMF, and the EU AI Act). Analytics and application logs can be
+  edited or deleted after the fact with nothing to prove it; this policy
+  makes each call's record depend cryptographically on every record before
+  it, so removing or altering a past entry breaks the chain from that point
+  on and is detectable by anyone re-verifying it.
+
+  For every call it records: timestamp, request id, an unverified caller
+  principal (from the Authorization header, off by default), route/model/
+  tool identity, and SHA-256 hashes of the raw request and response bodies
+  (never the bodies themselves, so the audit trail can't become a second
+  copy of sensitive payloads). Each record links to the previous one via
+  `recordHash = SHA256(prevHash || canonicalRecordFields)` - the classic
+  hash-chain construction (same idea as a certificate transparency log or a
+  git commit chain).
+
+  Every record is attached to the response as `x-audit-seq`, `x-audit-hash`,
+  `x-audit-prev-hash`, `x-audit-request-hash` and `x-audit-response-hash`
+  headers (so a caller can keep its own copy for later verification) and to
+  AnalyticsMetadata (so it flows into whatever the platform's analytics/log
+  sink already is). When `sinkUrl` is set, each record is also POSTed there
+  best-effort, and every `anchorEveryN`th record is marked `"isAnchor":
+  true` for periodic external checkpointing.
+
+  The chain head is kept in-process; it is correct for a single
+  gateway-runtime replica and restarts a fresh chain on process restart
+  unless `genesisHash` pins a known starting point (e.g. the last head
+  persisted externally before the restart) - a future version can move this
+  to the SDK's shared store once one is available. This policy never blocks
+  traffic - it is an audit control, not a guardrail.
+
+  Sending a request whose body matches `statusJsonPath` (e.g.
+  `{"auditStatus": true}`) is treated as a chain-status query, answered
+  directly with the current `{seq, headHash, genesisHash}` and never
+  recorded as a traffic event or forwarded upstream.
+
+parameters:
+  type: object
+  properties:
+    genesisHash:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: Hex-encoded SHA-256 (64 hex chars) to start the chain from, e.g. a head persisted from a previous deployment. A fresh random genesis is generated if omitted.
+      pattern: "^[0-9a-f]{64}$"
+    includeClaims:
+      type: boolean
+      x-wso2-policy-advanced-param: false
+      description: Record the full (unverified) JWT claims as the principal instead of just the 'sub' claim.
+      default: false
+    includeToolArguments:
+      type: boolean
+      x-wso2-policy-advanced-param: false
+      description: Record raw tool call arguments instead of just a hash of them.
+      default: false
+    modelJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.model"
+    toolNameJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.params.name"
+    argumentsJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.params.arguments"
+    statusJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: JSONPath whose presence identifies a chain-status query rather than real traffic.
+      default: "$.auditStatus"
+    sinkUrl:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: Optional append-only log ingestion endpoint POSTed each record. Best-effort - a failed delivery never blocks the response.
+    sinkTimeoutSeconds:
+      type: number
+      x-wso2-policy-advanced-param: true
+      default: 5
+      minimum: 1
+    anchorEveryN:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: Mark every Nth record as a checkpoint anchor (0 disables anchor marking).
+      default: 50
+      minimum: 0
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

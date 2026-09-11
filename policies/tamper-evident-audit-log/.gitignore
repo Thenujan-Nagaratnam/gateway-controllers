@@ -1,0 +1,3 @@
+e2e/mocks/*/mock-*
+!e2e/mocks/*/mock-*.go
+e2e/postman/reports/

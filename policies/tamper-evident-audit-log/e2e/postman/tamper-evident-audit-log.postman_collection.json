@@ -1,0 +1,784 @@
+{
+  "info": {
+    "name": "tamper-evident-audit-log e2e",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090"
+    },
+    {
+      "key": "controllerAdminUrl",
+      "value": "localhost:9094"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8443"
+    },
+    {
+      "key": "mockUrl",
+      "value": "localhost:9760"
+    },
+    {
+      "key": "mockPort",
+      "value": "9760"
+    },
+    {
+      "key": "adminAuthHeader",
+      "value": "Basic YWRtaW46YWRtaW4="
+    },
+    {
+      "key": "auditHash1",
+      "value": ""
+    },
+    {
+      "key": "auditHash2",
+      "value": ""
+    },
+    {
+      "key": "auditHash3",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "item": [
+        {
+          "name": "mock healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/healthz",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mock up',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "controller health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+              "protocol": "http",
+              "host": [
+                "{{controllerAdminUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "v1",
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('controller up',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway reachable",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": []
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gw',()=>pm.expect(pm.response.code).to.be.oneOf([200,404]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 - Register",
+      "item": [
+        {
+          "name": "Register provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: tal-e2e-provider\nspec:\n  displayName: Tamper Evident Audit Log E2E Provider\n  version: v1.0\n  template: openai\n  upstream:\n    url: http://host.docker.internal:{{mockPort}}\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register tal-audit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: tal-audit\nspec:\n  displayName: tal-audit\n  version: v1.0\n  context: /tal-audit\n  provider:\n    id: tal-e2e-provider\n  policies:\n    - name: tamper-evident-audit-log\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            genesisHash: \"0000000000000000000000000000000000000000000000000000000000000000\"\n            sinkUrl: \"http://host.docker.internal:{{mockPort}}/sink\"\n            anchorEveryN: 2\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register tal-invalid",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: tal-invalid\nspec:\n  displayName: tal-invalid\n  version: v1.0\n  context: /tal-invalid\n  provider:\n    id: tal-e2e-provider\n  policies:\n    - name: tamper-evident-audit-log\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            genesisHash: \"0000000000000000000000000000000000000000000000000000000000000000\"\n            sinkUrl: \"not-a-valid-url\"\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - First call chains from the pinned genesis",
+      "item": [
+        {
+          "name": "call 1 -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/tal-audit/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "tal-audit",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"hello-chain-1\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200',()=>pm.response.to.have.status(200));",
+                  "pm.test('seq 1',()=>pm.expect(pm.response.headers.get('x-audit-seq')).to.eql('1'));",
+                  "pm.test('prevHash is the pinned genesis',()=>pm.expect(pm.response.headers.get('x-audit-prev-hash')).to.eql('0000000000000000000000000000000000000000000000000000000000000000'));",
+                  "pm.collectionVariables.set('auditHash1', pm.response.headers.get('x-audit-hash'));",
+                  "const reqHash = CryptoJS.SHA256(pm.request.body.raw).toString(CryptoJS.enc.Hex);",
+                  "const respHash = CryptoJS.SHA256(pm.response.text()).toString(CryptoJS.enc.Hex);",
+                  "pm.test('x-audit-request-hash matches SHA256 of the exact request body', ()=>pm.expect(pm.response.headers.get('x-audit-request-hash')).to.eql(reqHash));",
+                  "pm.test('x-audit-response-hash matches SHA256 of the exact response body', ()=>pm.expect(pm.response.headers.get('x-audit-response-hash')).to.eql(respHash));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Second call links to the first record's hash and is an anchor",
+      "item": [
+        {
+          "name": "call 2 -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/tal-audit/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "tal-audit",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"hello-chain-2\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200',()=>pm.response.to.have.status(200));",
+                  "pm.test('seq 2',()=>pm.expect(pm.response.headers.get('x-audit-seq')).to.eql('2'));",
+                  "pm.test('prevHash equals record 1 hash',()=>pm.expect(pm.response.headers.get('x-audit-prev-hash')).to.eql(pm.collectionVariables.get('auditHash1')));",
+                  "pm.test('record 2 hash differs from record 1',()=>pm.expect(pm.response.headers.get('x-audit-hash')).to.not.eql(pm.collectionVariables.get('auditHash1')));",
+                  "pm.collectionVariables.set('auditHash2', pm.response.headers.get('x-audit-hash'));",
+                  "const reqHash = CryptoJS.SHA256(pm.request.body.raw).toString(CryptoJS.enc.Hex);",
+                  "const respHash = CryptoJS.SHA256(pm.response.text()).toString(CryptoJS.enc.Hex);",
+                  "pm.test('x-audit-request-hash matches SHA256 of the exact request body', ()=>pm.expect(pm.response.headers.get('x-audit-request-hash')).to.eql(reqHash));",
+                  "pm.test('x-audit-response-hash matches SHA256 of the exact response body', ()=>pm.expect(pm.response.headers.get('x-audit-response-hash')).to.eql(respHash));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "sink received record 2 marked as an anchor",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/last-sink",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-sink"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "pm.test('seq 2 delivered to sink',()=>pm.expect(j.seq).to.eql(2));",
+                  "pm.test('isAnchor true (anchorEveryN=2)',()=>pm.expect(j.isAnchor).to.eql(true));",
+                  "pm.test('sink recordHash matches the response header',()=>pm.expect(j.recordHash).to.eql(pm.collectionVariables.get('auditHash2')));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Third call links to the second record and is not an anchor",
+      "item": [
+        {
+          "name": "call 3 -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/tal-audit/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "tal-audit",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"hello-chain-3\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200',()=>pm.response.to.have.status(200));",
+                  "pm.test('seq 3',()=>pm.expect(pm.response.headers.get('x-audit-seq')).to.eql('3'));",
+                  "pm.test('prevHash equals record 2 hash',()=>pm.expect(pm.response.headers.get('x-audit-prev-hash')).to.eql(pm.collectionVariables.get('auditHash2')));",
+                  "pm.collectionVariables.set('auditHash3', pm.response.headers.get('x-audit-hash'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "sink received record 3, not an anchor",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/last-sink",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-sink"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "pm.test('seq 3 delivered to sink',()=>pm.expect(j.seq).to.eql(3));",
+                  "pm.test('isAnchor false',()=>pm.expect(j.isAnchor).to.eql(false));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Chain-status query reports state without advancing the chain",
+      "item": [
+        {
+          "name": "auditStatus query -> 200, reports seq 3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/tal-audit/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "tal-audit",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"auditStatus\": true}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200',()=>pm.response.to.have.status(200));",
+                  "const j=pm.response.json();",
+                  "pm.test('type',()=>pm.expect(j.type).to.eql('TAMPER_EVIDENT_AUDIT_LOG'));",
+                  "pm.test('reports seq 3',()=>pm.expect(j.message.seq).to.eql(3));",
+                  "pm.test('reports the current head',()=>pm.expect(j.message.headHash).to.eql(pm.collectionVariables.get('auditHash3')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a real call afterwards is seq 4, not 5 (status query did not advance the chain)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/tal-audit/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "tal-audit",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"hello-chain-4\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('seq 4',()=>pm.expect(pm.response.headers.get('x-audit-seq')).to.eql('4'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Principal and tool identity are recorded via the sink",
+      "item": [
+        {
+          "name": "tool call with a bearer token -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJlMmUtY2FsbGVyQGV4YW1wbGUuY29tIn0.sig"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/tal-audit/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "tal-audit",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"method\": \"tools/call\", \"params\": {\"name\": \"issue_refund\", \"arguments\": {\"amount\": 500}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "sink recorded the principal and tool, not raw arguments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/last-sink",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-sink"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "pm.test('principal is the JWT sub claim',()=>pm.expect(j.principal).to.eql('e2e-caller@example.com'));",
+                  "pm.test('tool name recorded',()=>pm.expect(j.tool.name).to.eql('issue_refund'));",
+                  "pm.test('tool arguments NOT echoed (includeToolArguments defaults false)',()=>pm.expect(j.tool.arguments).to.be.undefined);",
+                  "pm.test('tool argument hash recorded instead',()=>pm.expect(j.tool.argsHash).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - Invalid config accepted at registration but the route never audits",
+      "item": [
+        {
+          "name": "tal-invalid still forwards but without audit headers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/tal-invalid/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "tal-invalid",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('misconfigured route: still forwards traffic (never blocking) but is not audited',()=>{",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200,404,500]);",
+                  "  if (pm.response.code===200) pm.expect(pm.response.headers.has('x-audit-seq')).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 - Cleanup",
+      "item": [
+        {
+          "name": "Delete tal-audit",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/tal-audit",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "tal-audit"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete tal-invalid",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/tal-invalid",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "tal-invalid"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete provider",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/tal-e2e-provider",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "tal-e2e-provider"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
