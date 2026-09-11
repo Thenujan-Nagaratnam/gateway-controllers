@@ -1,0 +1,78 @@
+name: dependency-circuit-breaker
+version: v0.1.0
+description: |
+  Classic closed -> open -> half-open circuit breaker for MCP tool calls
+  (OWASP Agentic AI Top 10: ASI08 - Cascading Agent Failures). An agent that
+  keeps calling a tool/downstream dependency that is already failing doesn't
+  just waste its own budget - a broken tool retried in a loop can exhaust
+  connections, quota, or rate limit on the shared upstream and take the
+  dependency down for every other agent/session sharing it, and a plan that
+  assumes the tool "must eventually work" can burn its entire step budget
+  retrying instead of degrading gracefully. `agentic-loop-budget-governor`
+  caps how much any ONE session can do; this policy protects the shared
+  dependency itself, tracked per tool name across every session.
+
+  State is per-tool-name (not per-session) so failures from one caller open
+  the breaker for everyone hitting the same broken tool - the map is
+  naturally small (tool catalogs rarely exceed a few hundred names) and is
+  still defensively bounded against a pathological/attacker-controlled tool
+  name stream. On the request path, a call to a tool whose breaker is OPEN
+  is short-circuited immediately (503 + Retry-After) without ever reaching
+  the backend. On the response path, the outcome (HTTP status and/or a
+  JSON-RPC-style error field in the body) updates the breaker: enough
+  consecutive failures trips it open; after `openDurationSeconds` it allows
+  a bounded number of HALF_OPEN trial calls through - a trial that succeeds
+  closes the breaker, a trial that fails reopens it.
+
+parameters:
+  type: object
+  properties:
+    toolNameJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: JSONPath (from the request body root) to the tool name. Requests where this doesn't resolve to a non-empty string aren't tracked.
+      default: "$.params.name"
+    failureThreshold:
+      type: integer
+      x-wso2-policy-advanced-param: false
+      description: Consecutive failures for a tool before its breaker opens.
+      default: 5
+      minimum: 1
+    openDurationSeconds:
+      type: number
+      x-wso2-policy-advanced-param: false
+      description: How long a breaker stays fully open before allowing a half-open trial call.
+      default: 30
+      exclusiveMinimum: 0
+    halfOpenMaxTrials:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: Concurrent trial calls allowed through while half-open before further calls are short-circuited again.
+      default: 1
+      minimum: 1
+    errorStatusCodes:
+      type: array
+      x-wso2-policy-advanced-param: true
+      description: Backend HTTP status codes that count as a failed call.
+      items:
+        type: integer
+      default: [500, 502, 503, 504]
+    errorDetectionJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: >-
+        JSONPath (from the response body root) checked for a present,
+        non-null, non-false value indicating failure - covers MCP/JSON-RPC
+        backends that return an application-level error with HTTP 200. Set
+        to "" to rely on errorStatusCodes only.
+      default: "$.error"
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+  required: []
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
