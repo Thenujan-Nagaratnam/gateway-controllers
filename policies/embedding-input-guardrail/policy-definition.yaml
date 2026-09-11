@@ -1,0 +1,80 @@
+name: embedding-input-guardrail
+version: v0.1.0
+description: |
+  Request-phase guardrail for embedding/ingestion endpoints (OWASP Top 10
+  for LLM Applications 2026: LLM09 - Vector and Embedding Weaknesses).
+  Every guardrail elsewhere in this gateway protects what a model reads at
+  GENERATION time - the prompt, the tool arguments, the retrieved context.
+  Nothing protects what gets embedded and written into a vector store in
+  the first place, and a vector store has no equivalent of a system prompt
+  to fall back on: a poisoned or oversized chunk written today can resurface
+  as "trusted" retrieved context in every RAG answer from then on, an
+  indirect-prompt-injection payload embedded once influences every future
+  retrieval that ranks it relevant, and a single pathologically large or
+  high-entropy input can degrade embedding quality or exhaust index storage.
+
+  Bounds `maxInputChars`/`maxBatchSize` (handles both a single string and an
+  array of strings at the configured path, matching the OpenAI embeddings
+  API's `input` field shape), and - when `scanForInjectionMarkers` is on -
+  applies a lighter version of `indirect-prompt-injection-guardrail`'s
+  detectors (imperative-override phrasing, invisible/zero-width Unicode,
+  known LLM chat-template delimiter literals) plus a high-entropy-blob check
+  (the same class of secret/encoded-payload signal `tool-argument-egress-dlp`
+  uses) to content headed INTO the store, not just what comes out of it.
+
+parameters:
+  type: object
+  properties:
+    textJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      description: JSONPath (from the request body root) to the text to embed - a single string or an array of strings.
+      default: "$.input"
+    maxInputChars:
+      type: integer
+      x-wso2-policy-advanced-param: false
+      description: Maximum characters per individual input item.
+      default: 8192
+      minimum: 1
+    maxBatchSize:
+      type: integer
+      x-wso2-policy-advanced-param: false
+      description: Maximum number of items when input is an array.
+      default: 100
+      minimum: 1
+    scanForInjectionMarkers:
+      type: boolean
+      x-wso2-policy-advanced-param: false
+      description: Scan each item for imperative-override phrasing, invisible Unicode, and chat-template delimiter literals.
+      default: true
+    maxEntropyBits:
+      type: number
+      x-wso2-policy-advanced-param: true
+      description: Shannon-entropy threshold (bits/character) above which a long token is flagged as an encoded/secret-shaped blob.
+      default: 4.0
+      exclusiveMinimum: 0
+    entropyMinLength:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: Minimum token length considered for the entropy check.
+      default: 24
+      minimum: 8
+    onViolation:
+      type: string
+      enum: [block, annotate]
+      x-wso2-policy-advanced-param: false
+      default: block
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+    passthroughOnError:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+  required: []
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
