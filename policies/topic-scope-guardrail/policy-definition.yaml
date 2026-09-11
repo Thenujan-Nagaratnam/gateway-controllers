@@ -1,0 +1,92 @@
+name: topic-scope-guardrail
+version: v0.1.0
+description: |
+  Keeps a narrowly-deployed AI assistant within its intended domain. A
+  banking assistant that will cheerfully give medical advice, or a
+  customer-support bot repurposed as a general-purpose homework helper, is a
+  brand and liability risk that none of the existing prompt-injection,
+  jailbreak, or RAG-grounding guardrails catch - those defend against
+  attacks or unsupported claims, not legitimate-but-out-of-scope use.
+
+  Deterministic and heuristic, like rag-grounding-guardrail - no external ML
+  classifier or embedding API:
+    - `deniedTopics` are an explicit, case-insensitive phrase denylist that
+      always blocks a match outright (e.g. ["medical advice", "diagnose",
+      "legal advice"] for a banking assistant) - a high-confidence signal.
+    - Everything else is scored by content-word overlap between the
+      caller's message and a reference vocabulary built from
+      `scopeDescription` plus any `inScopeExamples` - below `minScopeScore`
+      is flagged as off-topic.
+
+  Runs on the request by default (block the off-topic ask before spending an
+  upstream call on it); `checkResponse` additionally scores the model's own
+  reply, catching topic drift even when the user's prompt was in-scope.
+  Very short messages (`minMessageChars`) are never scored, so a bare "hi"
+  or "thanks" is never treated as off-topic.
+
+parameters:
+  type: object
+  properties:
+    scopeDescription:
+      type: string
+      x-wso2-policy-advanced-param: false
+      description: A short description of the assistant's intended domain, e.g. "personal banking - account balances, transactions, card management, loan inquiries".
+      minLength: 10
+    inScopeExamples:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: Example in-scope questions, enriching the reference vocabulary beyond the short description.
+      items:
+        type: string
+    deniedTopics:
+      type: array
+      x-wso2-policy-advanced-param: false
+      description: Phrases that always block outright when present (case-insensitive substring match), regardless of the overlap score.
+      items:
+        type: string
+    minScopeScore:
+      type: number
+      x-wso2-policy-advanced-param: false
+      description: Minimum content-word overlap with the reference vocabulary, in [0,1]. Below this, the message is flagged as off-topic.
+      default: 0.25
+      minimum: 0
+      maximum: 1
+    checkResponse:
+      type: boolean
+      x-wso2-policy-advanced-param: false
+      description: Also score the model's own reply, catching topic drift even when the request was in-scope.
+      default: false
+    requestJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.messages[-1].content"
+    responseJsonPath:
+      type: string
+      x-wso2-policy-advanced-param: true
+      default: "$.choices[0].message.content"
+    onOffTopic:
+      type: string
+      enum: [block, annotate]
+      x-wso2-policy-advanced-param: false
+      default: block
+    minMessageChars:
+      type: integer
+      x-wso2-policy-advanced-param: true
+      description: Messages shorter than this are never scored (a bare "hi" is never off-topic).
+      default: 10
+      minimum: 0
+    showAssessment:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+    passthroughOnError:
+      type: boolean
+      x-wso2-policy-advanced-param: true
+      default: false
+  required:
+    - scopeDescription
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

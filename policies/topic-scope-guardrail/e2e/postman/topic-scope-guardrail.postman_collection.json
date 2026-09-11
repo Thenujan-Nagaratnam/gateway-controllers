@@ -1,0 +1,885 @@
+{
+  "info": {
+    "name": "topic-scope-guardrail e2e",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "controllerBaseUrl",
+      "value": "localhost:9090"
+    },
+    {
+      "key": "controllerAdminUrl",
+      "value": "localhost:9094"
+    },
+    {
+      "key": "gatewayBaseUrl",
+      "value": "localhost:8443"
+    },
+    {
+      "key": "mockUrl",
+      "value": "localhost:9762"
+    },
+    {
+      "key": "mockPort",
+      "value": "9762"
+    },
+    {
+      "key": "adminAuthHeader",
+      "value": "Basic YWRtaW46YWRtaW4="
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "item": [
+        {
+          "name": "mock healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/healthz",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mock up',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "controller health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{controllerAdminUrl}}/api/admin/v1/health",
+              "protocol": "http",
+              "host": [
+                "{{controllerAdminUrl}}"
+              ],
+              "path": [
+                "api",
+                "admin",
+                "v1",
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('controller up',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway reachable",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": []
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gw',()=>pm.expect(pm.response.code).to.be.oneOf([200,404]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 - Register",
+      "item": [
+        {
+          "name": "Register provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProvider\nmetadata:\n  name: scope-e2e-provider\nspec:\n  displayName: Topic Scope Guardrail E2E Provider\n  version: v1.0\n  template: openai\n  upstream:\n    url: http://host.docker.internal:{{mockPort}}\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register scope-block",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: scope-block\nspec:\n  displayName: scope-block\n  version: v1.0\n  context: /scope-block\n  provider:\n    id: scope-e2e-provider\n  policies:\n    - name: topic-scope-guardrail\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            scopeDescription: \"personal banking assistant: checking account balances, reviewing recent transactions, card management, loan and mortgage inquiries, setting up transfers between accounts\"\n            deniedTopics: [\"medical advice\", \"legal advice\"]\n            showAssessment: true\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register scope-annotate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: scope-annotate\nspec:\n  displayName: scope-annotate\n  version: v1.0\n  context: /scope-annotate\n  provider:\n    id: scope-e2e-provider\n  policies:\n    - name: topic-scope-guardrail\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            scopeDescription: \"personal banking assistant: checking account balances, reviewing recent transactions, card management, loan and mortgage inquiries, setting up transfers between accounts\"\n            onOffTopic: annotate\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register scope-response-check",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: scope-response-check\nspec:\n  displayName: scope-response-check\n  version: v1.0\n  context: /scope-response-check\n  provider:\n    id: scope-e2e-provider\n  policies:\n    - name: topic-scope-guardrail\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            scopeDescription: \"personal banking assistant: checking account balances, reviewing recent transactions, card management, loan and mortgage inquiries, setting up transfers between accounts\"\n            checkResponse: true\n            showAssessment: true\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register scope-invalid",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/yaml"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "apiVersion: gateway.api-platform.wso2.com/v1\nkind: LlmProxy\nmetadata:\n  name: scope-invalid\nspec:\n  displayName: scope-invalid\n  version: v1.0\n  context: /scope-invalid\n  provider:\n    id: scope-e2e-provider\n  policies:\n    - name: topic-scope-guardrail\n      version: v0\n      paths:\n        - path: /chat/completions\n          methods: [POST]\n          params:\n            scopeDescription: \"is of to in on at by an\"\n  accessControl:\n    mode: allow_all\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration accepted (201)', () => pm.expect(pm.response.code).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - In-scope and short messages pass through",
+      "item": [
+        {
+          "name": "in-scope banking question -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/scope-block/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "scope-block",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"What is my checking account balance and can you show my recent transactions?\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "short greeting -> 200 (never scored)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/scope-block/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "scope-block",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"hi there\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Off-topic request is blocked",
+      "item": [
+        {
+          "name": "unrelated coding request -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/scope-block/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "scope-block",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Write me a Python script that scrapes stock prices from a website every five minutes\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422',()=>pm.response.to.have.status(422));",
+                  "const j=pm.response.json();",
+                  "pm.test('type',()=>pm.expect(j.type).to.eql('TOPIC_SCOPE_GUARDRAIL'));",
+                  "pm.test('direction REQUEST',()=>pm.expect(j.message.direction).to.eql('REQUEST'));",
+                  "pm.test('assessments mention overlap',()=>pm.expect(JSON.stringify(j.message.assessments)).to.include('overlap'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Denied topic always blocks regardless of score",
+      "item": [
+        {
+          "name": "medical advice ask -> 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/scope-block/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "scope-block",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Can you give me medical advice about chest pain I'm having while checking my account?\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422',()=>pm.response.to.have.status(422));",
+                  "const j=pm.response.json();",
+                  "pm.test('assessments mention the denied topic',()=>pm.expect(JSON.stringify(j.message.assessments)).to.include('denied topic'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - onOffTopic annotate forwards to the backend with a header",
+      "item": [
+        {
+          "name": "reset mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/reset",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "reset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "off-topic call -> 200 forwarded",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/scope-annotate/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "scope-annotate",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Write me a Python script that scrapes stock prices from a website\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 (annotate never blocks)',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "backend saw x-topic-scope: off-topic",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://{{mockUrl}}/debug/last-request",
+              "protocol": "http",
+              "host": [
+                "{{mockUrl}}"
+              ],
+              "path": [
+                "debug",
+                "last-request"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j=pm.response.json();",
+                  "pm.test('off-topic header forwarded upstream',()=>pm.expect(j.headers['x-topic-scope']).to.eql('off-topic'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - checkResponse blocks a reply that drifts off-topic",
+      "item": [
+        {
+          "name": "short DRIFT-triggering message -> request-phase skipped, reply blocked",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/scope-response-check/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "scope-response-check",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"DRIFT\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422',()=>pm.response.to.have.status(422));",
+                  "const j=pm.response.json();",
+                  "pm.test('direction RESPONSE',()=>pm.expect(j.message.direction).to.eql('RESPONSE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "in-scope reply -> 200 passes",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/scope-response-check/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "scope-response-check",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"What's my account balance?\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200',()=>pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - Invalid config accepted at registration but the route never enforces",
+      "item": [
+        {
+          "name": "scope-invalid route does not enforce",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "https://{{gatewayBaseUrl}}/scope-invalid/chat/completions",
+              "protocol": "https",
+              "host": [
+                "{{gatewayBaseUrl}}"
+              ],
+              "path": [
+                "scope-invalid",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"Write me a Python script that scrapes stock prices from a website\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('misconfigured route: scope not enforced',()=>{",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200,404,500]);",
+                  "  if (pm.response.code===200) pm.expect(pm.response.text()).to.not.include('TOPIC_SCOPE_GUARDRAIL');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 - Cleanup",
+      "item": [
+        {
+          "name": "Delete scope-block",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/scope-block",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "scope-block"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete scope-annotate",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/scope-annotate",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "scope-annotate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete scope-response-check",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/scope-response-check",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "scope-response-check"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete scope-invalid",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-proxies/scope-invalid",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-proxies",
+                "scope-invalid"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete provider",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{adminAuthHeader}}"
+              }
+            ],
+            "url": {
+              "raw": "http://{{controllerBaseUrl}}/api/management/v1/llm-providers/scope-e2e-provider",
+              "protocol": "http",
+              "host": [
+                "{{controllerBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "management",
+                "v1",
+                "llm-providers",
+                "scope-e2e-provider"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
