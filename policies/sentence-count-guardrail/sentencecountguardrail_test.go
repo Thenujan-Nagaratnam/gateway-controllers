@@ -488,12 +488,12 @@ func TestGetPolicy(t *testing.T) {
 func TestValidatePayload_RequestPaths(t *testing.T) {
 	p := &SentenceCountGuardrailPolicy{}
 
-	pass := p.validatePayload([]byte(`{"messages":"Hello."}`), SentenceCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages"}, false)
+	pass := p.validatePayload([]byte(`{"messages":"Hello."}`), SentenceCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages"}, false, false)
 	if _, ok := pass.(policy.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications on valid payload, got %T", pass)
 	}
 
-	fail := p.validatePayload([]byte(`{"messages":""}`), SentenceCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages", ShowAssessment: true}, false)
+	fail := p.validatePayload([]byte(`{"messages":""}`), SentenceCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages", ShowAssessment: true}, false, false)
 	imm, ok := fail.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse on invalid payload, got %T", fail)
@@ -516,12 +516,12 @@ func TestValidatePayload_RequestPaths(t *testing.T) {
 func TestValidatePayload_ResponsePaths(t *testing.T) {
 	p := &SentenceCountGuardrailPolicy{}
 
-	pass := p.validatePayload([]byte(`{"messages":"Hello."}`), SentenceCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages"}, true)
+	pass := p.validatePayload([]byte(`{"messages":"Hello."}`), SentenceCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages"}, true, false)
 	if _, ok := pass.(policy.DownstreamResponseModifications); !ok {
 		t.Fatalf("expected UpstreamResponseModifications on valid response payload, got %T", pass)
 	}
 
-	fail := p.validatePayload([]byte(`{"messages":""}`), SentenceCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages", ShowAssessment: false}, true)
+	fail := p.validatePayload([]byte(`{"messages":""}`), SentenceCountGuardrailPolicyParams{Min: 1, Max: 10, JsonPath: "$.messages", ShowAssessment: false}, true, false)
 	resp, ok := fail.(policy.DownstreamResponseModifications)
 	if !ok {
 		t.Fatalf("expected UpstreamResponseModifications on invalid response payload, got %T", fail)
@@ -551,13 +551,13 @@ func TestValidatePayload_InvertMode(t *testing.T) {
 	}
 
 	// In invert mode, content within range should fail.
-	within := p.validatePayload([]byte(`{"messages":"One."}`), params, false)
+	within := p.validatePayload([]byte(`{"messages":"One."}`), params, false, false)
 	if _, ok := within.(policy.ImmediateResponse); !ok {
 		t.Fatalf("expected ImmediateResponse when in-range payload is rejected in invert mode, got %T", within)
 	}
 
 	// In invert mode, content outside range should pass.
-	outside := p.validatePayload([]byte(`{"messages":"One. Two. Three. Four."}`), params, false)
+	outside := p.validatePayload([]byte(`{"messages":"One. Two. Three. Four."}`), params, false, false)
 	if _, ok := outside.(policy.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications when out-of-range payload passes in invert mode, got %T", outside)
 	}
@@ -571,7 +571,7 @@ func TestValidatePayload_JSONPathExtraction(t *testing.T) {
 		Min:      2,
 		Max:      2,
 		JsonPath: "$.data.text",
-	}, false)
+	}, false, false)
 	if _, ok := pass.(policy.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected pass using jsonPath extraction, got %T", pass)
 	}
@@ -581,7 +581,7 @@ func TestValidatePayload_JSONPathExtraction(t *testing.T) {
 		Max:            10,
 		JsonPath:       "$.missing",
 		ShowAssessment: true,
-	}, false)
+	}, false, false)
 	imm, ok := fail.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse on jsonPath extraction failure, got %T", fail)

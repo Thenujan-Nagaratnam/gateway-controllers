@@ -287,6 +287,12 @@ func (p *ContentLengthGuardrailPolicy) OnRequestBody(ctx context.Context, reqCtx
 	}
 
 	if reqCtx.Body == nil || reqCtx.Body.Content == nil {
+		if reqCtx.IsLLMAPI() {
+			return policy.NewOpenAIErrorResponse(policy.GuardrailStatusCode, policy.OpenAIError{
+				Message: "Request body is absent or could not be buffered",
+				Code:    policy.GuardrailInterventionCode,
+			})
+		}
 		return policy.ImmediateResponse{
 			StatusCode: GuardrailErrorCode,
 			Headers:    map[string]string{"Content-Type": "application/json"},
@@ -294,7 +300,7 @@ func (p *ContentLengthGuardrailPolicy) OnRequestBody(ctx context.Context, reqCtx
 		}
 	}
 
-	return p.validatePayload(reqCtx.Body.Content, p.requestParams, false).(policy.RequestAction)
+	return p.validatePayload(reqCtx.Body.Content, p.requestParams, false, reqCtx.IsLLMAPI()).(policy.RequestAction)
 }
 
 // OnResponseBody validates response body content length.
@@ -307,15 +313,15 @@ func (p *ContentLengthGuardrailPolicy) OnResponseBody(ctx context.Context, respC
 	if respCtx.ResponseBody != nil {
 		content = respCtx.ResponseBody.Content
 	}
-	return p.validatePayload(content, p.responseParams, true).(policy.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true, respCtx.IsLLMAPI()).(policy.ResponseAction)
 }
 
 // validatePayload validates payload content length, returning policy actions.
-func (p *ContentLengthGuardrailPolicy) validatePayload(payload []byte, params ContentLengthGuardrailPolicyParams, isResponse bool) interface{} {
+func (p *ContentLengthGuardrailPolicy) validatePayload(payload []byte, params ContentLengthGuardrailPolicyParams, isResponse bool, llm bool) interface{} {
 	extractedValue, err := utils.ExtractStringValueFromJsonpath(payload, params.JsonPath)
 	if err != nil {
 		slog.Debug("ContentLengthGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max, llm)
 	}
 
 	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
@@ -340,7 +346,7 @@ func (p *ContentLengthGuardrailPolicy) validatePayload(payload []byte, params Co
 		} else {
 			reason = fmt.Sprintf("content length %d bytes is outside the allowed range %d-%d bytes", byteCount, params.Min, params.Max)
 		}
-		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max)
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max, llm)
 	}
 
 	slog.Debug("ContentLengthGuardrail: Validation passed", "byteCount", byteCount, "min", params.Min, "max", params.Max, "isResponse", isResponse)
@@ -424,7 +430,7 @@ func (p *ContentLengthGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, 
 		if !chunk.EndOfStream {
 			return policy.ForwardResponseChunk{}
 		}
-		result := p.validatePayload([]byte(full), p.responseParams, true)
+		result := p.validatePayload([]byte(full), p.responseParams, true, respCtx.IsLLMAPI())
 		if mod, ok := result.(policy.DownstreamResponseModifications); ok && mod.StatusCode != nil {
 			return policy.TerminateResponseChunk{Body: mod.Body}
 		}
@@ -453,7 +459,7 @@ func (p *ContentLengthGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, 
 		reason := fmt.Sprintf("content length %d bytes is outside the allowed range %d-%d bytes", running, rp.Min, rp.Max)
 		slog.Debug("ContentLengthGuardrail: streaming max violation",
 			"runningBytes", running, "max", rp.Max)
-		return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp.ShowAssessment, rp.Min, rp.Max)}
+		return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp.ShowAssessment, rp.Min, rp.Max, respCtx.IsLLMAPI())}
 	}
 
 	// At end of stream: perform the complete min/max/invert validation.
@@ -472,7 +478,7 @@ func (p *ContentLengthGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, 
 			}
 			slog.Debug("ContentLengthGuardrail: streaming validation failed",
 				"runningBytes", running, "min", rp.Min, "max", rp.Max, "invert", rp.Invert)
-			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp.ShowAssessment, rp.Min, rp.Max)}
+			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp.ShowAssessment, rp.Min, rp.Max, respCtx.IsLLMAPI())}
 		}
 	}
 
@@ -618,39 +624,24 @@ func joinSSEFragments(value interface{}) string {
 // buildSSEErrorEvent formats a guardrail violation as a single SSE data event
 // that replaces the offending chunk. ImmediateResponse is unavailable once
 // response headers are committed to the downstream client.
-func (p *ContentLengthGuardrailPolicy) buildSSEErrorEvent(reason string, showAssessment bool, min, max int) []byte {
+func (p *ContentLengthGuardrailPolicy) buildSSEErrorEvent(reason string, showAssessment bool, min, max int, llm bool) []byte {
 	assessment := p.buildAssessmentObject(reason, nil, true, showAssessment, min, max)
-	responseBody := map[string]interface{}{
-		"type":    "CONTENT_LENGTH_GUARDRAIL",
-		"message": assessment,
-	}
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"CONTENT_LENGTH_GUARDRAIL","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 	return []byte(sseDataPrefix + string(bodyBytes) + "\n\n")
 }
 
 // buildErrorResponse builds a policy error response for both request and response phases.
-func (p *ContentLengthGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
+func (p *ContentLengthGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int, llm bool) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,
 		"guardrailName":  "content-length-guardrail",
 	}
 
-	responseBody := map[string]interface{}{
-		"type":    "CONTENT_LENGTH_GUARDRAIL",
-		"message": assessment,
-	}
-
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"CONTENT_LENGTH_GUARDRAIL","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 
 	if isResponse {
-		statusCode := GuardrailErrorCode
+		statusCode := guardrailStatus(llm)
 		return policy.DownstreamResponseModifications{
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
@@ -660,9 +651,35 @@ func (p *ContentLengthGuardrailPolicy) buildErrorResponse(reason string, validat
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode:        GuardrailErrorCode,
+		StatusCode:        guardrailStatus(llm),
 		AnalyticsMetadata: analyticsMetadata,
 		Headers:           map[string]string{"Content-Type": "application/json"},
 		Body:              bodyBytes,
 	}
+}
+
+// guardrailErrorBody renders a guardrail intervention: an OpenAI-compatible error
+// for LLM APIs, the {"type":"CONTENT_LENGTH_GUARDRAIL","message":...} shape for other API kinds.
+func guardrailErrorBody(assessment map[string]interface{}, llm bool) []byte {
+	if llm {
+		return policy.BuildOpenAIErrorResponseBody(policy.GuardrailStatusCode, policy.NewGuardrailOpenAIError(assessment))
+	}
+	bodyBytes, err := json.Marshal(map[string]interface{}{
+		"type":    "CONTENT_LENGTH_GUARDRAIL",
+		"message": assessment,
+	})
+	if err != nil {
+		return []byte(`{"type":"CONTENT_LENGTH_GUARDRAIL","message":"Internal error"}`)
+	}
+	return bodyBytes
+}
+
+// guardrailStatus is the HTTP status of an intervention: 400 on LLM APIs, where
+// OpenAI clients expect content-policy refusals as invalid_request_error, and
+// GuardrailErrorCode for other API kinds.
+func guardrailStatus(llm bool) int {
+	if llm {
+		return policy.GuardrailStatusCode
+	}
+	return GuardrailErrorCode
 }

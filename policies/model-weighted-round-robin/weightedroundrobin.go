@@ -371,11 +371,7 @@ func (p *ModelWeightedRoundRobinPolicy) OnRequestHeaders(ctx context.Context, re
 
 	selectedModel := p.selectNextAvailableWeightedModel()
 	if selectedModel == nil {
-		return policy.ImmediateResponse{
-			StatusCode: 503,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       []byte(`{"error": "All models are currently unavailable"}`),
-		}
+		return policy.NewOpenAIErrorResponse(503, policy.OpenAIError{Message: "All models are currently unavailable"})
 	}
 
 	// Always record the selected model and its provider. The provider is stored
@@ -470,38 +466,22 @@ func (p *ModelWeightedRoundRobinPolicy) OnRequestBody(ctx context.Context, reqCt
 	}
 
 	if reqCtx.Body == nil || reqCtx.Body.Content == nil {
-		return policy.ImmediateResponse{
-			StatusCode: 400,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       []byte(`{"error":"Request body is empty."}`),
-		}
+		return policy.NewOpenAIErrorResponse(400, policy.OpenAIError{Message: "Request body is empty."})
 	}
 
 	var payloadData map[string]interface{}
 	if err := json.Unmarshal(reqCtx.Body.Content, &payloadData); err != nil {
-		return policy.ImmediateResponse{
-			StatusCode: 400,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       []byte(fmt.Sprintf(`{"error":"Invalid JSON in request body: %s"}`, err.Error())),
-		}
+		return policy.NewOpenAIErrorResponse(400, policy.OpenAIError{Message: fmt.Sprintf("Invalid JSON in request body: %s", err.Error())})
 	}
 
 	identifier := p.params.RequestModel.Identifier
 	if err := utils.SetValueAtJSONPath(payloadData, identifier, selectedModel); err != nil {
-		return policy.ImmediateResponse{
-			StatusCode: 400,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       []byte(fmt.Sprintf(`{"error":"Invalid or missing model at '%s': %s"}`, identifier, err.Error())),
-		}
+		return policy.NewOpenAIErrorResponse(400, policy.OpenAIError{Message: fmt.Sprintf("Invalid or missing model at '%s': %s", identifier, err.Error())})
 	}
 
 	updatedPayload, err := json.Marshal(payloadData)
 	if err != nil {
-		return policy.ImmediateResponse{
-			StatusCode: 500,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       []byte(fmt.Sprintf(`{"error":"Failed to serialize updated request body: %s"}`, err.Error())),
-		}
+		return policy.NewOpenAIErrorResponse(500, policy.OpenAIError{Message: fmt.Sprintf("Failed to serialize updated request body: %s", err.Error())})
 	}
 
 	slog.Debug("ModelWeightedRoundRobin: OnRequestBody modified payload model", "newModel", selectedModel)

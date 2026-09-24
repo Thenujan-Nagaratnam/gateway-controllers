@@ -139,8 +139,8 @@ type CachedJWKS struct {
 // scopes contains resolved token scopes, cached with claims so both cache-hit and cache-miss paths enforce
 // scopes and populate AuthContext.Scopes consistently without re-running verification.
 type cachedVerdict struct {
-	ok     bool
-	claims jwt.MapClaims
+	ok        bool
+	claims    jwt.MapClaims
 	scopes    []string
 	reason    string
 	expiresAt time.Time
@@ -148,11 +148,11 @@ type cachedVerdict struct {
 
 // KeyManager represents a key manager with either remote JWKS or local certificate
 type KeyManager struct {
-	Name   string      // Unique name for this key manager
-	Issuer string      // Optional issuer value
-	JWKS   *JWKSConfig // JWKS configuration (remote and/or local)
-	ScopeClaim string // Token claim used to read scopes; if unset, falls back to the legacy "scope" and "scp" claims.
-	ScopeClaimSeparator string // Separator for string-valued ScopeClaim; defaults to a space and is ignored for array claims.
+	Name                string      // Unique name for this key manager
+	Issuer              string      // Optional issuer value
+	JWKS                *JWKSConfig // JWKS configuration (remote and/or local)
+	ScopeClaim          string      // Token claim used to read scopes; if unset, falls back to the legacy "scope" and "scp" claims.
+	ScopeClaimSeparator string      // Separator for string-valued ScopeClaim; defaults to a space and is ignored for array claims.
 }
 
 // JWKSConfig holds both remote and local key configurations
@@ -1085,7 +1085,7 @@ func parseScopes(scopeClaim, scpClaim interface{}) []string {
 	return scopes
 }
 
-// Resolves token scopes using the matched key manager's scope-claim configuration, 
+// Resolves token scopes using the matched key manager's scope-claim configuration,
 // falling back to the legacy "scope"/"scp" claims when none is configured.
 func resolveScopes(claims jwt.MapClaims, km *KeyManager) []string {
 	if km != nil && km.ScopeClaim != "" {
@@ -1133,7 +1133,7 @@ func buildScopesMap(scopes []string) map[string]bool {
 	return result
 }
 
-// ScopeConstraints defines required scopes using AllOf and/or 
+// ScopeConstraints defines required scopes using AllOf and/or
 // AnyOf; empty means no constraints and supersedes deprecated requiredScopes.
 type ScopeConstraints struct {
 	AllOf []string
@@ -1145,12 +1145,12 @@ func (s ScopeConstraints) isEmpty() bool { return len(s.AllOf) == 0 && len(s.Any
 // ClaimMatcher matches a single claim: satisfied when the token's value for Claim is one of Values
 // (OR within Values; for a multi-valued token claim, a non-empty intersection).
 type ClaimMatcher struct {
-	Claim  string
-	Values []string
+	Claim             string
+	Values            []string
 	legacyExactString bool // Preserves legacy requiredClaims semantics by matching only exact scalar string claims.
 }
 
-// ClaimConstraints defines required claim matchers using AllOf and/or 
+// ClaimConstraints defines required claim matchers using AllOf and/or
 // AnyOf; empty means no constraints and supersedes deprecated requiredClaims.
 type ClaimConstraints struct {
 	AllOf []ClaimMatcher
@@ -1183,7 +1183,7 @@ func stringArrayField(m map[string]interface{}, key string) ([]string, error) {
 	return out, nil
 }
 
-// Parses `scopes`; empty values trigger the legacy requiredScopes fallback, 
+// Parses `scopes`; empty values trigger the legacy requiredScopes fallback,
 // while malformed values return an error to fail closed.
 func parseScopeConstraints(params map[string]interface{}) (ScopeConstraints, error) {
 	raw, present := params["scopes"]
@@ -1342,7 +1342,7 @@ func claimMatcherMatches(m ClaimMatcher, claims jwt.MapClaims) bool {
 		want[v] = true
 	}
 	if m.legacyExactString {
-		// Legacy requiredClaims matches only exact scalar string 
+		// Legacy requiredClaims matches only exact scalar string
 		// claims; arrays and non-string claims never match.
 		got := getString(claims[m.Claim])
 		return got != "" && want[got]
@@ -2078,7 +2078,7 @@ func (p *JwtAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 
 	slog.Debug("JWT Auth Policy: Token signature validated successfully")
 
-    // Resolve and cache scopes while the matched key manager is known to keep cache-hit behavior consistent.
+	// Resolve and cache scopes while the matched key manager is known to keep cache-hit behavior consistent.
 	scopes := resolveScopes(claims, matchedKeyManager)
 
 	if tokenCaching {
@@ -2290,6 +2290,13 @@ func (p *JwtAuthPolicy) handleAuthFailureHeaders(shared *policy.SharedContext, s
 	}
 
 	var body string
+	if shared.IsLLMAPI() {
+		body = string(policy.BuildOpenAIErrorResponseBody(statusCode, policy.OpenAIError{
+			Message: errorMessage,
+			Code:    "invalid_token",
+		}))
+		return policy.ImmediateResponse{StatusCode: statusCode, Headers: headers, Body: []byte(body)}
+	}
 	switch errorFormat {
 	case "plain":
 		body = errorMessage

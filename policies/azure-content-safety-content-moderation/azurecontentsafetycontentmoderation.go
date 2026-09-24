@@ -278,7 +278,7 @@ func (p *AzureContentSafetyContentModerationPolicy) OnRequestBody(ctx context.Co
 	if reqCtx.Body != nil {
 		content = reqCtx.Body.Content
 	}
-	return p.validatePayload(content, p.requestParams, false).(policy.RequestAction)
+	return p.validatePayload(content, p.requestParams, false, reqCtx.IsLLMAPI()).(policy.RequestAction)
 }
 
 // OnResponseBody validates response body content
@@ -291,11 +291,11 @@ func (p *AzureContentSafetyContentModerationPolicy) OnResponseBody(ctx context.C
 	if respCtx.ResponseBody != nil {
 		content = respCtx.ResponseBody.Content
 	}
-	return p.validatePayload(content, p.responseParams, true).(policy.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true, respCtx.IsLLMAPI()).(policy.ResponseAction)
 }
 
 // validatePayload validates payload against Azure Content Safety, returning policy actions.
-func (p *AzureContentSafetyContentModerationPolicy) validatePayload(payload []byte, params AzureContentSafetyPolicyParams, isResponse bool) interface{} {
+func (p *AzureContentSafetyContentModerationPolicy) validatePayload(payload []byte, params AzureContentSafetyPolicyParams, isResponse bool, llm bool) interface{} {
 	categoryMap := p.buildCategoryMap(params)
 	categories := p.getValidCategories(categoryMap)
 
@@ -324,7 +324,7 @@ func (p *AzureContentSafetyContentModerationPolicy) validatePayload(payload []by
 			return policy.UpstreamRequestModifications{}
 		}
 		slog.Debug("AzureContentSafety: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, nil, "")
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, nil, "", llm)
 	}
 
 	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
@@ -340,7 +340,7 @@ func (p *AzureContentSafetyContentModerationPolicy) validatePayload(payload []by
 			return policy.UpstreamRequestModifications{}
 		}
 		slog.Debug("AzureContentSafety: Error calling Azure Content Safety API", "error", err, "isResponse", isResponse)
-		return p.buildErrorResponse("Error calling Azure Content Safety API", err, isResponse, params.ShowAssessment, nil, "")
+		return p.buildErrorResponse("Error calling Azure Content Safety API", err, isResponse, params.ShowAssessment, nil, "", llm)
 	}
 
 	for _, analysis := range categoriesAnalysis {
@@ -351,7 +351,7 @@ func (p *AzureContentSafetyContentModerationPolicy) validatePayload(payload []by
 
 		if threshold >= 0 && severity >= threshold {
 			slog.Debug("AzureContentSafety: Violation detected", "category", category, "severity", severity, "threshold", threshold, "isResponse", isResponse)
-			return p.buildErrorResponse("Violation of Azure content safety content moderation detected", nil, isResponse, params.ShowAssessment, categoriesAnalysis, extractedValue)
+			return p.buildErrorResponse("Violation of Azure content safety content moderation detected", nil, isResponse, params.ShowAssessment, categoriesAnalysis, extractedValue, llm)
 		}
 	}
 
@@ -364,25 +364,17 @@ func (p *AzureContentSafetyContentModerationPolicy) validatePayload(payload []by
 }
 
 // buildErrorResponse builds a policy error response for both request and response phases
-func (p *AzureContentSafetyContentModerationPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, categoriesAnalysis []map[string]interface{}, inspectedContent string) interface{} {
+func (p *AzureContentSafetyContentModerationPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, categoriesAnalysis []map[string]interface{}, inspectedContent string, llm bool) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, categoriesAnalysis, inspectedContent)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,
 		"guardrailName":  "AzureContentSafetyContentModeration",
 	}
 
-	responseBody := map[string]interface{}{
-		"type":    "AZURE_CONTENT_SAFETY_CONTENT_MODERATION",
-		"message": assessment,
-	}
-
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"AZURE_CONTENT_SAFETY_CONTENT_MODERATION","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 
 	if isResponse {
-		statusCode := GuardrailErrorCode
+		statusCode := guardrailStatus(llm)
 		return policy.DownstreamResponseModifications{
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
@@ -394,7 +386,7 @@ func (p *AzureContentSafetyContentModerationPolicy) buildErrorResponse(reason st
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode:        GuardrailErrorCode,
+		StatusCode:        guardrailStatus(llm),
 		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
@@ -582,4 +574,30 @@ func (p *AzureContentSafetyContentModerationPolicy) buildAssessmentObject(reason
 	}
 
 	return assessment
+}
+
+// guardrailErrorBody renders a guardrail intervention: an OpenAI-compatible error
+// for LLM APIs, the {"type":"AZURE_CONTENT_SAFETY_CONTENT_MODERATION","message":...} shape for other API kinds.
+func guardrailErrorBody(assessment map[string]interface{}, llm bool) []byte {
+	if llm {
+		return policy.BuildOpenAIErrorResponseBody(policy.GuardrailStatusCode, policy.NewGuardrailOpenAIError(assessment))
+	}
+	bodyBytes, err := json.Marshal(map[string]interface{}{
+		"type":    "AZURE_CONTENT_SAFETY_CONTENT_MODERATION",
+		"message": assessment,
+	})
+	if err != nil {
+		return []byte(`{"type":"AZURE_CONTENT_SAFETY_CONTENT_MODERATION","message":"Internal error"}`)
+	}
+	return bodyBytes
+}
+
+// guardrailStatus is the HTTP status of an intervention: 400 on LLM APIs, where
+// OpenAI clients expect content-policy refusals as invalid_request_error, and
+// GuardrailErrorCode for other API kinds.
+func guardrailStatus(llm bool) int {
+	if llm {
+		return policy.GuardrailStatusCode
+	}
+	return GuardrailErrorCode
 }

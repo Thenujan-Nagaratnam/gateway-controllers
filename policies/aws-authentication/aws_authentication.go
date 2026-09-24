@@ -593,8 +593,14 @@ func (p *AWSAuthenticationPolicy) authFailure(shared *policy.SharedContext, reas
 		"error":   "Bad Gateway",
 		"message": "failed to authenticate request to upstream AWS service",
 	})
+	status := http.StatusBadGateway
+	if shared.IsLLMAPI() {
+		body = policy.BuildOpenAIErrorResponseBody(status, policy.OpenAIError{
+			Message: "failed to authenticate request to upstream AWS service",
+		})
+	}
 	return policy.ImmediateResponse{
-		StatusCode: http.StatusBadGateway,
+		StatusCode: status,
 		Headers:    map[string]string{"Content-Type": "application/json"},
 		Body:       body,
 	}

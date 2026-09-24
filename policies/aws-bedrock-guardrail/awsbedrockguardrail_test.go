@@ -314,7 +314,7 @@ func TestValidatePayload_EarlyAndErrorPaths(t *testing.T) {
 	}
 	restored := p.validatePayload([]byte(`{"msg":"EMAIL_0000"}`), AWSBedrockGuardrailPolicyParams{
 		RedactPII: false,
-	}, true, metadata)
+	}, true, metadata, false)
 	respMod, ok := restored.(policy.DownstreamResponseModifications)
 	if !ok {
 		t.Fatalf("expected UpstreamResponseModifications, got %T", restored)
@@ -328,7 +328,7 @@ func TestValidatePayload_EarlyAndErrorPaths(t *testing.T) {
 		JsonPath:           "$.msg",
 		PassthroughOnError: false,
 		ShowAssessment:     false,
-	}, false, map[string]interface{}{})
+	}, false, map[string]interface{}{}, false)
 	immResp, ok := blocked.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse for request block, got %T", blocked)
@@ -341,7 +341,7 @@ func TestValidatePayload_EarlyAndErrorPaths(t *testing.T) {
 	passthrough := p.validatePayload([]byte(`not-json`), AWSBedrockGuardrailPolicyParams{
 		JsonPath:           "$.msg",
 		PassthroughOnError: true,
-	}, false, map[string]interface{}{})
+	}, false, map[string]interface{}{}, false)
 	if _, ok := passthrough.(policy.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications on passthrough, got %T", passthrough)
 	}
@@ -350,7 +350,7 @@ func TestValidatePayload_EarlyAndErrorPaths(t *testing.T) {
 	respBlocked := p.validatePayload([]byte(`not-json`), AWSBedrockGuardrailPolicyParams{
 		JsonPath:           "$.msg",
 		PassthroughOnError: false,
-	}, true, map[string]interface{}{})
+	}, true, map[string]interface{}{}, false)
 	respBlockedMod, ok := respBlocked.(policy.DownstreamResponseModifications)
 	if !ok {
 		t.Fatalf("expected UpstreamResponseModifications for response block, got %T", respBlocked)
@@ -363,7 +363,7 @@ func TestValidatePayload_EarlyAndErrorPaths(t *testing.T) {
 func TestBuildErrorResponse_RequestAndResponse(t *testing.T) {
 	p := &AWSBedrockGuardrailPolicy{}
 
-	reqResp := p.buildErrorResponse("reason", nil, false, false, nil)
+	reqResp := p.buildErrorResponse("reason", nil, false, false, nil, false)
 	imm, ok := reqResp.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse, got %T", reqResp)
@@ -375,7 +375,7 @@ func TestBuildErrorResponse_RequestAndResponse(t *testing.T) {
 		t.Fatalf("expected Content-Type application/json, got %q", ct)
 	}
 
-	respResp := p.buildErrorResponse("reason", nil, true, false, nil)
+	respResp := p.buildErrorResponse("reason", nil, true, false, nil, false)
 	upResp, ok := respResp.(policy.DownstreamResponseModifications)
 	if !ok {
 		t.Fatalf("expected UpstreamResponseModifications, got %T", respResp)

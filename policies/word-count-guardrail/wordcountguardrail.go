@@ -383,7 +383,7 @@ func (p *WordCountGuardrailPolicy) OnRequestBody(ctx context.Context, reqCtx *po
 	if reqCtx.Body != nil {
 		content = reqCtx.Body.Content
 	}
-	return p.validatePayload(content, p.requestParams, false).(policy.RequestAction)
+	return p.validatePayload(content, p.requestParams, false, reqCtx.IsLLMAPI()).(policy.RequestAction)
 }
 
 // OnResponseBody validates the word count of the response body.
@@ -409,10 +409,10 @@ func (p *WordCountGuardrailPolicy) OnResponseBody(ctx context.Context, respCtx *
 	contentStr := string(content)
 	if isSSEChunk(contentStr) {
 		text := extractSSEDeltaContent(contentStr, p.responseParams.StreamingJsonPath)
-		return p.validateWordCount(text, p.responseParams, true)
+		return p.validateWordCount(text, p.responseParams, true, respCtx.IsLLMAPI())
 	}
 
-	return p.validatePayload(content, p.responseParams, true).(policy.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true, respCtx.IsLLMAPI()).(policy.ResponseAction)
 }
 
 // isSSEChunk reports whether s looks like SSE data (has at least one "data: " or "event:" line).
@@ -485,25 +485,17 @@ func joinSSEFragments(value interface{}) string {
 }
 
 // buildErrorResponse builds a v1alpha2 error response for both request and response phases.
-func (p *WordCountGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int) interface{} {
+func (p *WordCountGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, min, max int, llm bool) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, min, max)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,
 		"guardrailName":  "word-count-guardrail",
 	}
 
-	responseBody := map[string]interface{}{
-		"type":    "WORD_COUNT_GUARDRAIL",
-		"message": assessment,
-	}
-
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"WORD_COUNT_GUARDRAIL","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 
 	if isResponse {
-		statusCode := GuardrailErrorCode
+		statusCode := guardrailStatus(llm)
 		return policy.DownstreamResponseModifications{
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
@@ -515,7 +507,7 @@ func (p *WordCountGuardrailPolicy) buildErrorResponse(reason string, validationE
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode:        GuardrailErrorCode,
+		StatusCode:        guardrailStatus(llm),
 		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
@@ -525,7 +517,7 @@ func (p *WordCountGuardrailPolicy) buildErrorResponse(reason string, validationE
 }
 
 // validateWordCount counts words in text and validates against params, returning a v1alpha2 response action.
-func (p *WordCountGuardrailPolicy) validateWordCount(text string, params WordCountGuardrailPolicyParams, isResponse bool) policy.ResponseAction {
+func (p *WordCountGuardrailPolicy) validateWordCount(text string, params WordCountGuardrailPolicyParams, isResponse bool, llm bool) policy.ResponseAction {
 	text = textCleanRegexCompiled.ReplaceAllString(text, "")
 	text = strings.TrimSpace(text)
 
@@ -552,18 +544,18 @@ func (p *WordCountGuardrailPolicy) validateWordCount(text string, params WordCou
 		}
 		slog.Debug("WordCountGuardrail: validation failed",
 			"wordCount", wordCount, "min", params.Min, "max", params.Max, "invert", params.Invert)
-		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max).(policy.ResponseAction)
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max, llm).(policy.ResponseAction)
 	}
 
 	return policy.DownstreamResponseModifications{}
 }
 
 // validatePayload validates payload word count returning v1alpha2 actions.
-func (p *WordCountGuardrailPolicy) validatePayload(payload []byte, params WordCountGuardrailPolicyParams, isResponse bool) interface{} {
+func (p *WordCountGuardrailPolicy) validatePayload(payload []byte, params WordCountGuardrailPolicyParams, isResponse bool, llm bool) interface{} {
 	extractedValue, err := extractStringFromJSONPath(payload, params.JsonPath)
 	if err != nil {
 		slog.Debug("WordCountGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, params.Min, params.Max, llm)
 	}
 
 	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
@@ -594,7 +586,7 @@ func (p *WordCountGuardrailPolicy) validatePayload(payload []byte, params WordCo
 		} else {
 			reason = fmt.Sprintf("word count %d is outside the allowed range %d-%d words", wordCount, params.Min, params.Max)
 		}
-		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max)
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, params.Min, params.Max, llm)
 	}
 
 	slog.Debug("WordCountGuardrail: Validation passed", "wordCount", wordCount, "min", params.Min, "max", params.Max, "isResponse", isResponse)
@@ -635,16 +627,9 @@ func countWords(text string) int {
 }
 
 // buildSSEErrorEvent formats a guardrail intervention as a single SSE data event.
-func (p *WordCountGuardrailPolicy) buildSSEErrorEvent(reason string, rp WordCountGuardrailPolicyParams) []byte {
+func (p *WordCountGuardrailPolicy) buildSSEErrorEvent(reason string, rp WordCountGuardrailPolicyParams, llm bool) []byte {
 	assessment := p.buildAssessmentObject(reason, nil, true, rp.ShowAssessment, rp.Min, rp.Max)
-	responseBody := map[string]interface{}{
-		"type":    "WORD_COUNT_GUARDRAIL",
-		"message": assessment,
-	}
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"WORD_COUNT_GUARDRAIL","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 	return []byte(sseDataPrefix + string(bodyBytes) + "\n\n")
 }
 
@@ -706,15 +691,15 @@ func (p *WordCountGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, resp
 			if !rp.Invert {
 				if count < rp.Min {
 					reason := fmt.Sprintf("word count %d is below minimum of %d words", count, rp.Min)
-					return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp)}
+					return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp, respCtx.IsLLMAPI())}
 				}
 			} else if count >= rp.Min && count <= rp.Max {
 				reason := fmt.Sprintf("word count %d is within the excluded range %d-%d words", count, rp.Min, rp.Max)
-				return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp)}
+				return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp, respCtx.IsLLMAPI())}
 			}
 			return policy.ForwardResponseChunk{}
 		}
-		result := p.validatePayload([]byte(full), p.responseParams, true)
+		result := p.validatePayload([]byte(full), p.responseParams, true, respCtx.IsLLMAPI())
 		if mod, ok := result.(policy.DownstreamResponseModifications); ok && mod.StatusCode != nil {
 			return policy.TerminateResponseChunk{Body: mod.Body}
 		}
@@ -743,13 +728,13 @@ func (p *WordCountGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, resp
 			slog.Debug("WordCountGuardrail: max exceeded",
 				"count", count, "max", rp.Max, "chunkIndex", chunk.Index)
 			reason := fmt.Sprintf("word count %d exceeded maximum of %d words", count, rp.Max)
-			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp)}
+			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp, respCtx.IsLLMAPI())}
 		}
 		if isDone && count < rp.Min {
 			slog.Debug("WordCountGuardrail: below min at stream end",
 				"count", count, "min", rp.Min, "chunkIndex", chunk.Index)
 			reason := fmt.Sprintf("word count %d is below minimum of %d words", count, rp.Min)
-			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp)}
+			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp, respCtx.IsLLMAPI())}
 		}
 		return policy.ForwardResponseChunk{}
 	}
@@ -760,8 +745,34 @@ func (p *WordCountGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, resp
 			slog.Debug("WordCountGuardrail: invert violation at stream end",
 				"count", count, "min", rp.Min, "max", rp.Max, "chunkIndex", chunk.Index)
 			reason := fmt.Sprintf("word count %d is within the excluded range %d-%d words", count, rp.Min, rp.Max)
-			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp)}
+			return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(reason, rp, respCtx.IsLLMAPI())}
 		}
 	}
 	return policy.ForwardResponseChunk{}
+}
+
+// guardrailErrorBody renders a guardrail intervention: an OpenAI-compatible error
+// for LLM APIs, the {"type":"WORD_COUNT_GUARDRAIL","message":...} shape for other API kinds.
+func guardrailErrorBody(assessment map[string]interface{}, llm bool) []byte {
+	if llm {
+		return policy.BuildOpenAIErrorResponseBody(policy.GuardrailStatusCode, policy.NewGuardrailOpenAIError(assessment))
+	}
+	bodyBytes, err := json.Marshal(map[string]interface{}{
+		"type":    "WORD_COUNT_GUARDRAIL",
+		"message": assessment,
+	})
+	if err != nil {
+		return []byte(`{"type":"WORD_COUNT_GUARDRAIL","message":"Internal error"}`)
+	}
+	return bodyBytes
+}
+
+// guardrailStatus is the HTTP status of an intervention: 400 on LLM APIs, where
+// OpenAI clients expect content-policy refusals as invalid_request_error, and
+// GuardrailErrorCode for other API kinds.
+func guardrailStatus(llm bool) int {
+	if llm {
+		return policy.GuardrailStatusCode
+	}
+	return GuardrailErrorCode
 }

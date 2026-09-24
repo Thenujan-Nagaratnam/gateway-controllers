@@ -402,7 +402,7 @@ func (p *URLGuardrailPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.R
 	if reqCtx.Body != nil {
 		content = reqCtx.Body.Content
 	}
-	return p.validatePayload(content, p.requestParams, false).(policy.RequestAction)
+	return p.validatePayload(content, p.requestParams, false, reqCtx.IsLLMAPI()).(policy.RequestAction)
 }
 
 // OnResponseBody validates URLs found in the response body.
@@ -420,10 +420,10 @@ func (p *URLGuardrailPolicy) OnResponseBody(ctx context.Context, respCtx *policy
 	}
 
 	if text := extractSSEDeltaContent(string(content), p.responseParams.StreamingJsonPath); text != "" {
-		return p.validateURLsInText(text, p.responseParams, true).(policy.ResponseAction)
+		return p.validateURLsInText(text, p.responseParams, true, respCtx.IsLLMAPI()).(policy.ResponseAction)
 	}
 
-	return p.validatePayload(content, p.responseParams, true).(policy.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true, respCtx.IsLLMAPI()).(policy.ResponseAction)
 }
 
 // ─── Streaming (SSE) support ──────────────────────────────────────────────────
@@ -508,7 +508,7 @@ func (p *URLGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, respCtx *p
 		if !chunk.EndOfStream {
 			return policy.ForwardResponseChunk{}
 		}
-		result := p.validatePayload([]byte(full), p.responseParams, true)
+		result := p.validatePayload([]byte(full), p.responseParams, true, respCtx.IsLLMAPI())
 		if mod, ok := result.(policy.DownstreamResponseModifications); ok && mod.StatusCode != nil {
 			return policy.TerminateResponseChunk{Body: mod.Body}
 		}
@@ -540,7 +540,7 @@ func (p *URLGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, respCtx *p
 	if len(invalidURLs) > 0 {
 		slog.Debug("URLGuardrail: streaming validation failed",
 			"invalidURLCount", len(invalidURLs), "totalURLCount", len(urls))
-		return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(invalidURLs, p.responseParams.ShowAssessment)}
+		return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(invalidURLs, p.responseParams.ShowAssessment, respCtx.IsLLMAPI())}
 	}
 
 	return policy.ForwardResponseChunk{} // all URLs valid — pass through
@@ -617,31 +617,24 @@ func joinSSEFragments(value interface{}) string {
 
 // buildSSEErrorEvent formats a guardrail intervention as a single SSE data
 // event, replacing the offending chunk in the stream.
-func (p *URLGuardrailPolicy) buildSSEErrorEvent(invalidURLs []string, showAssessment bool) []byte {
+func (p *URLGuardrailPolicy) buildSSEErrorEvent(invalidURLs []string, showAssessment bool, llm bool) []byte {
 	assessment := p.buildAssessmentObject("Violation of url validity detected", nil, true, showAssessment, invalidURLs)
-	responseBody := map[string]interface{}{
-		"type":    "URL_GUARDRAIL",
-		"message": assessment,
-	}
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"URL_GUARDRAIL","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 	return []byte(sseDataPrefix + string(bodyBytes) + "\n\n")
 }
 
-func (p *URLGuardrailPolicy) validatePayload(payload []byte, params URLGuardrailPolicyParams, isResponse bool) interface{} {
+func (p *URLGuardrailPolicy) validatePayload(payload []byte, params URLGuardrailPolicyParams, isResponse bool, llm bool) interface{} {
 	// Extract value using JSONPath
 	extractedValue, err := extractStringFromJSONPath(payload, params.JsonPath)
 	if err != nil {
 		slog.Debug("URLGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, []string{})
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, []string{}, llm)
 	}
 
-	return p.validateURLsInText(extractedValue, params, isResponse)
+	return p.validateURLsInText(extractedValue, params, isResponse, llm)
 }
 
-func (p *URLGuardrailPolicy) validateURLsInText(text string, params URLGuardrailPolicyParams, isResponse bool) interface{} {
+func (p *URLGuardrailPolicy) validateURLsInText(text string, params URLGuardrailPolicyParams, isResponse bool, llm bool) interface{} {
 	text = textCleanRegexCompiled.ReplaceAllString(text, "")
 	text = strings.TrimSpace(text)
 
@@ -667,7 +660,7 @@ func (p *URLGuardrailPolicy) validateURLsInText(text string, params URLGuardrail
 
 	if len(invalidURLs) > 0 {
 		slog.Debug("URLGuardrail: Validation failed", "invalidURLCount", len(invalidURLs), "totalURLCount", len(urls), "isResponse", isResponse)
-		return p.buildErrorResponse("Violation of url validity detected", nil, isResponse, params.ShowAssessment, invalidURLs)
+		return p.buildErrorResponse("Violation of url validity detected", nil, isResponse, params.ShowAssessment, invalidURLs, llm)
 	}
 
 	if len(urls) > 0 {
@@ -681,25 +674,17 @@ func (p *URLGuardrailPolicy) validateURLsInText(text string, params URLGuardrail
 }
 
 // buildErrorResponse builds a policy error response for both request and response phases.
-func (p *URLGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, invalidURLs []string) interface{} {
+func (p *URLGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, invalidURLs []string, llm bool) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, invalidURLs)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,
 		"guardrailName":  "url-guardrail",
 	}
 
-	responseBody := map[string]interface{}{
-		"type":    "URL_GUARDRAIL",
-		"message": assessment,
-	}
-
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"URL_GUARDRAIL","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 
 	if isResponse {
-		statusCode := GuardrailErrorCode
+		statusCode := guardrailStatus(llm)
 		return policy.DownstreamResponseModifications{
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
@@ -709,11 +694,37 @@ func (p *URLGuardrailPolicy) buildErrorResponse(reason string, validationError e
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode:        GuardrailErrorCode,
+		StatusCode:        guardrailStatus(llm),
 		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
 		Body: bodyBytes,
 	}
+}
+
+// guardrailErrorBody renders a guardrail intervention: an OpenAI-compatible error
+// for LLM APIs, the {"type":"URL_GUARDRAIL","message":...} shape for other API kinds.
+func guardrailErrorBody(assessment map[string]interface{}, llm bool) []byte {
+	if llm {
+		return policy.BuildOpenAIErrorResponseBody(policy.GuardrailStatusCode, policy.NewGuardrailOpenAIError(assessment))
+	}
+	bodyBytes, err := json.Marshal(map[string]interface{}{
+		"type":    "URL_GUARDRAIL",
+		"message": assessment,
+	})
+	if err != nil {
+		return []byte(`{"type":"URL_GUARDRAIL","message":"Internal error"}`)
+	}
+	return bodyBytes
+}
+
+// guardrailStatus is the HTTP status of an intervention: 400 on LLM APIs, where
+// OpenAI clients expect content-policy refusals as invalid_request_error, and
+// GuardrailErrorCode for other API kinds.
+func guardrailStatus(llm bool) int {
+	if llm {
+		return policy.GuardrailStatusCode
+	}
+	return GuardrailErrorCode
 }

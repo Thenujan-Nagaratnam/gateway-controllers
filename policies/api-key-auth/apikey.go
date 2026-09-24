@@ -265,7 +265,7 @@ func (p *APIKeyPolicy) failAuth(shared *policy.SharedContext, statusCode int, er
 		AuthType:      AuthType,
 		Previous:      shared.AuthContext,
 	}
-	v1resp := p.buildErrorResponse(statusCode, errorFormat, errorMessage, reason)
+	v1resp := p.buildErrorResponse(statusCode, errorFormat, errorMessage, reason, shared.IsLLMAPI())
 	return &policy.ImmediateResponse{
 		StatusCode: v1resp.StatusCode,
 		Headers:    v1resp.Headers,
@@ -289,10 +289,17 @@ func generateTokenID(key string) string {
 }
 
 // buildErrorResponse constructs the ImmediateResponse body and headers for an auth failure.
-func (p *APIKeyPolicy) buildErrorResponse(statusCode int, errorFormat, errorMessage, reason string) policy.ImmediateResponse {
+func (p *APIKeyPolicy) buildErrorResponse(statusCode int, errorFormat, errorMessage, reason string, llm bool) policy.ImmediateResponse {
 	headers := map[string]string{"content-type": "application/json"}
 
 	var body string
+	if llm {
+		body = string(policy.BuildOpenAIErrorResponseBody(statusCode, policy.OpenAIError{
+			Message: errorMessage,
+			Code:    "invalid_api_key",
+		}))
+		return policy.ImmediateResponse{StatusCode: statusCode, Headers: headers, Body: []byte(body)}
+	}
 	switch errorFormat {
 	case "plain":
 		body = errorMessage

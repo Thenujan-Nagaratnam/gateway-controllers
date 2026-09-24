@@ -404,12 +404,5 @@ func looksLikeEventStream(body []byte) bool {
 }
 
 func errResponse(statusCode int, message string) policy.ImmediateResponse {
-	body, _ := json.Marshal(map[string]interface{}{
-		"error": map[string]string{"message": message, "type": "invalid_request_error"},
-	})
-	return policy.ImmediateResponse{
-		StatusCode: statusCode,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       body,
-	}
+	return policy.NewOpenAIErrorResponse(statusCode, policy.OpenAIError{Message: message})
 }

@@ -206,18 +206,18 @@ func (p *SubscriptionValidationPolicy) Mode() policy.ProcessingMode {
 // OnRequestHeaders validates the subscription in the request header phase.
 func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]interface{}) policy.RequestHeaderAction {
 	if ctx == nil || reqCtx == nil || reqCtx.SharedContext == nil {
-		return p.forbiddenResponse("request context is missing").(policy.ImmediateResponse)
+		return p.forbiddenResponse("request context is missing", false).(policy.ImmediateResponse)
 	}
 
 	apiID := reqCtx.SharedContext.APIId
 	if strings.TrimSpace(apiID) == "" {
 		slog.Error("subscriptionValidation: APIId is empty in SharedContext; failing validation")
-		return p.forbiddenResponse("API id is missing").(policy.ImmediateResponse)
+		return p.forbiddenResponse("API id is missing", false).(policy.ImmediateResponse)
 	}
 
 	if p.store == nil {
 		slog.Error("subscriptionValidation: subscription store is not initialized")
-		return p.forbiddenResponse("subscription store is not available").(policy.ImmediateResponse)
+		return p.forbiddenResponse("subscription store is not available", false).(policy.ImmediateResponse)
 	}
 
 	// Select the downstream snapshot first so the entitlement decision is made
@@ -229,7 +229,7 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 		if len(headerValues) > 0 {
 			token := strings.TrimSpace(headerValues[0])
 			if token != "" {
-				block, subscription := p.validateByToken(apiID, token)
+				block, subscription := p.validateByToken(apiID, token, reqCtx.IsLLMAPI())
 				if block == nil {
 					writeSubscriptionMetadata(reqCtx.SharedContext, subscription)
 					return policy.UpstreamRequestHeaderModifications{
@@ -241,7 +241,7 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 		}
 		if p.cfg.SubscriptionKeyCookie != "" {
 			if token := getCookieValue(ds, p.cfg.SubscriptionKeyCookie); token != "" {
-				block, subscription := p.validateByToken(apiID, token)
+				block, subscription := p.validateByToken(apiID, token, reqCtx.IsLLMAPI())
 				if block == nil {
 					writeSubscriptionMetadata(reqCtx.SharedContext, subscription)
 					// The Cookie header is read from the live set here (not the
@@ -271,7 +271,7 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 		if rawAppID, ok := metadata[applicationIDMetadataKey]; ok {
 			appID := strings.TrimSpace(fmt.Sprint(rawAppID))
 			if appID != "" {
-				block, subscription := p.validateByApplication(apiID, appID)
+				block, subscription := p.validateByApplication(apiID, appID, reqCtx.IsLLMAPI())
 				if block == nil {
 					writeSubscriptionMetadata(reqCtx.SharedContext, subscription)
 					return policy.UpstreamRequestHeaderModifications{}
@@ -281,14 +281,18 @@ func (p *SubscriptionValidationPolicy) OnRequestHeaders(ctx context.Context, req
 		}
 	}
 
-	return p.forbiddenResponse("no subscription token or application identity provided").(policy.ImmediateResponse)
+	return p.forbiddenResponse("no subscription token or application identity provided", reqCtx.IsLLMAPI()).(policy.ImmediateResponse)
 }
 
 // forbiddenResponse constructs an ImmediateResponse with status 403.
-func (p *SubscriptionValidationPolicy) forbiddenResponse(detail string) policy.RequestAction {
+func (p *SubscriptionValidationPolicy) forbiddenResponse(detail string, llm bool) policy.RequestAction {
 	message := forbiddenMessage
 	if detail != "" {
 		message = fmt.Sprintf("%s: %s", message, detail)
+	}
+
+	if llm {
+		return policy.NewOpenAIErrorResponse(forbiddenStatusCode, policy.OpenAIError{Message: message})
 	}
 
 	payload := map[string]string{
@@ -311,17 +315,17 @@ func (p *SubscriptionValidationPolicy) forbiddenResponse(detail string) policy.R
 
 // validateByToken looks up the subscription entry for the given token and enforces
 // plan-based rate limits. Returns (nil, entry) on success, (action, nil) on failure.
-func (p *SubscriptionValidationPolicy) validateByToken(apiID, token string) (policy.RequestAction, *policyenginev1.SubscriptionEntry) {
+func (p *SubscriptionValidationPolicy) validateByToken(apiID, token string, llm bool) (policy.RequestAction, *policyenginev1.SubscriptionEntry) {
 	hashedToken := policyenginev1.HashSubscriptionToken(token)
 	active, entry := p.store.IsActiveByToken(apiID, hashedToken)
 	if !active {
 		slog.Info("subscriptionValidation: no active subscription found (token)",
 			"apiId", apiID)
-		return p.forbiddenResponse(""), nil
+		return p.forbiddenResponse("", llm), nil
 	}
 
 	if entry != nil && entry.ThrottleLimitCount > 0 && entry.ThrottleLimitUnit != "" {
-		if blocked := p.checkRateLimit(apiID, token, entry); blocked != nil {
+		if blocked := p.checkRateLimit(apiID, token, entry, llm); blocked != nil {
 			return blocked, nil
 		}
 	}
@@ -330,7 +334,7 @@ func (p *SubscriptionValidationPolicy) validateByToken(apiID, token string) (pol
 }
 
 // checkRateLimit enforces the plan's throttle limit for the given token.
-func (p *SubscriptionValidationPolicy) checkRateLimit(apiID, token string, entry *policyenginev1.SubscriptionEntry) policy.RequestAction {
+func (p *SubscriptionValidationPolicy) checkRateLimit(apiID, token string, entry *policyenginev1.SubscriptionEntry, llm bool) policy.RequestAction {
 	window := windowDuration(entry.ThrottleLimitUnit)
 	if window == 0 {
 		return nil
@@ -360,7 +364,7 @@ func (p *SubscriptionValidationPolicy) checkRateLimit(apiID, token string, entry
 
 	if exceeded {
 		if entry.StopOnQuotaReach {
-			return p.rateLimitResponse(limit, remaining, resetAt, window)
+			return p.rateLimitResponse(limit, remaining, resetAt, window, llm)
 		}
 		slog.Warn("subscriptionValidation: quota exceeded but stopOnQuotaReach is false, allowing",
 			"apiId", apiID)
@@ -371,17 +375,17 @@ func (p *SubscriptionValidationPolicy) checkRateLimit(apiID, token string, entry
 
 // validateByApplication looks up the subscription entry for the given application ID and
 // enforces plan-based rate limits. Returns (nil, entry) on success, (action, nil) on failure.
-func (p *SubscriptionValidationPolicy) validateByApplication(apiID, appID string) (policy.RequestAction, *policyenginev1.SubscriptionEntry) {
+func (p *SubscriptionValidationPolicy) validateByApplication(apiID, appID string, llm bool) (policy.RequestAction, *policyenginev1.SubscriptionEntry) {
 	active, entry := p.store.IsActiveByApplication(apiID, appID)
 	if !active {
 		slog.Info("subscriptionValidation: no active subscription found (appId fallback)",
 			"apiId", apiID,
 			"applicationId", appID)
-		return p.forbiddenResponse(""), nil
+		return p.forbiddenResponse("", llm), nil
 	}
 
 	if entry != nil && entry.ThrottleLimitCount > 0 && entry.ThrottleLimitUnit != "" {
-		if blocked := p.checkRateLimit(apiID, appID, entry); blocked != nil {
+		if blocked := p.checkRateLimit(apiID, appID, entry, llm); blocked != nil {
 			return blocked, nil
 		}
 	}
@@ -444,7 +448,7 @@ func getCookieValue(headers *policy.Headers, name string) string {
 }
 
 // rateLimitResponse constructs a 429 Too Many Requests response.
-func (p *SubscriptionValidationPolicy) rateLimitResponse(limit, remaining int, resetAt time.Time, window time.Duration) policy.RequestAction {
+func (p *SubscriptionValidationPolicy) rateLimitResponse(limit, remaining int, resetAt time.Time, window time.Duration, llm bool) policy.RequestAction {
 	payload := map[string]interface{}{
 		"error":   "rate_limit_exceeded",
 		"message": fmt.Sprintf("Subscription quota exceeded: %d requests per %s", limit, entryThrottleUnitString(window)),
@@ -452,6 +456,12 @@ func (p *SubscriptionValidationPolicy) rateLimitResponse(limit, remaining int, r
 	body, err := json.Marshal(payload)
 	if err != nil {
 		body = []byte(`{"error":"rate_limit_exceeded","message":"subscription quota exceeded"}`)
+	}
+	if llm {
+		body = policy.BuildOpenAIErrorResponseBody(429, policy.OpenAIError{
+			Message: payload["message"].(string),
+			Code:    "rate_limit_exceeded",
+		})
 	}
 
 	resetUnix := resetAt.Unix()

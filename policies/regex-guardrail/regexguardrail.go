@@ -235,7 +235,7 @@ func (p *RegexGuardrailPolicy) OnRequestBody(ctx context.Context, reqCtx *policy
 	if reqCtx.Body != nil {
 		content = reqCtx.Body.Content
 	}
-	return p.validatePayload(content, p.requestParams, false).(policy.RequestAction)
+	return p.validatePayload(content, p.requestParams, false, reqCtx.IsLLMAPI()).(policy.RequestAction)
 }
 
 // OnResponseBody validates response body against regex pattern.
@@ -248,11 +248,11 @@ func (p *RegexGuardrailPolicy) OnResponseBody(ctx context.Context, respCtx *poli
 	if respCtx.ResponseBody != nil {
 		content = respCtx.ResponseBody.Content
 	}
-	return p.validatePayload(content, p.responseParams, true).(policy.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true, respCtx.IsLLMAPI()).(policy.ResponseAction)
 }
 
 // validatePayload validates payload against regex pattern, returning policy actions.
-func (p *RegexGuardrailPolicy) validatePayload(payload []byte, params RegexGuardrailPolicyParams, isResponse bool) interface{} {
+func (p *RegexGuardrailPolicy) validatePayload(payload []byte, params RegexGuardrailPolicyParams, isResponse bool, llm bool) interface{} {
 	if len(payload) == 0 {
 		if isResponse {
 			return policy.DownstreamResponseModifications{}
@@ -262,13 +262,13 @@ func (p *RegexGuardrailPolicy) validatePayload(payload []byte, params RegexGuard
 	extractedValue, err := utils.ExtractStringValueFromJsonpath(payload, params.JsonPath)
 	if err != nil {
 		slog.Debug("RegexGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, llm)
 	}
 
 	compiledRegex, err := regexp.Compile(params.Regex)
 	if err != nil {
 		slog.Debug("RegexGuardrail: Invalid regex pattern", "regex", params.Regex, "error", err, "isResponse", isResponse)
-		return p.buildErrorResponse("Invalid regex pattern", err, isResponse, params.ShowAssessment)
+		return p.buildErrorResponse("Invalid regex pattern", err, isResponse, params.ShowAssessment, false) // configuration error
 	}
 	matched := compiledRegex.MatchString(extractedValue)
 
@@ -281,7 +281,7 @@ func (p *RegexGuardrailPolicy) validatePayload(payload []byte, params RegexGuard
 
 	if !validationPassed {
 		slog.Debug("RegexGuardrail: Validation failed", "regex", params.Regex, "matched", matched, "invert", params.Invert, "isResponse", isResponse)
-		return p.buildErrorResponse("Violated regular expression: "+params.Regex, nil, isResponse, params.ShowAssessment)
+		return p.buildErrorResponse("Violated regular expression: "+params.Regex, nil, isResponse, params.ShowAssessment, llm)
 	}
 
 	slog.Debug("RegexGuardrail: Validation passed", "regex", params.Regex, "matched", matched, "invert", params.Invert, "isResponse", isResponse)
@@ -347,7 +347,7 @@ func (p *RegexGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, respCtx 
 		if !chunk.EndOfStream {
 			return policy.ForwardResponseChunk{}
 		}
-		result := p.validatePayload([]byte(full), p.responseParams, true)
+		result := p.validatePayload([]byte(full), p.responseParams, true, respCtx.IsLLMAPI())
 		if mod, ok := result.(policy.DownstreamResponseModifications); ok && mod.StatusCode != nil {
 			return policy.TerminateResponseChunk{Body: mod.Body}
 		}
@@ -391,7 +391,7 @@ func (p *RegexGuardrailPolicy) OnResponseBodyChunk(ctx context.Context, respCtx 
 	if violated {
 		slog.Debug("RegexGuardrail: streaming validation failed",
 			"regex", rp.Regex, "invert", rp.Invert, "chunkIndex", chunk.Index)
-		return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(rp)}
+		return policy.TerminateResponseChunk{Body: p.buildSSEErrorEvent(rp, respCtx.IsLLMAPI())}
 	}
 
 	return policy.ForwardResponseChunk{}
@@ -469,39 +469,24 @@ func joinSSEFragments(value interface{}) string {
 // buildSSEErrorEvent formats a guardrail intervention as a single SSE data
 // event, replacing the offending chunk in the stream. ImmediateResponse is
 // not available once response headers are committed.
-func (p *RegexGuardrailPolicy) buildSSEErrorEvent(rp RegexGuardrailPolicyParams) []byte {
+func (p *RegexGuardrailPolicy) buildSSEErrorEvent(rp RegexGuardrailPolicyParams, llm bool) []byte {
 	assessment := p.buildAssessmentObject("Violated regular expression: "+rp.Regex, nil, true, rp.ShowAssessment)
-	responseBody := map[string]interface{}{
-		"type":    "REGEX_GUARDRAIL",
-		"message": assessment,
-	}
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"REGEX_GUARDRAIL","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 	return []byte(sseDataPrefix + string(bodyBytes) + "\n\n")
 }
 
 // buildErrorResponse builds a policy error response for both request and response phases.
-func (p *RegexGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool) interface{} {
+func (p *RegexGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, llm bool) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,
 		"guardrailName":  "regex-guardrail",
 	}
 
-	responseBody := map[string]interface{}{
-		"type":    "REGEX_GUARDRAIL",
-		"message": assessment,
-	}
-
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"REGEX_GUARDRAIL","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 
 	if isResponse {
-		statusCode := GuardrailErrorCode
+		statusCode := guardrailStatus(llm)
 		return policy.DownstreamResponseModifications{
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
@@ -511,9 +496,35 @@ func (p *RegexGuardrailPolicy) buildErrorResponse(reason string, validationError
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode:        GuardrailErrorCode,
+		StatusCode:        guardrailStatus(llm),
 		AnalyticsMetadata: analyticsMetadata,
 		Headers:           map[string]string{"Content-Type": "application/json"},
 		Body:              bodyBytes,
 	}
+}
+
+// guardrailErrorBody renders a guardrail intervention: an OpenAI-compatible error
+// for LLM APIs, the {"type":"REGEX_GUARDRAIL","message":...} shape for other API kinds.
+func guardrailErrorBody(assessment map[string]interface{}, llm bool) []byte {
+	if llm {
+		return policy.BuildOpenAIErrorResponseBody(policy.GuardrailStatusCode, policy.NewGuardrailOpenAIError(assessment))
+	}
+	bodyBytes, err := json.Marshal(map[string]interface{}{
+		"type":    "REGEX_GUARDRAIL",
+		"message": assessment,
+	})
+	if err != nil {
+		return []byte(`{"type":"REGEX_GUARDRAIL","message":"Internal error"}`)
+	}
+	return bodyBytes
+}
+
+// guardrailStatus is the HTTP status of an intervention: 400 on LLM APIs, where
+// OpenAI clients expect content-policy refusals as invalid_request_error, and
+// GuardrailErrorCode for other API kinds.
+func guardrailStatus(llm bool) int {
+	if llm {
+		return policy.GuardrailStatusCode
+	}
+	return GuardrailErrorCode
 }

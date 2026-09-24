@@ -502,7 +502,7 @@ func (p *JSONXMLMediationPolicy) OnRequestBody(ctx context.Context, reqCtx *poli
 			"Content-Type must be %s for downstream payload format %s",
 			expectedContentTypeMessage(p.downstreamPayloadFormat),
 			p.downstreamPayloadFormat,
-		))
+		), reqCtx.IsLLMAPI())
 	}
 
 	convertedBody, convertedContentType, convErr := p.convertBetweenFormats(
@@ -511,7 +511,7 @@ func (p *JSONXMLMediationPolicy) OnRequestBody(ctx context.Context, reqCtx *poli
 		p.upstreamPayloadFormat,
 	)
 	if convErr != nil {
-		return p.handleInternalServerError(convErr.Error())
+		return p.handleInternalServerError(convErr.Error(), reqCtx.IsLLMAPI())
 	}
 
 	return policy.UpstreamRequestModifications{
@@ -549,7 +549,7 @@ func (p *JSONXMLMediationPolicy) OnResponseBody(ctx context.Context, respCtx *po
 			"Content-Type must be %s in response for upstream payload format %s",
 			expectedContentTypeMessage(p.upstreamPayloadFormat),
 			p.upstreamPayloadFormat,
-		))
+		), respCtx.IsLLMAPI())
 	}
 
 	convertedBody, convertedContentType, convErr := p.convertBetweenFormats(
@@ -558,7 +558,7 @@ func (p *JSONXMLMediationPolicy) OnResponseBody(ctx context.Context, respCtx *po
 		p.downstreamPayloadFormat,
 	)
 	if convErr != nil {
-		return p.handleInternalServerErrorResponse(convErr.Error())
+		return p.handleInternalServerErrorResponse(convErr.Error(), respCtx.IsLLMAPI())
 	}
 
 	return policy.DownstreamResponseModifications{
@@ -583,15 +583,21 @@ func isSSEResponse(s string) bool {
 	return false
 }
 
-func (p *JSONXMLMediationPolicy) handleInternalServerError(message string) policy.RequestAction {
+func (p *JSONXMLMediationPolicy) handleInternalServerError(message string, llm bool) policy.RequestAction {
 	errorResponse := map[string]interface{}{
 		"error":   "Internal Server Error",
 		"message": message,
 	}
 	bodyBytes, _ := json.Marshal(errorResponse)
+	statusCode := 500
+	if llm {
+		// The request body could not be mediated as sent: a client error.
+		statusCode = 400
+		bodyBytes = policy.BuildOpenAIErrorResponseBody(statusCode, policy.OpenAIError{Message: message})
+	}
 
 	return policy.ImmediateResponse{
-		StatusCode: 500,
+		StatusCode: statusCode,
 		Headers: map[string]string{
 			"content-type":   "application/json",
 			"content-length": fmt.Sprintf("%d", len(bodyBytes)),
@@ -611,12 +617,15 @@ func getFirstHeader(headers *policy.Headers, key string) string {
 	return strings.ToLower(vals[0])
 }
 
-func (p *JSONXMLMediationPolicy) handleInternalServerErrorResponse(message string) policy.ResponseAction {
+func (p *JSONXMLMediationPolicy) handleInternalServerErrorResponse(message string, llm bool) policy.ResponseAction {
 	errorResponse := map[string]interface{}{
 		"error":   "Internal Server Error",
 		"message": message,
 	}
 	bodyBytes, _ := json.Marshal(errorResponse)
+	if llm {
+		bodyBytes = policy.BuildOpenAIErrorResponseBody(500, policy.OpenAIError{Message: message})
+	}
 
 	statusCode := 500
 	return policy.DownstreamResponseModifications{

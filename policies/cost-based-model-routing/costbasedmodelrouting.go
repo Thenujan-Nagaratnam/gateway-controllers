@@ -216,11 +216,7 @@ func (p *CostBasedModelRoutingPolicy) OnRequestBody(
 	}
 	updated, err := json.Marshal(payload)
 	if err != nil {
-		return policy.ImmediateResponse{
-			StatusCode: 500,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       []byte(`{"error":"failed to prepare routed request"}`),
-		}
+		return policy.NewOpenAIErrorResponse(500, policy.OpenAIError{Message: "failed to prepare routed request"})
 	}
 
 	mods := policy.UpstreamRequestModifications{Body: updated}
@@ -504,33 +500,18 @@ func (p *CostBasedModelRoutingPolicy) chargeOnce(ctx context.Context, metadata m
 }
 
 func badRequest(message string) policy.ImmediateResponse {
-	body, _ := json.Marshal(map[string]string{"error": message})
-	return policy.ImmediateResponse{
-		StatusCode: 400,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       body,
-	}
+	return policy.NewOpenAIErrorResponse(400, policy.OpenAIError{Message: message})
 }
 
 func serviceUnavailable(message string) policy.ImmediateResponse {
-	body, _ := json.Marshal(map[string]string{"error": message})
-	return policy.ImmediateResponse{
-		StatusCode: 503,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       body,
-	}
+	return policy.NewOpenAIErrorResponse(503, policy.OpenAIError{Message: message})
 }
 
 func budgetExhaustedResponse() policy.ImmediateResponse {
-	body, _ := json.Marshal(map[string]string{
-		"error": "requested model has no available budget or the fallback budget is missing or exhausted",
-		"code":  "cost_based_model_routing_budget_exhausted",
+	return policy.NewOpenAIErrorResponse(429, policy.OpenAIError{
+		Message: "requested model has no available budget or the fallback budget is missing or exhausted",
+		Code:    "cost_based_model_routing_budget_exhausted",
 	})
-	return policy.ImmediateResponse{
-		StatusCode: 429,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       body,
-	}
 }
 
 // rewriteQueryParameter replaces (or adds) the model query parameter while

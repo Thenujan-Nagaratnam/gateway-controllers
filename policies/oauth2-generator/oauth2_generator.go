@@ -1090,8 +1090,14 @@ func (p *Policy) authFailure(shared *policy.SharedContext, reason string, cause 
 		"error":   "Bad Gateway",
 		"message": "failed to authenticate request to upstream service",
 	})
+	status := http.StatusBadGateway
+	if shared.IsLLMAPI() {
+		body = policy.BuildOpenAIErrorResponseBody(status, policy.OpenAIError{
+			Message: "failed to authenticate request to upstream service",
+		})
+	}
 	return policy.ImmediateResponse{
-		StatusCode: http.StatusBadGateway,
+		StatusCode: status,
 		Headers:    map[string]string{"Content-Type": "application/json"},
 		Body:       body,
 	}

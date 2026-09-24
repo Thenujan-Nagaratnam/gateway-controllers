@@ -18,6 +18,7 @@ package ratelimit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strconv"
@@ -2058,7 +2059,7 @@ func TestHeaderBuildersAndResponseConstruction(t *testing.T) {
 
 	t.Run("buildRateLimitResponse appends violated quota and sets content type", func(t *testing.T) {
 		violated := &limiter.Result{Allowed: false, Limit: 10, Remaining: 0, RetryAfter: 3 * time.Second, Reset: time.Now().Add(time.Minute), Duration: time.Minute}
-		resp := p.buildRateLimitResponse(violated, "blocked", []quotaResult{{QuotaName: "other", Result: newResult(true, 100, 90, 0, time.Minute)}})
+		resp := p.buildRateLimitResponse(violated, "blocked", []quotaResult{{QuotaName: "other", Result: newResult(true, 100, 90, 0, time.Minute)}}, false)
 		if resp.Headers["x-ratelimit-quota"] != "blocked" {
 			t.Fatalf("expected violated quota header, got %q", resp.Headers["x-ratelimit-quota"])
 		}
@@ -2066,8 +2067,38 @@ func TestHeaderBuildersAndResponseConstruction(t *testing.T) {
 			t.Fatalf("expected application/json content-type, got %q", resp.Headers["content-type"])
 		}
 
+		respLLM := p.buildRateLimitResponse(violated, "blocked", nil, true)
+		var llmBody struct {
+			Error struct {
+				Type string  `json:"type"`
+				Code *string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(respLLM.Body, &llmBody); err != nil {
+			t.Fatalf("LLM rate limit body is not JSON: %v (%s)", err, respLLM.Body)
+		}
+		if llmBody.Error.Type != "rate_limit_error" || llmBody.Error.Code == nil || *llmBody.Error.Code != "rate_limit_exceeded" {
+			t.Fatalf("expected OpenAI rate limit error, got %s", respLLM.Body)
+		}
+		if respLLM.Headers["content-type"] != "application/json" {
+			t.Fatalf("expected application/json content-type for LLM API, got %q", respLLM.Headers["content-type"])
+		}
+
+		pOdd := &RateLimitPolicy{responseFormat: "json", statusCode: 509, responseBody: "{}"}
+		if got := pOdd.buildRateLimitResponse(violated, "blocked", nil, true).StatusCode; got != 509 {
+			t.Fatalf("LLM APIs must preserve the configured status, got %d", got)
+		}
+		if got := pOdd.buildRateLimitResponse(violated, "blocked", nil, false).StatusCode; got != 509 {
+			t.Fatalf("non-LLM APIs must keep the configured status, got %d", got)
+		}
+
+		pCustom := &RateLimitPolicy{responseFormat: "plain", statusCode: 429, responseBody: "slow down"}
+		if respCustom := pCustom.buildRateLimitResponse(violated, "blocked", nil, true); !strings.Contains(string(respCustom.Body), `"type":"rate_limit_error"`) {
+			t.Fatalf("LLM APIs must use the standard envelope even with a custom body, got %s", respCustom.Body)
+		}
+
 		pPlain := &RateLimitPolicy{includeXRL: true, includeIETF: true, includeRetry: true, responseFormat: "plain", statusCode: 429, responseBody: "limited"}
-		respPlain := pPlain.buildRateLimitResponse(violated, "blocked", nil)
+		respPlain := pPlain.buildRateLimitResponse(violated, "blocked", nil, false)
 		if respPlain.Headers["content-type"] != "text/plain" {
 			t.Fatalf("expected text/plain content-type, got %q", respPlain.Headers["content-type"])
 		}
@@ -2428,7 +2459,7 @@ func TestBuildMultiQuotaHeadersOnlyNilResults(t *testing.T) {
 
 func TestBuildRateLimitResponseWithoutViolatedResult(t *testing.T) {
 	p := &RateLimitPolicy{includeXRL: true, includeIETF: true, includeRetry: true, statusCode: 429, responseBody: "{}", responseFormat: "json"}
-	resp := p.buildRateLimitResponse(nil, "q1", nil)
+	resp := p.buildRateLimitResponse(nil, "q1", nil, false)
 	if resp.Headers["x-ratelimit-quota"] != "q1" {
 		t.Fatalf("expected x-ratelimit-quota=q1, got %q", resp.Headers["x-ratelimit-quota"])
 	}

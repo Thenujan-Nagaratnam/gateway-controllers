@@ -246,7 +246,7 @@ func (p *JSONSchemaGuardrailPolicy) OnRequestBody(ctx context.Context, reqCtx *p
 	if reqCtx.Body != nil {
 		content = reqCtx.Body.Content
 	}
-	return p.validatePayload(content, p.requestParams, false).(policy.RequestAction)
+	return p.validatePayload(content, p.requestParams, false, reqCtx.IsLLMAPI()).(policy.RequestAction)
 }
 
 // OnResponseBody validates response body against JSON schema.
@@ -259,11 +259,11 @@ func (p *JSONSchemaGuardrailPolicy) OnResponseBody(ctx context.Context, respCtx 
 	if respCtx.ResponseBody != nil {
 		content = respCtx.ResponseBody.Content
 	}
-	return p.validatePayload(content, p.responseParams, true).(policy.ResponseAction)
+	return p.validatePayload(content, p.responseParams, true, respCtx.IsLLMAPI()).(policy.ResponseAction)
 }
 
 // validatePayload validates payload against JSON schema, returning policy actions.
-func (p *JSONSchemaGuardrailPolicy) validatePayload(payload []byte, params JSONSchemaGuardrailPolicyParams, isResponse bool) interface{} {
+func (p *JSONSchemaGuardrailPolicy) validatePayload(payload []byte, params JSONSchemaGuardrailPolicyParams, isResponse bool, llm bool) interface{} {
 	schemaLoader := gojsonschema.NewStringLoader(params.Schema)
 
 	var documentLoader gojsonschema.JSONLoader
@@ -271,7 +271,7 @@ func (p *JSONSchemaGuardrailPolicy) validatePayload(payload []byte, params JSONS
 		extractedValue, err := extractValueFromJSONPathForSchema(payload, params.JsonPath)
 		if err != nil {
 			slog.Debug("JSONSchemaGuardrail: Error extracting value from JSONPath", "jsonPath", params.JsonPath, "error", err, "isResponse", isResponse)
-			return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, nil)
+			return p.buildErrorResponse("Error extracting value from JSONPath", err, isResponse, params.ShowAssessment, nil, llm)
 		}
 		documentLoader = gojsonschema.NewBytesLoader(extractedValue)
 	} else {
@@ -281,7 +281,7 @@ func (p *JSONSchemaGuardrailPolicy) validatePayload(payload []byte, params JSONS
 	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
 	if err != nil {
 		slog.Debug("JSONSchemaGuardrail: Error validating schema", "error", err, "isResponse", isResponse)
-		return p.buildErrorResponse("Error validating schema", err, isResponse, params.ShowAssessment, nil)
+		return p.buildErrorResponse("Error validating schema", err, isResponse, params.ShowAssessment, nil, llm)
 	}
 
 	var validationPassed bool
@@ -299,7 +299,7 @@ func (p *JSONSchemaGuardrailPolicy) validatePayload(payload []byte, params JSONS
 		} else {
 			reason = "JSON schema validation failed"
 		}
-		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, result.Errors())
+		return p.buildErrorResponse(reason, nil, isResponse, params.ShowAssessment, result.Errors(), llm)
 	}
 
 	slog.Debug("JSONSchemaGuardrail: Validation passed", "invert", params.Invert, "isResponse", isResponse)
@@ -310,25 +310,17 @@ func (p *JSONSchemaGuardrailPolicy) validatePayload(payload []byte, params JSONS
 }
 
 // buildErrorResponse builds a policy error response for both request and response phases.
-func (p *JSONSchemaGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, errors []gojsonschema.ResultError) interface{} {
+func (p *JSONSchemaGuardrailPolicy) buildErrorResponse(reason string, validationError error, isResponse bool, showAssessment bool, errors []gojsonschema.ResultError, llm bool) interface{} {
 	assessment := p.buildAssessmentObject(reason, validationError, isResponse, showAssessment, errors)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,
 		"guardrailName":  "json-schema-guardrail",
 	}
 
-	responseBody := map[string]interface{}{
-		"type":    "JSON_SCHEMA_GUARDRAIL",
-		"message": assessment,
-	}
-
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"JSON_SCHEMA_GUARDRAIL","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 
 	if isResponse {
-		statusCode := GuardrailErrorCode
+		statusCode := guardrailStatus(llm)
 		return policy.DownstreamResponseModifications{
 			StatusCode:        &statusCode,
 			Body:              bodyBytes,
@@ -338,9 +330,35 @@ func (p *JSONSchemaGuardrailPolicy) buildErrorResponse(reason string, validation
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode:        GuardrailErrorCode,
+		StatusCode:        guardrailStatus(llm),
 		AnalyticsMetadata: analyticsMetadata,
 		Headers:           map[string]string{"Content-Type": "application/json"},
 		Body:              bodyBytes,
 	}
+}
+
+// guardrailErrorBody renders a guardrail intervention: an OpenAI-compatible error
+// for LLM APIs, the {"type":"JSON_SCHEMA_GUARDRAIL","message":...} shape for other API kinds.
+func guardrailErrorBody(assessment map[string]interface{}, llm bool) []byte {
+	if llm {
+		return policy.BuildOpenAIErrorResponseBody(policy.GuardrailStatusCode, policy.NewGuardrailOpenAIError(assessment))
+	}
+	bodyBytes, err := json.Marshal(map[string]interface{}{
+		"type":    "JSON_SCHEMA_GUARDRAIL",
+		"message": assessment,
+	})
+	if err != nil {
+		return []byte(`{"type":"JSON_SCHEMA_GUARDRAIL","message":"Internal error"}`)
+	}
+	return bodyBytes
+}
+
+// guardrailStatus is the HTTP status of an intervention: 400 on LLM APIs, where
+// OpenAI clients expect content-policy refusals as invalid_request_error, and
+// GuardrailErrorCode for other API kinds.
+func guardrailStatus(llm bool) int {
+	if llm {
+		return policy.GuardrailStatusCode
+	}
+	return GuardrailErrorCode
 }

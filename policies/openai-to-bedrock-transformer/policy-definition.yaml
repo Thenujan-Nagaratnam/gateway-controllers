@@ -1,5 +1,5 @@
 name: openai-to-bedrock-transformer
-version: v0.9.1
+version: v0.9.2
 description: |
   Translates OpenAI Chat Completions requests to the AWS Bedrock Converse API
   (/model/{modelId}/converse and /converse-stream) and rewrites Bedrock
