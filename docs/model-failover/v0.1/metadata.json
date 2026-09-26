@@ -1,0 +1,10 @@
+{
+  "name": "model-failover",
+  "displayName": "Model Failover",
+  "version": "0.1",
+  "provider": "WSO2",
+  "categories": [
+    "AI"
+  ],
+  "description": "Sends each request to an ordered chain of LLM targets and moves to the next target\nwhen one is rate-limited, failing or too slow, using the gateway's native retry.\nUnhealthy targets are suspended and brought back through limited probe traffic."
+}

@@ -1,0 +1,99 @@
+# Contract: user-facing policy definition for model-failover.
+# Target location: gateway-controllers/policies/model-failover/policy-definition.yaml
+# (developed first via gateway/build.yaml `filePath: ./dev-policies/model-failover`).
+name: model-failover
+version: v0.1.0
+displayName: Model Failover
+description: |
+  Sends each request to an ordered chain of LLM targets (provider + model). On a
+  configured failure (selected status codes, connection failure, reset, or
+  per-attempt timeout) the gateway retries the request against the next available
+  target using Envoy's native retry, converting the request and response to and from
+  the target provider's format. Unhealthy targets are suspended and recovered
+  through limited probe traffic. The gateway never fails over after the response has
+  started streaming to the client.
+
+parameters:
+  type: object
+  additionalProperties: false
+  patternProperties:
+    "^_": {}          # controller-injected internal keys (research R10); rejected if authored
+  properties:
+    targets:
+      type: array
+      minItems: 1
+      maxItems: 10
+      x-wso2-policy-advanced-param: false
+      description: Ordered targets. The first entry is the primary.
+      items:
+        type: object
+        additionalProperties: false
+        properties:
+          provider:
+            type: string
+            minLength: 1
+            description: Handle of an LlmProvider that is this proxy's provider or one of its additionalProviders.
+          model:
+            type: string
+            minLength: 1
+            maxLength: 256
+            description: Model to request from this provider.
+        required: [provider, model]
+    failoverOn:
+      type: object
+      additionalProperties: false
+      x-wso2-policy-advanced-param: true
+      properties:
+        statusCodes:
+          type: array
+          uniqueItems: true
+          default: [429, 500, 502, 503, 504]
+          items:
+            type: integer
+            description: 429, or 500-599.
+            anyOf:
+              - const: 429
+              - minimum: 500
+                maximum: 599
+        connectFailure: { type: boolean, default: true }
+        reset:          { type: boolean, default: true }
+        timeout:        { type: boolean, default: true }
+    perAttemptTimeout:
+      type: string
+      pattern: "^[0-9]+(ms|s|m)$"
+      default: "30s"
+      x-wso2-policy-advanced-param: true
+      description: Maximum wait for a target's response headers (1s-300s).
+    suspendAfterConsecutiveFailures:
+      type: integer
+      minimum: 1
+      maximum: 100
+      default: 3
+      x-wso2-policy-advanced-param: true
+    suspendDuration:
+      type: string
+      pattern: "^[0-9]+(ms|s|m)$"
+      default: "30s"
+      x-wso2-policy-advanced-param: true
+      description: How long a suspended target receives no normal traffic (1s-3600s).
+    probeConcurrency:
+      type: integer
+      minimum: 1
+      maximum: 10
+      default: 1
+      x-wso2-policy-advanced-param: true
+      description: Maximum concurrent probe requests to a target in recovery.
+    recoverAfterSuccessfulProbes:
+      type: integer
+      minimum: 1
+      maximum: 20
+      default: 2
+      x-wso2-policy-advanced-param: true
+  required: [targets]
+
+# Controller-injected internal keys are merged into params (never systemParameters),
+# see research R10: _role (front|dispatch), _chainId, _targetIds, _targetNative,
+# _hopSecret. Authored params containing any "_"-prefixed key are rejected.
+systemParameters:
+  type: object
+  properties: {}
