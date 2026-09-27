@@ -38,12 +38,12 @@ import (
 // Internal headers exchanged between the front and dispatch hops. None of
 // them reach the client or a provider.
 const (
-	headerPrefix          = "x-wso2-failover-"
-	headerChain           = "x-wso2-failover-chain"
-	headerPlan            = "x-wso2-failover-plan"
-	headerHop             = "x-wso2-failover-hop"
-	headerRetry           = "x-wso2-failover-retry"
-	headerExhausted       = "x-wso2-failover-exhausted"
+	headerPrefix          = "x-wso2-attempt-"
+	headerChain           = "x-wso2-attempt-chain"
+	headerPlan            = "x-wso2-attempt-plan"
+	headerHop             = "x-wso2-attempt-hop"
+	headerRetry           = "x-wso2-attempt-retry"
+	headerExhausted       = "x-wso2-attempt-exhausted"
 	headerUpstreamFailure = "x-wso2-upstream-failure"
 )
 
