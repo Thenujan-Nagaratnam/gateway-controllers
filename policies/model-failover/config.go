@@ -20,10 +20,13 @@ package modelfailover
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
 )
 
 // Role is the part a model-failover instance plays in the two-hop pipeline.
@@ -38,8 +41,11 @@ const (
 )
 
 const (
-	maxTargets     = 10
-	maxModelLength = 256
+	maxChains         = 20
+	maxFallbacks      = 9
+	maxTargets        = 50
+	maxModelLength    = 256
+	passThroughTarget = "tp"
 
 	defaultPerAttemptTimeout    = 30 * time.Second
 	minPerAttemptTimeout        = time.Second
@@ -59,6 +65,7 @@ const (
 	paramInternalTargetIDs      = "_targetIds"
 	paramInternalTargetNative   = "_targetNative"
 	paramInternalHopSecret      = "_hopSecret"
+	paramInternalRouteToTarget  = "_routeToTarget"
 )
 
 var (
@@ -66,7 +73,10 @@ var (
 	durationPattern            = regexp.MustCompile(`^[0-9]+(ms|s|m)$`)
 )
 
-// Target is one entry of the ordered failover chain.
+// Target is one provider and model a chain can try; the unit of health.
+// Config.Targets holds every distinct target of every chain, followed by the
+// pass-through target (empty Model), which forwards a request whose model
+// has no chain without changing it.
 type Target struct {
 	Provider string
 	Model    string
@@ -95,7 +105,13 @@ type FailoverOn struct {
 // Config is the parsed policy configuration, combining the publisher-authored
 // parameters with the controller-injected internal keys.
 type Config struct {
-	Targets                         []Target
+	Targets []Target
+	// Chains maps each primary model to its chain: indices into Targets,
+	// primary first, then fallbacks in order.
+	Chains map[string][]int
+	// PassThrough is the index of the pass-through target (always last).
+	PassThrough int
+
 	FailoverOn                      FailoverOn
 	PerAttemptTimeout               time.Duration
 	SuspendAfterConsecutiveFailures int
@@ -106,6 +122,95 @@ type Config struct {
 	Role      Role
 	ChainID   string
 	HopSecret string
+	// RouteToTarget is false when every target shares the route's own
+	// upstream (model-failover on an LlmProvider): the dispatch role then
+	// selects no upstream and only rewrites the model.
+	RouteToTarget bool
+	// RequestModel says where a native target's model goes in the request.
+	// The controller copies it from the LLM provider template. It applies on
+	// an LlmProvider only; on an LlmProxy native targets speak the client's
+	// OpenAI format, so it is always the top-level "model" of the JSON body.
+	RequestModel RequestModel
+}
+
+// Model locations a provider template's requestModel can name.
+const (
+	LocationPayload    = "payload"
+	LocationHeader     = "header"
+	LocationQueryParam = "queryParam"
+	LocationPathParam  = "pathParam"
+)
+
+// RequestModel is a template's requestModel: a JSONPath into the body, a
+// header name, a query parameter name, or a path regex whose first capture
+// group is the model.
+type RequestModel struct {
+	Location   string
+	Identifier string
+	pathRe     *regexp.Regexp
+}
+
+var defaultRequestModel = RequestModel{Location: LocationPayload, Identifier: "$.model"}
+
+// inBody reports whether the model is rewritten in the request body phase.
+func (r RequestModel) inBody() bool {
+	return r.Location == LocationPayload
+}
+
+// readOutsideBody reads a header, query or path model from the request.
+func (r RequestModel) readOutsideBody(h *policy.Headers, path string) (string, bool) {
+	var v string
+	switch r.Location {
+	case LocationHeader:
+		v = firstHeader(h, r.Identifier)
+	case LocationQueryParam:
+		_, rawQuery, _ := strings.Cut(path, "?")
+		q, err := url.ParseQuery(rawQuery)
+		if err != nil {
+			return "", false
+		}
+		v = q.Get(r.Identifier)
+	case LocationPathParam:
+		base, _, _ := strings.Cut(path, "?")
+		m := r.pathRe.FindStringSubmatch(base)
+		if len(m) < 2 {
+			return "", false
+		}
+		u, err := url.PathUnescape(m[1])
+		if err != nil {
+			return "", false
+		}
+		v = u
+	}
+	return v, v != ""
+}
+
+func parseRequestModel(raw interface{}) (RequestModel, error) {
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return RequestModel{}, fmt.Errorf("requestModel must be an object")
+	}
+	location, _ := m["location"].(string)
+	identifier, _ := m["identifier"].(string)
+	if identifier == "" {
+		return RequestModel{}, fmt.Errorf("requestModel.identifier is required")
+	}
+	rm := RequestModel{Location: location, Identifier: identifier}
+	switch location {
+	case LocationPayload, LocationHeader, LocationQueryParam:
+	case LocationPathParam:
+		re, err := regexp.Compile(identifier)
+		if err != nil {
+			return RequestModel{}, fmt.Errorf("requestModel.identifier is not a valid regular expression: %w", err)
+		}
+		if re.NumSubexp() < 1 {
+			return RequestModel{}, fmt.Errorf("requestModel.identifier must have a capture group around the model")
+		}
+		rm.pathRe = re
+	default:
+		return RequestModel{}, fmt.Errorf("requestModel.location must be one of %s, %s, %s, %s", LocationPayload, LocationHeader, LocationQueryParam, LocationPathParam)
+	}
+	return rm, nil
 }
 
 // parseConfig parses and validates params. Authored keys are validated against
@@ -124,13 +229,17 @@ func parseConfig(params map[string]interface{}) (*Config, error) {
 		SuspendDuration:                 defaultSuspendDuration,
 		ProbeConcurrency:                defaultProbeConcurrency,
 		RecoverAfterSuccessfulProbes:    defaultRecoverAfterProbes,
+		RequestModel:                    defaultRequestModel,
 	}
 
-	targets, err := parseTargets(params["targets"])
+	if _, old := params["targets"]; old {
+		return nil, fmt.Errorf("'targets' was replaced by 'chains': list a primary model and its fallbacks")
+	}
+	targets, chains, err := parseChains(params["chains"])
 	if err != nil {
 		return nil, err
 	}
-	cfg.Targets = targets
+	cfg.Targets, cfg.Chains, cfg.PassThrough = targets, chains, len(targets)-1
 
 	if raw, ok := params["failoverOn"]; ok {
 		if err := parseFailoverOn(raw, &cfg.FailoverOn); err != nil {
@@ -163,8 +272,17 @@ func parseConfig(params map[string]interface{}) (*Config, error) {
 		}
 	}
 
+	if raw, ok := params["requestModel"]; ok {
+		if cfg.RequestModel, err = parseRequestModel(raw); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := parseInternal(params, cfg); err != nil {
 		return nil, err
+	}
+	if cfg.RouteToTarget {
+		cfg.RequestModel = defaultRequestModel
 	}
 	return cfg, nil
 }
@@ -177,6 +295,15 @@ func ValidateAuthoredParams(params map[string]interface{}) error {
 	for k := range params {
 		if strings.HasPrefix(k, internalParamPrefix) {
 			return fmt.Errorf("parameter %q is reserved for gateway-internal use", k)
+		}
+	}
+	if chains, ok := params["chains"].([]interface{}); ok {
+		for i, c := range chains {
+			m, _ := c.(map[string]interface{})
+			pm, _ := m["primary"].(map[string]interface{})
+			if _, set := pm["provider"]; set {
+				return fmt.Errorf("chains[%d].primary.provider: the primary is the requested model on the provider the request is routed to; name providers on fallbacks", i)
+			}
 		}
 	}
 	_, err := parseAuthored(params)
@@ -193,43 +320,121 @@ func parseAuthored(params map[string]interface{}) (*Config, error) {
 	return parseConfig(withoutInternal)
 }
 
-func parseTargets(raw interface{}) ([]Target, error) {
+// parseChains flattens chains into distinct targets, in chain order (primary,
+// then fallbacks) with repeats skipped, and appends the pass-through target.
+// The gateway-controller flattens the same way, so its per-target ids and
+// upstreams line up with these indices.
+func parseChains(raw interface{}) ([]Target, map[string][]int, error) {
 	if raw == nil {
-		return nil, fmt.Errorf("'targets' is required")
+		return nil, nil, fmt.Errorf("'chains' is required")
 	}
 	list, ok := raw.([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("'targets' must be an array")
+		return nil, nil, fmt.Errorf("'chains' must be an array")
 	}
-	if len(list) == 0 || len(list) > maxTargets {
-		return nil, fmt.Errorf("'targets' must contain between 1 and %d entries", maxTargets)
+	if len(list) == 0 || len(list) > maxChains {
+		return nil, nil, fmt.Errorf("'chains' must contain between 1 and %d entries", maxChains)
 	}
-	seen := make(map[string]int, len(list))
-	targets := make([]Target, 0, len(list))
+	var targets []Target
+	index := map[string]int{}
+	chains := make(map[string][]int, len(list))
+	primaryAt := make(map[string]int, len(list))
 	for i, item := range list {
+		path := fmt.Sprintf("chains[%d]", i)
 		m, ok := item.(map[string]interface{})
 		if !ok {
-			return nil, fmt.Errorf("targets[%d] must be an object", i)
+			return nil, nil, fmt.Errorf("%s must be an object", path)
 		}
-		provider, err := requiredString(m, "provider", fmt.Sprintf("targets[%d]", i))
+		pm, ok := m["primary"].(map[string]interface{})
+		if !ok {
+			return nil, nil, fmt.Errorf("%s.primary is required", path)
+		}
+		primary, err := parseTarget(pm, path+".primary")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		model, err := requiredString(m, "model", fmt.Sprintf("targets[%d]", i))
-		if err != nil {
-			return nil, err
+		if prev, dup := primaryAt[primary.Model]; dup {
+			return nil, nil, fmt.Errorf("%s.primary.model: %q already has a chain (chains[%d])", path, primary.Model, prev)
 		}
-		if len(model) > maxModelLength {
-			return nil, fmt.Errorf("targets[%d].model must be at most %d characters", i, maxModelLength)
+		primaryAt[primary.Model] = i
+
+		fl, ok := m["fallbacks"].([]interface{})
+		if !ok || len(fl) == 0 || len(fl) > maxFallbacks {
+			return nil, nil, fmt.Errorf("%s.fallbacks must contain between 1 and %d entries", path, maxFallbacks)
 		}
-		key := provider + "\x00" + model
-		if prev, dup := seen[key]; dup {
-			return nil, fmt.Errorf("targets[%d] duplicates targets[%d] (provider %q, model %q)", i, prev, provider, model)
+		members := []Target{primary}
+		for j, f := range fl {
+			fm, ok := f.(map[string]interface{})
+			if !ok {
+				return nil, nil, fmt.Errorf("%s.fallbacks[%d] must be an object", path, j)
+			}
+			t, err := parseTarget(fm, fmt.Sprintf("%s.fallbacks[%d]", path, j))
+			if err != nil {
+				return nil, nil, err
+			}
+			members = append(members, t)
 		}
-		seen[key] = i
-		targets = append(targets, Target{Provider: provider, Model: model, ID: "t" + strconv.Itoa(i), Native: true})
+
+		inChain := map[string]bool{}
+		for k, t := range members {
+			key := t.Provider + "\x00" + t.Model
+			if inChain[key] {
+				return nil, nil, fmt.Errorf("%s lists provider %q, model %q more than once (entry %d)", path, t.Provider, t.Model, k)
+			}
+			inChain[key] = true
+			idx, seen := index[key]
+			if !seen {
+				idx = len(targets)
+				t.ID = "t" + strconv.Itoa(idx)
+				t.Native = true
+				targets = append(targets, t)
+				index[key] = idx
+			}
+			chains[primary.Model] = append(chains[primary.Model], idx)
+		}
 	}
-	return targets, nil
+	if len(targets) > maxTargets {
+		return nil, nil, fmt.Errorf("'chains' name %d distinct provider and model pairs; at most %d are allowed", len(targets), maxTargets)
+	}
+	// The pass-through target goes wherever the route would send the request
+	// without failover: the first chain's primary provider.
+	targets = append(targets, Target{Provider: targets[0].Provider, ID: passThroughTarget, Native: true})
+	return targets, chains, nil
+}
+
+// parseTarget reads {provider?, model}. provider may be empty in authored
+// params; the controller fills it in before the policy runs.
+func parseTarget(m map[string]interface{}, path string) (Target, error) {
+	model, err := requiredString(m, "model", path)
+	if err != nil {
+		return Target{}, err
+	}
+	if len(model) > maxModelLength {
+		return Target{}, fmt.Errorf("%s.model must be at most %d characters", path, maxModelLength)
+	}
+	var provider string
+	if raw, ok := m["provider"]; ok {
+		if provider, ok = raw.(string); !ok || provider == "" {
+			return Target{}, fmt.Errorf("%s.provider must be a non-empty string", path)
+		}
+	}
+	return Target{Provider: provider, Model: model}, nil
+}
+
+// isPassThrough reports whether i is the pass-through target.
+func (c *Config) isPassThrough(i int) bool {
+	return i == c.PassThrough
+}
+
+// longestChain is the most attempts any request can make.
+func (c *Config) longestChain() int {
+	n := 1
+	for _, idx := range c.Chains {
+		if len(idx) > n {
+			n = len(idx)
+		}
+	}
+	return n
 }
 
 func parseFailoverOn(raw interface{}, out *FailoverOn) error {
@@ -285,6 +490,14 @@ func parseInternal(params map[string]interface{}, cfg *Config) error {
 	default:
 		return fmt.Errorf("internal parameter %s must be %q or %q (is the gateway-controller up to date?)", paramInternalRole, RoleFront, RoleDispatch)
 	}
+	cfg.RouteToTarget = true
+	if raw, ok := params[paramInternalRouteToTarget]; ok {
+		b, ok := raw.(bool)
+		if !ok {
+			return fmt.Errorf("internal parameter %s must be a boolean", paramInternalRouteToTarget)
+		}
+		cfg.RouteToTarget = b
+	}
 	chainID, _ := params[paramInternalChainID].(string)
 	if chainID == "" {
 		return fmt.Errorf("internal parameter %s is required", paramInternalChainID)
@@ -330,7 +543,7 @@ func parseInternal(params map[string]interface{}, cfg *Config) error {
 // planTTL bounds how long an attempt plan may live: every attempt at its
 // per-attempt limit plus the Envoy retry back-off and a safety margin.
 func (c *Config) planTTL() time.Duration {
-	return time.Duration(len(c.Targets))*c.PerAttemptTimeout + 7*time.Second
+	return time.Duration(c.longestChain())*c.PerAttemptTimeout + 7*time.Second
 }
 
 func requiredString(m map[string]interface{}, key, path string) (string, error) {

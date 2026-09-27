@@ -24,11 +24,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
+	utils "github.com/wso2/api-platform/sdk/core/utils"
 )
 
 // attemptState is what the dispatch hop remembers between the request and
@@ -39,7 +42,14 @@ type attemptState struct {
 	targetIdx int
 	probe     bool
 	started   time.Time
+	// passThrough attempts forward the request unchanged and are never
+	// classified, tagged or counted towards health.
+	passThrough bool
 }
+
+// passThroughTimeoutBody answers a pass-through attempt that ran past the
+// per-attempt timeout.
+var passThroughTimeoutBody = []byte(`{"error":{"message":"The upstream did not respond in time.","type":"server_error","param":null,"code":"upstream_timeout"}}`)
 
 // planRejectedBody is returned when a dispatch-hop request carries no usable
 // plan. It is not tagged, so Envoy does not retry it.
@@ -53,6 +63,15 @@ func (p *Policy) dispatchRequestHeaders(ctx context.Context, reqCtx *policy.Requ
 	nonce := firstHeader(reqCtx.Headers, headerPlan)
 	a, plan, err := p.plans.advance(nonce, p.cfg.ChainID)
 	switch {
+	case errors.Is(err, errPlanExhausted) && plan.isPassThrough():
+		// Envoy abandoned the single pass-through attempt on its per-attempt
+		// timeout. Answer as a route timeout would, untagged, so nothing
+		// retries it and the front hop passes it through.
+		return policy.ImmediateResponse{
+			StatusCode: http.StatusGatewayTimeout,
+			Headers:    map[string]string{"content-type": "application/json"},
+			Body:       passThroughTimeoutBody,
+		}
 	case errors.Is(err, errPlanExhausted):
 		if a.timedOutTarget >= 0 {
 			o := Outcome{Class: OutcomeEligibleFailure, Reason: reasonTimeout, Probe: plan.probes[a.timedOutTarget]}
@@ -84,32 +103,97 @@ func (p *Policy) dispatchRequestHeaders(ctx context.Context, reqCtx *policy.Requ
 	}
 
 	target := p.cfg.Targets[a.targetIdx]
-	upstream := target.UpstreamName()
-	setMetadata(reqCtx.SharedContext, metaAttempt, attemptState{nonce: nonce, position: a.position, targetIdx: a.targetIdx, probe: a.probe, started: p.now()})
-	setMetadata(reqCtx.SharedContext, selectedProviderKey, upstream)
+	passThrough := plan.isPassThrough()
+	setMetadata(reqCtx.SharedContext, metaAttempt, attemptState{nonce: nonce, position: a.position, targetIdx: a.targetIdx, probe: a.probe, started: p.now(), passThrough: passThrough})
 
 	// The chain header is left in place: a transformer's path rewrite clears
 	// the route cache, and the dispatch route must still match on re-lookup.
 	// The dispatch route's own request_headers_to_remove strips it at the router.
-	return policy.UpstreamRequestHeaderModifications{
-		UpstreamName:    &upstream,
+	mods := policy.UpstreamRequestHeaderModifications{
 		HeadersToSet:    map[string]string{headerHop: p.cfg.HopSecret},
 		HeadersToRemove: []string{headerPlan},
 	}
+	// On an LlmProvider every target is the route's own upstream: the route
+	// already goes there, and only the model changes, here for a header,
+	// query or path model and in dispatchRequestBody for a body model.
+	if p.cfg.RouteToTarget {
+		upstream := target.UpstreamName()
+		setMetadata(reqCtx.SharedContext, selectedProviderKey, upstream)
+		mods.UpstreamName = &upstream
+	} else if target.Native && !passThrough {
+		p.setModelOutsideBody(&mods, reqCtx.Path, target.Model)
+	}
+	return mods
 }
 
-// dispatchRequestBody pins the target's model for targets that speak the
-// client's format; transformer targets pin their own model.
+// setModelOutsideBody writes the attempt's model into a header, query
+// parameter or path segment, as the template's requestModel says. A path
+// the identifier doesn't match is forwarded unchanged.
+func (p *Policy) setModelOutsideBody(mods *policy.UpstreamRequestHeaderModifications, path, model string) {
+	rm := p.cfg.RequestModel
+	switch rm.Location {
+	case LocationHeader:
+		mods.HeadersToSet[rm.Identifier] = model
+	case LocationQueryParam:
+		if newPath, ok := replaceQueryParam(path, rm.Identifier, model); ok {
+			mods.Path = &newPath
+		}
+	case LocationPathParam:
+		if newPath, ok := replacePathCapture(path, rm.pathRe, model); ok {
+			mods.Path = &newPath
+		}
+	}
+}
+
+// replaceQueryParam sets one query parameter, leaving the path and the other
+// parameters as they are.
+func replaceQueryParam(path, name, value string) (string, bool) {
+	base, rawQuery, _ := strings.Cut(path, "?")
+	q, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "", false
+	}
+	if cur, ok := q[name]; ok && len(cur) == 1 && cur[0] == value {
+		return "", false
+	}
+	q.Set(name, value)
+	return base + "?" + q.Encode(), true
+}
+
+// replacePathCapture replaces the first capture group of re in the path
+// (the query string is left alone). The model is path-escaped so it can't
+// add a segment.
+func replacePathCapture(path string, re *regexp.Regexp, model string) (string, bool) {
+	base, rawQuery, hasQuery := strings.Cut(path, "?")
+	m := re.FindStringSubmatchIndex(base)
+	if len(m) < 4 || m[2] < 0 {
+		return "", false
+	}
+	escaped := url.PathEscape(model)
+	if base[m[2]:m[3]] == escaped || base[m[2]:m[3]] == model {
+		return "", false
+	}
+	out := base[:m[2]] + escaped + base[m[3]:]
+	if hasQuery {
+		out += "?" + rawQuery
+	}
+	return out, true
+}
+
+// dispatchRequestBody writes the attempt's model into the body for every chain
+// target. A transformer target gets it too, so the translated request names
+// the target's model whichever of the body or its own param the transformer
+// reads. A pass-through attempt keeps the request's model.
 func (p *Policy) dispatchRequestBody(_ context.Context, reqCtx *policy.RequestContext) policy.RequestAction {
 	st, ok := currentAttempt(reqCtx.SharedContext)
 	if !ok {
 		return policy.UpstreamRequestModifications{}
 	}
 	target := p.cfg.Targets[st.targetIdx]
-	if !target.Native || reqCtx.Body == nil || !reqCtx.Body.Present || len(reqCtx.Body.Content) == 0 {
+	if st.passThrough || !p.cfg.RequestModel.inBody() || reqCtx.Body == nil || !reqCtx.Body.Present || len(reqCtx.Body.Content) == 0 {
 		return policy.UpstreamRequestModifications{}
 	}
-	body, changed, err := replaceModel(reqCtx.Body.Content, target.Model)
+	body, changed, err := setBodyModel(reqCtx.Body.Content, p.cfg.RequestModel.Identifier, target.Model)
 	if err != nil || !changed {
 		// A non-JSON body is forwarded unchanged; the provider rejects it
 		// with its own (non-eligible) 4xx.
@@ -124,7 +208,7 @@ func (p *Policy) dispatchRequestBody(_ context.Context, reqCtx *policy.RequestCo
 func (p *Policy) dispatchResponseHeaders(ctx context.Context, respCtx *policy.ResponseHeaderContext) policy.ResponseHeaderAction {
 	mods := policy.DownstreamResponseHeaderModifications{HeadersToRemove: []string{headerUpstreamFailure}}
 	st, ok := currentAttempt(respCtx.SharedContext)
-	if !ok {
+	if !ok || st.passThrough {
 		return mods
 	}
 	outcome := classify(p.cfg.FailoverOn, respCtx.ResponseStatus, firstHeader(respCtx.ResponseHeaders, headerUpstreamFailure))
@@ -193,6 +277,29 @@ func transportEnabled(on FailoverOn, reason string) bool {
 		return on.Timeout
 	}
 	return false
+}
+
+// setBodyModel sets the model at a JSONPath in a JSON object body. The
+// common top-level "$.model" keeps every other member's exact encoding.
+func setBodyModel(body []byte, jsonPath, model string) ([]byte, bool, error) {
+	if jsonPath == defaultRequestModel.Identifier {
+		return replaceModel(body, model)
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, false, err
+	}
+	if cur, err := utils.ExtractValueFromJsonpath(obj, jsonPath); err == nil && cur == model {
+		return body, false, nil
+	}
+	if err := utils.SetValueAtJSONPath(obj, jsonPath, model); err != nil {
+		return nil, false, err
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
 }
 
 // replaceModel sets the top-level "model" of a JSON object body. Other members

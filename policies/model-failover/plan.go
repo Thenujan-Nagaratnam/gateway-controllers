@@ -60,6 +60,9 @@ type attemptPlan struct {
 	// probes marks target indices admitted as recovery probes; their slots
 	// must be released exactly once.
 	probes map[int]bool
+	// passThrough is true while the request's model has no chain: its single
+	// attempt forwards the request unchanged and is never retried.
+	passThrough bool
 
 	mu        sync.Mutex
 	cursor    int
@@ -128,6 +131,47 @@ func newNonce() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// createPassThrough stores a one-attempt pass-through plan and returns its
+// nonce. The front hop retargets it once it knows the request's chain.
+func (r *planRegistry) createPassThrough(chainID string, target int, ttl time.Duration) (string, error) {
+	nonce, err := r.create(chainID, []int{target}, nil, ttl, nil)
+	if err != nil {
+		return "", err
+	}
+	r.mu.Lock()
+	r.plans[nonce].passThrough = true
+	r.mu.Unlock()
+	return nonce, nil
+}
+
+// retarget replaces a plan's targets with a chain's before any attempt has
+// been dispatched, and ends pass-through. It reports false if the plan is gone
+// or already advanced.
+func (r *planRegistry) retarget(nonce string, targets []int, probes map[int]bool, onDone func(*attemptPlan)) bool {
+	p := r.get(nonce)
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.cursor != 0 {
+		return false
+	}
+	p.targets = targets
+	p.probes = probes
+	p.outcomes = make([]Outcome, len(targets))
+	p.passThrough = false
+	p.onDone = onDone
+	return true
+}
+
+// isPassThrough reports whether the plan forwards the request unchanged.
+func (p *attemptPlan) isPassThrough() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.passThrough
 }
 
 // create stores a new plan and returns its nonce. onDone may be nil.

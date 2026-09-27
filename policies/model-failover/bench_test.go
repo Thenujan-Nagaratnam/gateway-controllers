@@ -38,7 +38,7 @@ func BenchmarkHealthyPrimaryRequest(b *testing.B) {
 
 	t := &testing.T{}
 	pl := newPipeline(t, nil)
-	body := []byte(`{"model":"client","messages":[{"role":"user","content":"hello"}],"temperature":0.2}`)
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}],"temperature":0.2}`)
 	ctx := context.Background()
 
 	b.ReportAllocs()
@@ -47,6 +47,7 @@ func BenchmarkHealthyPrimaryRequest(b *testing.B) {
 		front := &policy.SharedContext{Metadata: map[string]interface{}{}}
 		act := pl.front.OnRequestHeaders(ctx, &policy.RequestHeaderContext{SharedContext: front, Headers: policy.NewHeaders(nil)}, nil)
 		nonce := act.(policy.UpstreamRequestHeaderModifications).HeadersToSet[headerPlan]
+		pl.front.OnRequestBody(ctx, &policy.RequestContext{SharedContext: front, Body: &policy.Body{Content: body, Present: true, EndOfStream: true}}, nil)
 
 		disp := &policy.SharedContext{Metadata: map[string]interface{}{}}
 		pl.dispatch.OnRequestHeaders(ctx, &policy.RequestHeaderContext{SharedContext: disp, Headers: policy.NewHeaders(map[string][]string{headerPlan: {nonce}})}, nil)

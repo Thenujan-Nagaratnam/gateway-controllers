@@ -102,14 +102,16 @@ func (r *healthRegistry) get(chainID string, t Target) *targetHealth {
 	return h
 }
 
-// admit decides which targets a new request may try, in chain order. Healthy
+// admit decides which of the chain's targets (indices into cfg.Targets) a new
+// request may try, in chain order. Healthy
 // targets are always included. A suspended target whose suspension has ended
 // moves to probing. A probing target is included only if it can take one of
 // the limited probe slots; the claimed slot is reported in probes and must be
 // given back through record or release.
-func (r *healthRegistry) admit(cfg *Config) (targets []int, probes map[int]bool, transitions []Transition) {
+func (r *healthRegistry) admit(cfg *Config, chain []int) (targets []int, probes map[int]bool, transitions []Transition) {
 	now := r.now()
-	for i, t := range cfg.Targets {
+	for _, i := range chain {
+		t := cfg.Targets[i]
 		h := r.get(cfg.ChainID, t)
 		h.mu.Lock()
 		if h.state == StateSuspended && !now.Before(h.suspendedUntil) {

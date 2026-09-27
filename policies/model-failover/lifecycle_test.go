@@ -21,6 +21,7 @@ package modelfailover
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
@@ -76,9 +77,9 @@ func TestAllSuspendedAnswersImmediately(t *testing.T) {
 		_, act := pl.attempt(t, nonce, 503, nil)
 		pl.finish(t, shared, 503, map[string][]string{headerRetry: {respMods(t, act).HeadersToSet[headerRetry]}})
 	}
-	act := pl.front.OnRequestHeaders(context.Background(), &policy.RequestHeaderContext{
-		SharedContext: &policy.SharedContext{Metadata: map[string]interface{}{}}, Headers: policy.NewHeaders(nil),
-	}, nil)
+	shared := &policy.SharedContext{Metadata: map[string]interface{}{}}
+	pl.front.OnRequestHeaders(context.Background(), &policy.RequestHeaderContext{SharedContext: shared, Headers: policy.NewHeaders(nil)}, nil)
+	act := pl.frontBody(shared, "gpt-4o")
 	ir, ok := act.(policy.ImmediateResponse)
 	if !ok || ir.StatusCode != 503 || !bytes.Equal(ir.Body, exhaustionBody) {
 		t.Fatalf("expected the exhaustion response without contacting any target, got %#v", act)
@@ -106,10 +107,10 @@ func TestProbeRecoversPrimary(t *testing.T) {
 func TestUnusedProbeSlotIsReleasedOnClose(t *testing.T) {
 	pl := newPipeline(t, func(p map[string]interface{}) {
 		lifecycleParams(p)
-		p["targets"] = []interface{}{
+		setTargets(p, []interface{}{
 			map[string]interface{}{"provider": "openai-a", "model": "gpt-4o"},
 			map[string]interface{}{"provider": "anthropic", "model": "claude-sonnet-4-5"},
-		}
+		})
 	})
 	// Suspend t1 (the fallback) by failing both targets twice.
 	for i := 0; i < 2; i++ {
@@ -124,7 +125,7 @@ func TestUnusedProbeSlotIsReleasedOnClose(t *testing.T) {
 	pl.attempt(t, nonce, 200, nil)
 	pl.finish(t, shared, 200, nil)
 
-	_, probes, _ := pl.health.admit(pl.front.cfg)
+	_, probes, _ := pl.health.admit(pl.front.cfg, chainOf(pl.front.cfg))
 	if !probes[1] {
 		t.Fatal("t1's unused probe slot must have been released when the plan closed")
 	}
@@ -226,5 +227,62 @@ func TestLogsNeverContainSecretsOrBodies(t *testing.T) {
 		if !strings.Contains(out, event) {
 			t.Fatalf("expected event %s in:\n%s", event, out)
 		}
+	}
+}
+
+// modelOf runs one provider-mode dispatch attempt and returns the model the
+// attempt's request body was rewritten to, then answers it with status.
+func (pl *pipeline) modelOf(t *testing.T, nonce string, status int) string {
+	t.Helper()
+	shared := &policy.SharedContext{Metadata: map[string]interface{}{}}
+	pl.dispatch.OnRequestHeaders(context.Background(), &policy.RequestHeaderContext{
+		SharedContext: shared, Headers: policy.NewHeaders(map[string][]string{headerPlan: {nonce}}),
+	}, nil)
+	act := pl.dispatch.OnRequestBody(context.Background(), &policy.RequestContext{
+		SharedContext: shared,
+		Body:          &policy.Body{Content: []byte(`{"model":"client","messages":[]}`), Present: true, EndOfStream: true},
+	}, nil).(policy.UpstreamRequestModifications)
+	pl.dispatch.OnResponseHeaders(context.Background(), &policy.ResponseHeaderContext{SharedContext: shared, ResponseStatus: status}, nil)
+	var body struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(act.Body, &body)
+	return body.Model
+}
+
+func TestProviderModeSuspendsAndRecoversAModel(t *testing.T) {
+	pl := newPipeline(t, func(p map[string]interface{}) {
+		lifecycleParams(p)
+		p[paramInternalRouteToTarget] = false
+		p[paramInternalTargetNative] = native(true, true)
+		setTargets(p, []interface{}{
+			map[string]interface{}{"provider": "openai", "model": "gpt-4o"},
+			map[string]interface{}{"provider": "openai", "model": "gpt-4o-mini"},
+		})
+	})
+	for i := 0; i < 2; i++ {
+		shared, nonce, _ := pl.startRequest(t, nil)
+		if m := pl.modelOf(t, nonce, 429); m != "gpt-4o" {
+			t.Fatalf("attempt 1 must use gpt-4o, got %q", m)
+		}
+		if m := pl.modelOf(t, nonce, 200); m != "gpt-4o-mini" {
+			t.Fatalf("attempt 2 must use gpt-4o-mini, got %q", m)
+		}
+		pl.finish(t, shared, 200, nil)
+	}
+	shared, nonce, _ := pl.startRequest(t, nil)
+	if m := pl.modelOf(t, nonce, 200); m != "gpt-4o-mini" {
+		t.Fatalf("a suspended gpt-4o must be skipped, first attempt used %q", m)
+	}
+	pl.finish(t, shared, 200, nil)
+
+	pl.clock.advance(5 * time.Second)
+	shared, nonce, _ = pl.startRequest(t, nil)
+	if m := pl.modelOf(t, nonce, 200); m != "gpt-4o" {
+		t.Fatalf("after the suspension a probe must go to gpt-4o, got %q", m)
+	}
+	pl.finish(t, shared, 200, nil)
+	if pl.health.state(pl.front.cfg, 0) != StateHealthy {
+		t.Fatal("a successful probe (recoverAfterSuccessfulProbes=1) recovers the model")
 	}
 }

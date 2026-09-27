@@ -19,6 +19,7 @@
 package modelfailover
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -26,10 +27,10 @@ import (
 
 func baseParams(role Role) map[string]interface{} {
 	p := map[string]interface{}{
-		"targets": []interface{}{
+		"chains": oneChain(
 			map[string]interface{}{"provider": "openai-a", "model": "gpt-4o"},
 			map[string]interface{}{"provider": "anthropic", "model": "claude-sonnet-4-5"},
-		},
+		),
 		paramInternalRole:    string(role),
 		paramInternalChainID: "proxy-1:POST|/chat/completions",
 	}
@@ -68,8 +69,8 @@ func TestParseConfigExplicitValues(t *testing.T) {
 	p["failoverOn"] = map[string]interface{}{"statusCodes": []interface{}{float64(429)}, "timeout": false}
 	p["perAttemptTimeout"] = "2s"
 	p["suspendAfterConsecutiveFailures"] = float64(5)
-	p[paramInternalTargetIDs] = []interface{}{"t0", "t1"}
-	p[paramInternalTargetNative] = []interface{}{true, false}
+	p[paramInternalTargetIDs] = []interface{}{"t0", "t1", "tp"}
+	p[paramInternalTargetNative] = native(true, false)
 	cfg, err := parseConfig(p)
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
@@ -90,15 +91,40 @@ func TestParseConfigExplicitValues(t *testing.T) {
 
 func TestParseConfigRejects(t *testing.T) {
 	cases := map[string]func(map[string]interface{}){
-		"no targets":       func(p map[string]interface{}) { delete(p, "targets") },
-		"empty targets":    func(p map[string]interface{}) { p["targets"] = []interface{}{} },
-		"too many targets": func(p map[string]interface{}) { p["targets"] = manyTargets(11) },
-		"duplicate target": func(p map[string]interface{}) {
-			p["targets"] = append(p["targets"].([]interface{}), p["targets"].([]interface{})[0])
+		"no chains":          func(p map[string]interface{}) { delete(p, "chains") },
+		"old targets":        func(p map[string]interface{}) { p["targets"] = getTargets(p) },
+		"empty chains":       func(p map[string]interface{}) { p["chains"] = []interface{}{} },
+		"no fallbacks":       func(p map[string]interface{}) { setTargets(p, getTargets(p)[:1]) },
+		"too many fallbacks": func(p map[string]interface{}) { setTargets(p, manyTargets(11)) },
+		"too many chains": func(p map[string]interface{}) {
+			var chains []interface{}
+			for i := 0; i < 21; i++ {
+				chains = append(chains, oneChain(map[string]interface{}{"model": fmt.Sprint("p", i)}, map[string]interface{}{"model": "f"})...)
+			}
+			p["chains"] = chains
 		},
-		"missing model": func(p map[string]interface{}) { p["targets"] = []interface{}{map[string]interface{}{"provider": "x"}} },
+		"too many distinct targets": func(p map[string]interface{}) {
+			var chains []interface{}
+			for i := 0; i < 6; i++ {
+				ts := manyTargets(10)
+				for _, t := range ts {
+					t.(map[string]interface{})["provider"] = fmt.Sprint("p", i)
+				}
+				chains = append(chains, oneChain(ts...)...)
+			}
+			p["chains"] = chains
+		},
+		"duplicate primary": func(p map[string]interface{}) {
+			p["chains"] = append(p["chains"].([]interface{}), p["chains"].([]interface{})[0])
+		},
+		"repeat within a chain": func(p map[string]interface{}) {
+			setTargets(p, append(getTargets(p), getTargets(p)[0]))
+		},
+		"missing model": func(p map[string]interface{}) {
+			setTargets(p, []interface{}{map[string]interface{}{"provider": "x"}, map[string]interface{}{"model": "m"}})
+		},
 		"model too long": func(p map[string]interface{}) {
-			p["targets"] = []interface{}{map[string]interface{}{"provider": "x", "model": strings.Repeat("m", 257)}}
+			setTargets(p, []interface{}{map[string]interface{}{"provider": "x", "model": strings.Repeat("m", 257)}, map[string]interface{}{"model": "m"}})
 		},
 		"status 404": func(p map[string]interface{}) {
 			p["failoverOn"] = map[string]interface{}{"statusCodes": []interface{}{float64(404)}}
@@ -138,7 +164,7 @@ func TestParseConfigDispatchNeedsHopSecret(t *testing.T) {
 
 func TestValidateAuthoredParamsRejectsInternalKeys(t *testing.T) {
 	p := map[string]interface{}{
-		"targets":         []interface{}{map[string]interface{}{"provider": "a", "model": "m"}},
+		"chains":          oneChain(map[string]interface{}{"model": "m"}, map[string]interface{}{"provider": "a", "model": "n"}),
 		paramInternalRole: "front",
 	}
 	if err := ValidateAuthoredParams(p); err == nil {
@@ -148,6 +174,38 @@ func TestValidateAuthoredParamsRejectsInternalKeys(t *testing.T) {
 	if err := ValidateAuthoredParams(p); err != nil {
 		t.Fatalf("valid authored params rejected: %v", err)
 	}
+}
+
+// oneChain turns an ordered target list into a single chain: the first entry
+// is the primary, the rest its fallbacks.
+func oneChain(targets ...interface{}) []interface{} {
+	return []interface{}{map[string]interface{}{"primary": targets[0], "fallbacks": append([]interface{}{}, targets[1:]...)}}
+}
+
+// setTargets replaces the params' chains with one chain over targets.
+func setTargets(p map[string]interface{}, targets []interface{}) {
+	p["chains"] = oneChain(targets...)
+}
+
+// getTargets returns the first chain's primary and fallbacks, in order.
+func getTargets(p map[string]interface{}) []interface{} {
+	c := p["chains"].([]interface{})[0].(map[string]interface{})
+	return append([]interface{}{c["primary"]}, c["fallbacks"].([]interface{})...)
+}
+
+// native builds _targetNative for the listed targets plus the pass-through
+// target, which is always native.
+func native(flags ...bool) []interface{} {
+	out := make([]interface{}, 0, len(flags)+1)
+	for _, f := range flags {
+		out = append(out, f)
+	}
+	return append(out, true)
+}
+
+// chainOf is the first chain's target indices.
+func chainOf(cfg *Config) []int {
+	return cfg.Chains[cfg.Targets[0].Model]
 }
 
 func manyTargets(n int) []interface{} {

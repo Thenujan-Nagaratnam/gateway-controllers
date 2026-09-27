@@ -84,8 +84,9 @@ func newPolicy(cfg *Config, plans *planRegistry, health *healthRegistry, now fun
 	return &Policy{cfg: cfg, plans: plans, health: health, now: now}
 }
 
-// Mode is computed per instance: the dispatch role buffers the request body
-// so it can rewrite "model" for targets that need no transformer.
+// Mode is computed per instance. For a body model, the front role buffers the
+// request body to read the model and choose the chain, and the dispatch role
+// to write each attempt's model.
 func (p *Policy) Mode() policy.ProcessingMode {
 	mode := policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeProcess,
@@ -93,19 +94,10 @@ func (p *Policy) Mode() policy.ProcessingMode {
 		ResponseHeaderMode: policy.HeaderModeProcess,
 		ResponseBodyMode:   policy.BodyModeSkip,
 	}
-	if p.cfg.Role == RoleDispatch && p.cfg.hasNativeTarget() {
+	if p.cfg.RequestModel.inBody() {
 		mode.RequestBodyMode = policy.BodyModeBuffer
 	}
 	return mode
-}
-
-func (c *Config) hasNativeTarget() bool {
-	for _, t := range c.Targets {
-		if t.Native {
-			return true
-		}
-	}
-	return false
 }
 
 // OnRequestHeaders routes to the role's handler.
@@ -116,12 +108,12 @@ func (p *Policy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHea
 	return p.frontRequestHeaders(ctx, reqCtx)
 }
 
-// OnRequestBody is used by the dispatch role only.
+// OnRequestBody routes to the role's handler.
 func (p *Policy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, _ map[string]interface{}) policy.RequestAction {
 	if p.cfg.Role == RoleDispatch {
 		return p.dispatchRequestBody(ctx, reqCtx)
 	}
-	return policy.UpstreamRequestModifications{}
+	return p.frontRequestBody(ctx, reqCtx)
 }
 
 // OnResponseHeaders routes to the role's handler.

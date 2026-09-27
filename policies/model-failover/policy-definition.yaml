@@ -5,13 +5,14 @@ name: model-failover
 version: v0.1.0
 displayName: Model Failover
 description: |
-  Sends each request to an ordered chain of LLM targets (provider + model). On a
-  configured failure (selected status codes, connection failure, reset, or
-  per-attempt timeout) the gateway retries the request against the next available
-  target using Envoy's native retry, converting the request and response to and from
-  the target provider's format. Unhealthy targets are suspended and recovered
-  through limited probe traffic. The gateway never fails over after the response has
-  started streaming to the client.
+  Gives each requested model its own ordered fallback chain. A request whose model
+  matches a chain's primary is sent to that model; on a configured failure (selected
+  status codes, connection failure, reset, or per-attempt timeout) the gateway
+  retries it against that primary's next available fallback using Envoy's native
+  retry, converting the request and response to and from the fallback provider's
+  format. A request for a model with no chain is forwarded unchanged, with one
+  attempt. Unhealthy targets are suspended and recovered through limited probe
+  traffic. The gateway never fails over after the response has started streaming.
 
 parameters:
   type: object
@@ -19,26 +20,55 @@ parameters:
   patternProperties:
     "^_": {}          # controller-injected internal keys (research R10); rejected if authored
   properties:
-    targets:
+    chains:
       type: array
       minItems: 1
-      maxItems: 10
+      maxItems: 20
       x-wso2-policy-advanced-param: false
-      description: Ordered targets. The first entry is the primary.
+      description: |
+        One chain per primary model. The request's model selects the chain; a model
+        with no chain passes through. At most 50 distinct provider and model pairs
+        across all chains.
       items:
         type: object
         additionalProperties: false
         properties:
-          provider:
-            type: string
-            minLength: 1
-            description: Handle of an LlmProvider that is this proxy's provider or one of its additionalProviders.
-          model:
-            type: string
-            minLength: 1
-            maxLength: 256
-            description: Model to request from this provider.
-        required: [provider, model]
+          primary:
+            type: object
+            additionalProperties: false
+            description: |
+              The requested model this chain applies to, on the provider the request is
+              routed to (an LlmProxy's primary provider, or the LlmProvider itself).
+            properties:
+              model:
+                type: string
+                minLength: 1
+                maxLength: 256
+                description: Model name, matched exactly against the request's model.
+            required: [model]
+          fallbacks:
+            type: array
+            minItems: 1
+            maxItems: 9
+            description: Tried in order after the primary fails.
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                provider:
+                  type: string
+                  minLength: 1
+                  description: |
+                    On an LlmProxy: the id or alias of a provider attached to the proxy;
+                    omitted means the primary's provider. On an LlmProvider: omit it, or
+                    give the provider's own name.
+                model:
+                  type: string
+                  minLength: 1
+                  maxLength: 256
+                  description: Model to request from this provider.
+              required: [model]
+        required: [primary, fallbacks]
     failoverOn:
       type: object
       additionalProperties: false
@@ -89,11 +119,14 @@ parameters:
       maximum: 20
       default: 2
       x-wso2-policy-advanced-param: true
-  required: [targets]
+  required: [chains]
 
 # Controller-injected internal keys are merged into params (never systemParameters),
 # see research R10: _role (front|dispatch), _chainId, _targetIds, _targetNative,
-# _hopSecret. Authored params containing any "_"-prefixed key are rejected.
+# _hopSecret, _routeToTarget. Authored params containing any "_"-prefixed key are
+# rejected. On an LlmProvider the controller also merges the template's
+# requestModel ({location, identifier}); the dispatch role writes each attempt's
+# model there (payload JSONPath, header, queryParam, or pathParam capture group).
 systemParameters:
   type: object
   properties: {}
