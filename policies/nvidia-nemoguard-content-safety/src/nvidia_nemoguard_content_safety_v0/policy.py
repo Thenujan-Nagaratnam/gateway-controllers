@@ -33,6 +33,42 @@ from apip_sdk_core import (
 
 LOGGER = logging.getLogger(__name__)
 
+
+_LLM_API_KINDS = frozenset({"LlmProvider", "LlmProxy"})
+
+
+def _status(status_code: int, llm: bool) -> int:
+    """Preserve configured error statuses; only turn an otherwise-successful LLM
+    guardrail intervention into an HTTP error."""
+    return 400 if llm and status_code < 400 else status_code
+
+
+def _is_llm_api(ctx) -> bool:
+    """Whether the request belongs to an LLM API, whose clients expect OpenAI-compatible errors."""
+    return getattr(getattr(ctx, "shared", None), "api_kind", "") in _LLM_API_KINDS
+
+
+def _error_body(msg: dict, status_code: int, llm: bool) -> bytes:
+    """Render a guardrail error: OpenAI-compatible for LLM APIs, the legacy
+    {"type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY", "message": {...}} shape for other API kinds."""
+    if not llm:
+        return json.dumps({"type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY", "message": msg}).encode()
+    intervened = msg.get("action") == "GUARDRAIL_INTERVENED"
+    error_type = "server_error" if not intervened and status_code >= 500 else "invalid_request_error"
+    guardrail = {"name": msg.get("interveningGuardrail", "NeMo Guard Content Safety")}
+    for key in ("direction", "assessments"):
+        if key in msg:
+            guardrail[key] = msg[key]
+    return json.dumps({
+        "error": {
+            "message": msg.get("actionReason", ""),
+            "type": error_type,
+            "param": None,
+            "code": "guardrail_intervened" if intervened else None,
+            "guardrail": guardrail,
+        }
+    }).encode()
+
 _DEFAULT_MODEL = "nemoguard"
 _DEFAULT_REQUEST_JSON_PATH = "$.messages[-1].content"
 _DEFAULT_RESPONSE_JSON_PATH = "$.choices[0].message.content"
@@ -189,10 +225,7 @@ class NemoGuardContentSafetyPolicy(RequestPolicy, ResponsePolicy):
             return ImmediateResponse(
                 status_code=503,
                 headers={"content-type": "application/json"},
-                body=json.dumps({
-                    "type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY",
-                    "message": {"action": "SERVICE_UNAVAILABLE", "actionReason": "Content safety service unavailable."},
-                }).encode(),
+                body=_error_body({"action": "SERVICE_UNAVAILABLE", "actionReason": "Content safety service unavailable."}, 503, _is_llm_api(req_ctx)),
             )
 
         if unsafe:
@@ -211,9 +244,9 @@ class NemoGuardContentSafetyPolicy(RequestPolicy, ResponsePolicy):
             if req_params.request.show_assessment and category_codes:
                 msg["assessments"] = {"categories": category_codes}
             return ImmediateResponse(
-                status_code=req_params.request.block_status_code,
+                status_code=_status(req_params.request.block_status_code, _is_llm_api(req_ctx)),
                 headers={"content-type": "application/json"},
-                body=json.dumps({"type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY", "message": msg}).encode(),
+                body=_error_body(msg, req_params.request.block_status_code, _is_llm_api(req_ctx)),
             )
 
         return _PASSTHROUGH_REQUEST
@@ -266,10 +299,7 @@ class NemoGuardContentSafetyPolicy(RequestPolicy, ResponsePolicy):
             return ImmediateResponse(
                 status_code=503,
                 headers={"content-type": "application/json"},
-                body=json.dumps({
-                    "type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY",
-                    "message": {"action": "SERVICE_UNAVAILABLE", "actionReason": "Content safety service unavailable."},
-                }).encode(),
+                body=_error_body({"action": "SERVICE_UNAVAILABLE", "actionReason": "Content safety service unavailable."}, 503, _is_llm_api(res_ctx)),
             )
 
         if unsafe:
@@ -286,9 +316,9 @@ class NemoGuardContentSafetyPolicy(RequestPolicy, ResponsePolicy):
             if req_params.response.show_assessment and category_codes:
                 msg["assessments"] = {"categories": category_codes}
             return ImmediateResponse(
-                status_code=200,
+                status_code=_status(200, _is_llm_api(res_ctx)),
                 headers={"content-type": "application/json"},
-                body=json.dumps({"type": "NVIDIA_NEMOGUARD_CONTENT_SAFETY", "message": msg}).encode(),
+                body=_error_body(msg, 200, _is_llm_api(res_ctx)),
             )
 
         return _PASSTHROUGH_RESPONSE

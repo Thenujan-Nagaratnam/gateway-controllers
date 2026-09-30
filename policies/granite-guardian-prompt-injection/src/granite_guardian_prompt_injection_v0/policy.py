@@ -32,6 +32,42 @@ from apip_sdk_core import (
 
 LOGGER = logging.getLogger(__name__)
 
+
+_LLM_API_KINDS = frozenset({"LlmProvider", "LlmProxy"})
+
+
+def _status(status_code: int, llm: bool) -> int:
+    """Preserve configured error statuses; only turn an otherwise-successful LLM
+    guardrail intervention into an HTTP error."""
+    return 400 if llm and status_code < 400 else status_code
+
+
+def _is_llm_api(ctx) -> bool:
+    """Whether the request belongs to an LLM API, whose clients expect OpenAI-compatible errors."""
+    return getattr(getattr(ctx, "shared", None), "api_kind", "") in _LLM_API_KINDS
+
+
+def _error_body(msg: dict, status_code: int, llm: bool) -> bytes:
+    """Render a guardrail error: OpenAI-compatible for LLM APIs, the legacy
+    {"type": "GRANITE_GUARDIAN_PROMPT_INJECTION", "message": {...}} shape for other API kinds."""
+    if not llm:
+        return json.dumps({"type": "GRANITE_GUARDIAN_PROMPT_INJECTION", "message": msg}).encode()
+    intervened = msg.get("action") == "GUARDRAIL_INTERVENED"
+    error_type = "server_error" if not intervened and status_code >= 500 else "invalid_request_error"
+    guardrail = {"name": msg.get("interveningGuardrail", "Granite Guardian Prompt Injection")}
+    for key in ("direction", "assessments"):
+        if key in msg:
+            guardrail[key] = msg[key]
+    return json.dumps({
+        "error": {
+            "message": msg.get("actionReason", ""),
+            "type": error_type,
+            "param": None,
+            "code": "guardrail_intervened" if intervened else None,
+            "guardrail": guardrail,
+        }
+    }).encode()
+
 _DEFAULT_RISKS: list[str] = ["jailbreak", "prompt_injection"]
 _DEFAULT_JSON_PATH = "$.messages[-1].content"
 _DEFAULT_MODEL = "ibm-granite/granite-guardian-3.3-8b"
@@ -96,10 +132,7 @@ class GraniteGuardianPromptInjectionPolicy(RequestPolicy):
                 return ImmediateResponse(
                     status_code=503,
                     headers={"content-type": "application/json"},
-                    body=json.dumps({
-                        "type": "GRANITE_GUARDIAN_PROMPT_INJECTION",
-                        "message": {"action": "SERVICE_UNAVAILABLE", "actionReason": "Guardrail service unavailable."},
-                    }).encode(),
+                    body=_error_body({"action": "SERVICE_UNAVAILABLE", "actionReason": "Guardrail service unavailable."}, 503, _is_llm_api(req_ctx)),
                 )
 
             if blocked:
@@ -112,9 +145,9 @@ class GraniteGuardianPromptInjectionPolicy(RequestPolicy):
                 if req_params.show_assessment:
                     msg["assessments"] = {"riskName": risk_name, "verdict": assessment.get("verdict", "")}
                 return ImmediateResponse(
-                    status_code=req_params.block_status_code,
+                    status_code=_status(req_params.block_status_code, _is_llm_api(req_ctx)),
                     headers={"content-type": "application/json"},
-                    body=json.dumps({"type": "GRANITE_GUARDIAN_PROMPT_INJECTION", "message": msg}).encode(),
+                    body=_error_body(msg, req_params.block_status_code, _is_llm_api(req_ctx)),
                 )
 
         return _PASSTHROUGH

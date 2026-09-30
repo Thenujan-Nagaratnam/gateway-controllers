@@ -669,7 +669,7 @@ func TestErrorResponse_DoesNotLeakAWSErrorText(t *testing.T) {
 		"ResourceNotFoundException: Guardrail gr-secret-name not found in account 444455556666")
 
 	p := &AWSBedrockGuardrailPolicy{}
-	resp := p.buildErrorResponse("Error calling AWS Bedrock Guardrail", awsErr, false, true, nil)
+	resp := p.buildErrorResponse("Error calling AWS Bedrock Guardrail", awsErr, false, true, nil, false)
 
 	imm, ok := resp.(policy.ImmediateResponse)
 	if !ok {
@@ -688,7 +688,7 @@ func TestErrorResponse_StillReportsGuardrailAssessments(t *testing.T) {
 	// Withholding SDK diagnostics must not withhold genuine guardrail
 	// assessment detail, which is what showAssessment is for.
 	p := &AWSBedrockGuardrailPolicy{}
-	resp := p.buildErrorResponse("reason", nil, false, true, makePIIIntervenedOutput("john@example.com"))
+	resp := p.buildErrorResponse("reason", nil, false, true, makePIIIntervenedOutput("john@example.com"), false)
 
 	imm, ok := resp.(policy.ImmediateResponse)
 	if !ok {

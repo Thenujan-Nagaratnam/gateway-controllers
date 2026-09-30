@@ -161,6 +161,9 @@ func (p *BasicAuthPolicy) handleAuthFailureHeaders(shared *policy.SharedContext,
 		"error":   "Unauthorized",
 		"message": "Authentication required",
 	})
+	if shared.IsLLMAPI() {
+		body = policy.BuildOpenAIErrorResponseBody(401, policy.OpenAIError{Message: "Authentication required"})
+	}
 
 	return policy.ImmediateResponse{
 		StatusCode: 401,

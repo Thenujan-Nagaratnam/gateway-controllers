@@ -406,24 +406,24 @@ func (p *SemanticPromptGuardPolicy) OnRequestBody(ctx context.Context, reqCtx *p
 	if reqCtx.Body != nil {
 		content = reqCtx.Body.Content
 	}
-	return p.validatePayload(content, p.params).(policy.RequestAction)
+	return p.validatePayload(content, p.params, reqCtx.IsLLMAPI()).(policy.RequestAction)
 }
 
 // validatePayload validates payload using semantic similarity, returning policy actions.
-func (p *SemanticPromptGuardPolicy) validatePayload(payload []byte, params SemanticPromptGuardPolicyParams) interface{} {
+func (p *SemanticPromptGuardPolicy) validatePayload(payload []byte, params SemanticPromptGuardPolicyParams, llm bool) interface{} {
 	prompt, err := utils.ExtractStringValueFromJsonpath(payload, params.JsonPath)
 	if err != nil {
-		return p.buildErrorResponse("Error extracting value from JSONPath", err, params.ShowAssessment)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, params.ShowAssessment, llm)
 	}
 
 	if prompt == "" {
-		return p.buildErrorResponse("Empty prompt extracted", nil, params.ShowAssessment)
+		return p.buildErrorResponse("Empty prompt extracted", nil, params.ShowAssessment, llm)
 	}
 
 	promptEmbedding, err := p.embeddingProvider.GetEmbedding(prompt)
 	if err != nil {
 		slog.Debug("SemanticPromptGuard: Error fetching prompt embedding", "error", err)
-		return p.buildErrorResponse("Failed to generate embedding for prompt", err, params.ShowAssessment)
+		return p.buildErrorResponse("Failed to generate embedding for prompt", err, params.ShowAssessment, llm)
 	}
 
 	if len(params.DeniedPhrases) > 0 && len(params.AllowedPhrases) == 0 {
@@ -431,19 +431,19 @@ func (p *SemanticPromptGuardPolicy) validatePayload(payload []byte, params Seman
 			if similarity >= params.DenySimilarityThreshold {
 				slog.Debug("SemanticPromptGuard: BLOCKED - prompt too similar to denied phrase", "phrase", phrase.Phrase, "similarity", similarity, "threshold", params.DenySimilarityThreshold)
 				reason := fmt.Sprintf("prompt is too similar to denied phrase '%s' (similarity=%.4f)", phrase.Phrase, similarity)
-				return p.buildErrorResponse(reason, nil, params.ShowAssessment)
+				return p.buildErrorResponse(reason, nil, params.ShowAssessment, llm)
 			}
 			slog.Debug("SemanticPromptGuard: ALLOWED - prompt does not match denied phrases", "maxSimilarity", similarity, "threshold", params.DenySimilarityThreshold)
 		} else {
 			slog.Debug("SemanticPromptGuard: Error calculating similarity to denied phrases", "error", err)
-			return p.buildErrorResponse("Error calculating semantic similarity", err, params.ShowAssessment)
+			return p.buildErrorResponse("Error calculating semantic similarity", err, params.ShowAssessment, llm)
 		}
 		return policy.UpstreamRequestModifications{}
 	} else if len(params.AllowedPhrases) > 0 && len(params.DeniedPhrases) == 0 {
 		allowedSimilarity, phrase, err := maxSimilarity(promptEmbedding, params.AllowedPhrases)
 		if err != nil {
 			slog.Debug("SemanticPromptGuard: Error calculating similarity to allowed phrases", "error", err)
-			return p.buildErrorResponse("Error calculating semantic similarity", err, params.ShowAssessment)
+			return p.buildErrorResponse("Error calculating semantic similarity", err, params.ShowAssessment, llm)
 		}
 		if allowedSimilarity >= params.AllowSimilarityThreshold {
 			slog.Debug("SemanticPromptGuard: ALLOWED - prompt matches allowed phrase", "phrase", phrase.Phrase, "similarity", allowedSimilarity, "threshold", params.AllowSimilarityThreshold)
@@ -451,23 +451,23 @@ func (p *SemanticPromptGuardPolicy) validatePayload(payload []byte, params Seman
 		}
 		slog.Debug("SemanticPromptGuard: BLOCKED - prompt does not match allowed phrases", "maxSimilarity", allowedSimilarity, "threshold", params.AllowSimilarityThreshold)
 		reason := fmt.Sprintf("prompt is not similar enough to allowed phrases (similarity=%.4f < threshold=%.4f)", allowedSimilarity, params.AllowSimilarityThreshold)
-		return p.buildErrorResponse(reason, nil, params.ShowAssessment)
+		return p.buildErrorResponse(reason, nil, params.ShowAssessment, llm)
 	} else {
 		if similarity, phrase, err := maxSimilarity(promptEmbedding, params.DeniedPhrases); err == nil {
 			if similarity >= params.DenySimilarityThreshold {
 				slog.Debug("SemanticPromptGuard: BLOCKED - prompt too similar to denied phrase", "phrase", phrase.Phrase, "similarity", similarity, "threshold", params.DenySimilarityThreshold)
 				reason := fmt.Sprintf("prompt is too similar to denied phrase '%s' (similarity=%.4f)", phrase.Phrase, similarity)
-				return p.buildErrorResponse(reason, nil, params.ShowAssessment)
+				return p.buildErrorResponse(reason, nil, params.ShowAssessment, llm)
 			}
 		} else {
 			slog.Debug("SemanticPromptGuard: Error calculating similarity to denied phrases", "error", err)
-			return p.buildErrorResponse("Error calculating semantic similarity", err, params.ShowAssessment)
+			return p.buildErrorResponse("Error calculating semantic similarity", err, params.ShowAssessment, llm)
 		}
 
 		allowedSimilarity, phrase, err := maxSimilarity(promptEmbedding, params.AllowedPhrases)
 		if err != nil {
 			slog.Debug("SemanticPromptGuard: Error calculating similarity to allowed phrases", "error", err)
-			return p.buildErrorResponse("Error calculating semantic similarity", err, params.ShowAssessment)
+			return p.buildErrorResponse("Error calculating semantic similarity", err, params.ShowAssessment, llm)
 		}
 		if allowedSimilarity >= params.AllowSimilarityThreshold {
 			slog.Debug("SemanticPromptGuard: ALLOWED - prompt matches allowed phrase", "phrase", phrase.Phrase, "similarity", allowedSimilarity, "threshold", params.AllowSimilarityThreshold)
@@ -475,34 +475,52 @@ func (p *SemanticPromptGuardPolicy) validatePayload(payload []byte, params Seman
 		}
 		slog.Debug("SemanticPromptGuard: BLOCKED - prompt does not match allowed phrases", "maxSimilarity", allowedSimilarity, "threshold", params.AllowSimilarityThreshold)
 		reason := fmt.Sprintf("prompt is not similar enough to allowed phrases (similarity=%.4f < threshold=%.4f)", allowedSimilarity, params.AllowSimilarityThreshold)
-		return p.buildErrorResponse(reason, nil, params.ShowAssessment)
+		return p.buildErrorResponse(reason, nil, params.ShowAssessment, llm)
 	}
 }
 
 // buildErrorResponse builds a policy error response for request phase.
-func (p *SemanticPromptGuardPolicy) buildErrorResponse(reason string, validationError error, showAssessment bool) policy.RequestAction {
+func (p *SemanticPromptGuardPolicy) buildErrorResponse(reason string, validationError error, showAssessment bool, llm bool) policy.RequestAction {
 	assessment := p.buildAssessmentObject(reason, validationError, showAssessment)
 	analyticsMetadata := map[string]interface{}{
 		"isGuardrailHit": true,
 		"guardrailName":  "SemanticPromptGuard",
 	}
 
-	responseBody := map[string]interface{}{
-		"type":    "SEMANTIC_PROMPT_GUARD",
-		"message": assessment,
-	}
-
-	bodyBytes, err := json.Marshal(responseBody)
-	if err != nil {
-		bodyBytes = []byte(`{"type":"SEMANTIC_PROMPT_GUARD","message":"Internal error"}`)
-	}
+	bodyBytes := guardrailErrorBody(assessment, llm)
 
 	return policy.ImmediateResponse{
-		StatusCode:        GuardrailErrorCode,
+		StatusCode:        guardrailStatus(llm),
 		AnalyticsMetadata: analyticsMetadata,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
 		Body: bodyBytes,
 	}
+}
+
+// guardrailErrorBody renders a guardrail intervention: an OpenAI-compatible error
+// for LLM APIs, the {"type":"SEMANTIC_PROMPT_GUARD","message":...} shape for other API kinds.
+func guardrailErrorBody(assessment map[string]interface{}, llm bool) []byte {
+	if llm {
+		return policy.BuildOpenAIErrorResponseBody(policy.GuardrailStatusCode, policy.NewGuardrailOpenAIError(assessment))
+	}
+	bodyBytes, err := json.Marshal(map[string]interface{}{
+		"type":    "SEMANTIC_PROMPT_GUARD",
+		"message": assessment,
+	})
+	if err != nil {
+		return []byte(`{"type":"SEMANTIC_PROMPT_GUARD","message":"Internal error"}`)
+	}
+	return bodyBytes
+}
+
+// guardrailStatus is the HTTP status of an intervention: 400 on LLM APIs, where
+// OpenAI clients expect content-policy refusals as invalid_request_error, and
+// GuardrailErrorCode for other API kinds.
+func guardrailStatus(llm bool) int {
+	if llm {
+		return policy.GuardrailStatusCode
+	}
+	return GuardrailErrorCode
 }

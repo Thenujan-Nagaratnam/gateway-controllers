@@ -429,7 +429,7 @@ func (p *SemanticCachePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.
 		extracted, err := utils.ExtractStringValueFromJsonpath(content, p.jsonPath)
 		if err != nil {
 			// JSONPath extraction failed - return error response
-			return p.buildErrorResponse("Error extracting value from JSONPath", err)
+			return p.buildErrorResponse("Error extracting value from JSONPath", err, reqCtx.IsLLMAPI())
 		}
 		textToEmbed = extracted
 	}
@@ -727,10 +727,17 @@ func assembleSSEResponse(sseBody string, streamingJsonPath string) (map[string]i
 }
 
 // buildErrorResponse builds a v1alpha2 error response for JSONPath extraction failures.
-func (p *SemanticCachePolicy) buildErrorResponse(message string, err error) policy.RequestAction {
+func (p *SemanticCachePolicy) buildErrorResponse(message string, err error, llm bool) policy.RequestAction {
 	errorMsg := message
 	if err != nil {
 		errorMsg = fmt.Sprintf("%s: %v", message, err)
+	}
+
+	if llm {
+		return policy.NewOpenAIErrorResponse(400, policy.OpenAIError{
+			Message: errorMsg,
+			Code:    "semantic_cache_error",
+		})
 	}
 
 	responseBody := map[string]interface{}{

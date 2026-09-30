@@ -342,7 +342,7 @@ func TestValidatePayloadV2_NormalAndInvert(t *testing.T) {
 	// Normal mode valid -> pass
 	result := p.validatePayload(validPayload, JSONSchemaGuardrailPolicyParams{
 		Schema: schema,
-	}, false)
+	}, false, false)
 	if _, ok := result.(policy.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications, got %T", result)
 	}
@@ -351,7 +351,7 @@ func TestValidatePayloadV2_NormalAndInvert(t *testing.T) {
 	result = p.validatePayload(invalidPayload, JSONSchemaGuardrailPolicyParams{
 		Schema:         schema,
 		ShowAssessment: true,
-	}, false)
+	}, false, false)
 	imm, ok := result.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse, got %T", result)
@@ -374,7 +374,7 @@ func TestValidatePayloadV2_NormalAndInvert(t *testing.T) {
 	result = p.validatePayload(validPayload, JSONSchemaGuardrailPolicyParams{
 		Schema: schema,
 		Invert: true,
-	}, false)
+	}, false, false)
 	if _, ok := result.(policy.ImmediateResponse); !ok {
 		t.Fatalf("expected ImmediateResponse for inverted-valid case, got %T", result)
 	}
@@ -383,7 +383,7 @@ func TestValidatePayloadV2_NormalAndInvert(t *testing.T) {
 	result = p.validatePayload(invalidPayload, JSONSchemaGuardrailPolicyParams{
 		Schema: schema,
 		Invert: true,
-	}, false)
+	}, false, false)
 	if _, ok := result.(policy.UpstreamRequestModifications); !ok {
 		t.Fatalf("expected UpstreamRequestModifications for inverted-invalid case, got %T", result)
 	}
@@ -397,7 +397,7 @@ func TestValidatePayloadV2_JSONPathAndSchemaErrors(t *testing.T) {
 		Schema:         `{"type":"string"}`,
 		JsonPath:       "$.missing",
 		ShowAssessment: true,
-	}, false)
+	}, false, false)
 	imm, ok := result.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse on JSONPath error, got %T", result)
@@ -414,7 +414,7 @@ func TestValidatePayloadV2_JSONPathAndSchemaErrors(t *testing.T) {
 	result = p.validatePayload([]byte(`{"name":"alice"}`), JSONSchemaGuardrailPolicyParams{
 		Schema:         `{"type":"not-a-valid-jsonschema-type"}`,
 		ShowAssessment: true,
-	}, false)
+	}, false, false)
 	imm, ok = result.(policy.ImmediateResponse)
 	if !ok {
 		t.Fatalf("expected ImmediateResponse on schema validation engine error, got %T", result)
@@ -430,7 +430,7 @@ func TestValidatePayloadV2_JSONPathAndSchemaErrors(t *testing.T) {
 
 func TestBuildErrorResponseV2_ResponsePhase(t *testing.T) {
 	p := &JSONSchemaGuardrailPolicy{}
-	res := p.buildErrorResponse("test reason", nil, true, false, nil)
+	res := p.buildErrorResponse("test reason", nil, true, false, nil, false)
 	mod, ok := res.(policy.DownstreamResponseModifications)
 	if !ok {
 		t.Fatalf("expected DownstreamResponseModifications, got %T", res)

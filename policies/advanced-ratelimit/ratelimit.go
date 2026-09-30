@@ -716,6 +716,7 @@ func (p *RateLimitPolicy) buildRateLimitResponse(
 	violatedResult *limiter.Result,
 	violatedQuotaName string,
 	allResults []quotaResult,
+	llm bool,
 ) policy.ImmediateResponse {
 	// If we have all results, use the multi-quota header builder
 	var headers map[string]string
@@ -749,8 +750,18 @@ func (p *RateLimitPolicy) buildRateLimitResponse(
 		headers = make(map[string]string)
 	}
 
-	// Set content-type based on format
-	if p.responseFormat == "json" {
+	body := []byte(p.responseBody)
+
+	// LLM API invocations always use the conventional OpenAI-compatible
+	// non-streaming HTTP error envelope. Custom bodies remain available to other API kinds.
+	statusCode := p.statusCode
+	if llm {
+		headers["content-type"] = "application/json"
+		body = policy.BuildOpenAIErrorResponseBody(statusCode, policy.OpenAIError{
+			Message: "Rate limit exceeded. Please try again later.",
+			Code:    "rate_limit_exceeded",
+		})
+	} else if p.responseFormat == "json" {
 		headers["content-type"] = "application/json"
 	} else {
 		headers["content-type"] = "text/plain"
@@ -762,9 +773,9 @@ func (p *RateLimitPolicy) buildRateLimitResponse(
 	}
 
 	return policy.ImmediateResponse{
-		StatusCode: p.statusCode,
+		StatusCode: statusCode,
 		Headers:    headers,
-		Body:       []byte(p.responseBody),
+		Body:       body,
 	}
 }
 
@@ -1387,7 +1398,7 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 							continue
 						}
 						slog.Error("Rate limit state lookup failed (fail-closed)", "error", err, "quota", quotaName)
-						return p.buildRateLimitResponse(nil, quotaName, quotaResults)
+						return p.buildRateLimitResponse(nil, quotaName, quotaResults, reqCtx.IsLLMAPI())
 					}
 					duration := getDurationFromQuota(q)
 					quotaResults = append(quotaResults, quotaResult{
@@ -1413,12 +1424,12 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 						continue
 					}
 					slog.Error("Rate limit check failed (fail-closed)", "error", err, "quota", quotaName)
-					return p.buildRateLimitResponse(nil, quotaName, quotaResults)
+					return p.buildRateLimitResponse(nil, quotaName, quotaResults, reqCtx.IsLLMAPI())
 				}
 				if !result.Allowed {
 					slog.Debug("Rate limit exceeded in header phase",
 						"quota", quotaName, "key", key, "cost", cost)
-					return p.buildRateLimitResponse(result, quotaName, quotaResults)
+					return p.buildRateLimitResponse(result, quotaName, quotaResults, reqCtx.IsLLMAPI())
 				}
 				slog.Debug("Rate limit check passed",
 					"quota", quotaName, "key", key, "cost", cost, "remaining", result.Remaining)
@@ -1440,7 +1451,7 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 						continue
 					}
 					slog.Error("Rate limit pre-check failed (fail-closed)", "error", err, "quota", quotaName)
-					return p.buildRateLimitResponse(nil, quotaName, quotaResults)
+					return p.buildRateLimitResponse(nil, quotaName, quotaResults, reqCtx.IsLLMAPI())
 				}
 				if available <= 0 {
 					slog.Debug("Cost extraction mode: quota exhausted in header phase",
@@ -1453,7 +1464,7 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 						Reset:     time.Now().Add(duration),
 						Duration:  duration,
 					}
-					return p.buildRateLimitResponse(result, quotaName, quotaResults)
+					return p.buildRateLimitResponse(result, quotaName, quotaResults, reqCtx.IsLLMAPI())
 				}
 				// Store a placeholder so the response phase can find this quota in
 				// storedResultsMap. Actual consumption and result are populated in
@@ -1475,12 +1486,12 @@ func (p *RateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.R
 					continue
 				}
 				slog.Error("Rate limit check failed (fail-closed)", "error", err, "quota", quotaName)
-				return p.buildRateLimitResponse(nil, quotaName, quotaResults)
+				return p.buildRateLimitResponse(nil, quotaName, quotaResults, reqCtx.IsLLMAPI())
 			}
 
 			if !result.Allowed {
 				slog.Debug("Rate limit exceeded", "key", key, "quota", quotaName)
-				return p.buildRateLimitResponse(result, quotaName, quotaResults)
+				return p.buildRateLimitResponse(result, quotaName, quotaResults, reqCtx.IsLLMAPI())
 			}
 
 			quotaResults = append(quotaResults, quotaResult{
@@ -1721,7 +1732,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 								continue
 							}
 							slog.Error("Rate limit state lookup failed (fail-closed)", "error", err, "quota", quotaName)
-							return p.buildRateLimitResponse(nil, quotaName, quotaResults)
+							return p.buildRateLimitResponse(nil, quotaName, quotaResults, reqCtx.IsLLMAPI())
 						}
 						duration := getDurationFromQuota(q)
 						quotaResults = append(quotaResults, quotaResult{
@@ -1748,7 +1759,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 							continue
 						}
 						slog.Error("Rate limit check failed (fail-closed)", "error", err, "quota", quotaName)
-						return p.buildRateLimitResponse(nil, quotaName, quotaResults)
+						return p.buildRateLimitResponse(nil, quotaName, quotaResults, reqCtx.IsLLMAPI())
 					}
 
 					if !result.Allowed {
@@ -1758,7 +1769,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 							"quota", quotaName,
 							"remaining", result.Remaining,
 							"limit", result.Limit)
-						return p.buildRateLimitResponse(result, quotaName, quotaResults)
+						return p.buildRateLimitResponse(result, quotaName, quotaResults, reqCtx.IsLLMAPI())
 					}
 
 					slog.Debug("Rate limit check passed",
@@ -1786,7 +1797,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 						continue
 					}
 					slog.Error("Rate limit pre-check failed (fail-closed)", "error", err, "key", key, "quota", quotaName)
-					return p.buildRateLimitResponse(nil, quotaName, quotaResults)
+					return p.buildRateLimitResponse(nil, quotaName, quotaResults, reqCtx.IsLLMAPI())
 				}
 
 				// If available <= 0, quota is exhausted - block the request
@@ -1802,7 +1813,7 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 						Reset:     time.Now().Add(duration),
 						Duration:  duration,
 					}
-					return p.buildRateLimitResponse(result, quotaName, quotaResults)
+					return p.buildRateLimitResponse(result, quotaName, quotaResults, reqCtx.IsLLMAPI())
 				}
 
 				// Store a placeholder result for the response phase
@@ -1834,12 +1845,12 @@ func (p *RateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Requ
 					continue
 				}
 				slog.Error("Rate limit check failed (fail-closed)", "error", err, "quota", quotaName)
-				return p.buildRateLimitResponse(nil, quotaName, quotaResults)
+				return p.buildRateLimitResponse(nil, quotaName, quotaResults, reqCtx.IsLLMAPI())
 			}
 
 			if !result.Allowed {
 				slog.Debug("Rate limit exceeded", "key", key, "quota", quotaName)
-				return p.buildRateLimitResponse(result, quotaName, quotaResults)
+				return p.buildRateLimitResponse(result, quotaName, quotaResults, reqCtx.IsLLMAPI())
 			}
 
 			quotaResults = append(quotaResults, quotaResult{

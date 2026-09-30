@@ -303,7 +303,7 @@ func (p *InterceptorServicePolicy) OnRequestBody(ctx context.Context, reqCtx *po
 		if p.requestCfg.PassthroughOnError {
 			return policy.UpstreamRequestModifications{}
 		}
-		return interceptorErrorImmediate(err)
+		return interceptorErrorImmediate(err, reqCtx.IsLLMAPI())
 	}
 
 	if reply.InterceptorContext != nil && reqCtx.SharedContext != nil {
@@ -355,7 +355,7 @@ func (p *InterceptorServicePolicy) OnResponseBody(ctx context.Context, respCtx *
 		if p.responseCfg.PassthroughOnError {
 			return policy.DownstreamResponseModifications{}
 		}
-		return interceptorErrorImmediate(err)
+		return interceptorErrorImmediate(err, respCtx.IsLLMAPI())
 	}
 
 	mods := policy.DownstreamResponseModifications{
@@ -520,8 +520,11 @@ func buildUpstreamModifications(reply *interceptorReply) policy.UpstreamRequestM
 	return mods
 }
 
-func interceptorErrorImmediate(err error) policy.ImmediateResponse {
+func interceptorErrorImmediate(err error, llm bool) policy.ImmediateResponse {
 	slog.Error("InterceptorService: returning 500 to client", "error", err)
+	if llm {
+		return policy.NewOpenAIErrorResponse(interceptorErrorStatus, policy.OpenAIError{Message: "Internal Server Error"})
+	}
 	return policy.ImmediateResponse{
 		StatusCode: interceptorErrorStatus,
 		Headers:    map[string]string{"Content-Type": contentTypeJSON},

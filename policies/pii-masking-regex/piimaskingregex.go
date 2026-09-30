@@ -400,7 +400,7 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext
 
 	extractedValue, ok, err := extractStringFromPath(payload, p.params.JsonPath)
 	if err != nil {
-		return p.buildErrorResponse(fmt.Sprintf("error extracting value from JSONPath: %v", err)).(policy.RequestAction)
+		return p.buildErrorResponse(fmt.Sprintf("%s: %v", errExtractJSONPath, err), reqCtx.IsLLMAPI()).(policy.RequestAction)
 	}
 	if !ok {
 		// Value at path is not a scalar (e.g. multimodal content array); skip masking.
@@ -419,7 +419,7 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext
 		}
 		modifiedContent, err = p.maskPIIFromContent(extractedValue, p.params.PIIEntities, reqCtx.Metadata)
 		if err != nil {
-			return p.buildErrorResponse(fmt.Sprintf("error masking PII: %v", err)).(policy.RequestAction)
+			return p.buildErrorResponse(fmt.Sprintf("error masking PII: %v", err), reqCtx.IsLLMAPI()).(policy.RequestAction)
 		}
 	}
 
@@ -985,7 +985,23 @@ func extractStringFromPath(payload []byte, jsonPath string) (string, bool, error
 	}
 }
 
-func (p *PIIMaskingRegexPolicy) buildErrorResponse(reason string) interface{} {
+// errExtractJSONPath prefixes the error reason for a payload the JSONPath cannot be read from.
+const errExtractJSONPath = "error extracting value from JSONPath"
+
+func (p *PIIMaskingRegexPolicy) buildErrorResponse(reason string, llm bool) interface{} {
+	if llm {
+		// A payload the configured JSONPath cannot be read from is a client error;
+		// a failure while masking is the gateway's own.
+		status := APIMInternalErrorCode
+		if strings.HasPrefix(reason, errExtractJSONPath) {
+			status = 400
+		}
+		return policy.NewOpenAIErrorResponse(status, policy.OpenAIError{
+			Message: "Error occurred during pii-masking-regex mediation: " + reason,
+			Code:    "pii_masking_error",
+		})
+	}
+
 	responseBody := map[string]interface{}{
 		"code":    APIMInternalExceptionCode,
 		"message": "Error occurred during pii-masking-regex mediation: " + reason,

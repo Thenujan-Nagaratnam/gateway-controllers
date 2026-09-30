@@ -2830,6 +2830,13 @@ func (p *JwtAuthPolicy) handleAuthFailureHeaders(shared *policy.SharedContext, s
 	}
 
 	var body string
+	if shared.IsLLMAPI() {
+		body = string(policy.BuildOpenAIErrorResponseBody(statusCode, policy.OpenAIError{
+			Message: errorMessage,
+			Code:    "invalid_token",
+		}))
+		return policy.ImmediateResponse{StatusCode: statusCode, Headers: headers, Body: []byte(body)}
+	}
 	switch errorFormat {
 	case "plain":
 		body = errorMessage

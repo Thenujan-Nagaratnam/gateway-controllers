@@ -87,17 +87,17 @@ type cachedIntrospection struct {
 // IntrospectionProvider describes an authorization server's introspection
 // endpoint and how the gateway authenticates itself to it.
 type IntrospectionProvider struct {
-	Name          string           // Unique provider name (referenced by user `issuers`)
-	Issuer        string           // Optional issuer value (also matchable via `issuers`)
-	TokenPattern  string           // Optional regex; when set, only tokens matching it are sent to this provider
-	URI           string           // RFC 7662 introspection endpoint URL
-	ClientID      string           // OAuth2 client id for client authentication
-	ClientSecret  string           // OAuth2 client secret for client authentication
-	AuthStyle     string           // "basic" (client_secret_basic) | "post" (client_secret_post)
-	BearerToken   string           // Static bearer token alternative to client credentials
-	TokenTypeHint string           // RFC 7662 token_type_hint (default "access_token")
-	tokenRegexp   *regexp.Regexp   // Compiled TokenPattern; nil when TokenPattern is ""
-	httpTransport *http.Transport  // Reused across requests for TCP connection pooling; nil = DefaultTransport
+	Name          string          // Unique provider name (referenced by user `issuers`)
+	Issuer        string          // Optional issuer value (also matchable via `issuers`)
+	TokenPattern  string          // Optional regex; when set, only tokens matching it are sent to this provider
+	URI           string          // RFC 7662 introspection endpoint URL
+	ClientID      string          // OAuth2 client id for client authentication
+	ClientSecret  string          // OAuth2 client secret for client authentication
+	AuthStyle     string          // "basic" (client_secret_basic) | "post" (client_secret_post)
+	BearerToken   string          // Static bearer token alternative to client credentials
+	TokenTypeHint string          // RFC 7662 token_type_hint (default "access_token")
+	tokenRegexp   *regexp.Regexp  // Compiled TokenPattern; nil when TokenPattern is ""
+	httpTransport *http.Transport // Reused across requests for TCP connection pooling; nil = DefaultTransport
 }
 
 // IntrospectionResult is the RFC 7662 introspection response. Typed fields cover
@@ -467,6 +467,13 @@ func (p *OpaqueTokenAuthPolicy) handleAuthFailureHeaders(shared *policy.SharedCo
 	}
 
 	var body string
+	if shared.IsLLMAPI() {
+		body = string(policy.BuildOpenAIErrorResponseBody(statusCode, policy.OpenAIError{
+			Message: errorMessage,
+			Code:    "invalid_token",
+		}))
+		return policy.ImmediateResponse{StatusCode: statusCode, Headers: headers, Body: []byte(body)}
+	}
 	switch errorFormat {
 	case "plain":
 		body = errorMessage

@@ -345,7 +345,7 @@ func (p *PromptTemplatePolicy) OnRequestBody(ctx context.Context, reqCtx *policy
 	if p.params.JsonPath == "" {
 		updatedContent, err := p.resolveTemplatesInText(string(content), true)
 		if err != nil {
-			return p.buildErrorResponse("Error resolving templates", err)
+			return p.buildErrorResponse("Error resolving templates", err, reqCtx.IsLLMAPI())
 		}
 		if updatedContent == string(content) {
 			return policy.UpstreamRequestModifications{}
@@ -358,29 +358,29 @@ func (p *PromptTemplatePolicy) OnRequestBody(ctx context.Context, reqCtx *policy
 	// jsonPath configured: resolve template references in the extracted string only.
 	var payloadData map[string]interface{}
 	if err := json.Unmarshal(content, &payloadData); err != nil {
-		return p.buildErrorResponse("Error parsing JSON payload", err)
+		return p.buildErrorResponse("Error parsing JSON payload", err, reqCtx.IsLLMAPI())
 	}
 
 	extractedValue, err := p.extractStringAtPath(content, p.params.JsonPath)
 	if err != nil {
-		return p.buildErrorResponse("Error extracting value from JSONPath", err)
+		return p.buildErrorResponse("Error extracting value from JSONPath", err, reqCtx.IsLLMAPI())
 	}
 
 	updatedValue, err := p.resolveTemplatesInText(extractedValue, false)
 	if err != nil {
-		return p.buildErrorResponse("Error resolving templates", err)
+		return p.buildErrorResponse("Error resolving templates", err, reqCtx.IsLLMAPI())
 	}
 	if updatedValue == extractedValue {
 		return policy.UpstreamRequestModifications{}
 	}
 
 	if err := utils.SetValueAtJSONPath(payloadData, p.params.JsonPath, updatedValue); err != nil {
-		return p.buildErrorResponse("Error updating JSONPath", err)
+		return p.buildErrorResponse("Error updating JSONPath", err, reqCtx.IsLLMAPI())
 	}
 
 	updatedPayload, err := json.Marshal(payloadData)
 	if err != nil {
-		return p.buildErrorResponse("Error marshaling updated JSON payload", err)
+		return p.buildErrorResponse(errMarshalPayload, err, reqCtx.IsLLMAPI())
 	}
 
 	return policy.UpstreamRequestModifications{
@@ -388,12 +388,28 @@ func (p *PromptTemplatePolicy) OnRequestBody(ctx context.Context, reqCtx *policy
 	}
 }
 
+// errMarshalPayload is the one error reason caused by the gateway rather than the request.
+const errMarshalPayload = "Error marshaling updated JSON payload"
+
 // buildV1ErrorResponse builds an error response for the v1alpha OnRequest method.
-func (p *PromptTemplatePolicy) buildErrorResponse(reason string, validationError error) policy.RequestAction {
+func (p *PromptTemplatePolicy) buildErrorResponse(reason string, validationError error, llm bool) policy.RequestAction {
 	errorMessage := reason
 	if validationError != nil {
 		errorMessage = fmt.Sprintf("%s: %v", reason, validationError)
 	}
+	if llm {
+		// The request could not be processed as sent: a client error. Only a failure
+		// to re-serialise the rewritten payload is the gateway's own fault.
+		status := 400
+		if reason == errMarshalPayload {
+			status = 500
+		}
+		return policy.NewOpenAIErrorResponse(status, policy.OpenAIError{
+			Message: errorMessage,
+			Code:    "prompt_template_error",
+		})
+	}
+
 	responseBody := map[string]interface{}{
 		"type":    "PROMPT_TEMPLATE_ERROR",
 		"message": errorMessage,

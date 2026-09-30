@@ -364,12 +364,7 @@ func optionalString(params map[string]interface{}, key string) (string, error) {
 }
 
 func errResponse(statusCode int, message string) policy.ImmediateResponse {
-	body, _ := json.Marshal(map[string]string{"error": message})
-	return policy.ImmediateResponse{
-		StatusCode: statusCode,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       body,
-	}
+	return policy.NewOpenAIErrorResponse(statusCode, policy.OpenAIError{Message: message})
 }
 
 // translateBody converts an OpenAI Chat Completions payload into a Gemini

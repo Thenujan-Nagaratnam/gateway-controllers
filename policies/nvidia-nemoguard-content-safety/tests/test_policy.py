@@ -352,6 +352,38 @@ class NemoGuardPolicyTest(unittest.TestCase):
         self.assertEqual("GUARDRAIL_INTERVENED", body["message"]["action"])
         self.assertEqual("REQUEST", body["message"]["direction"])
 
+    def test_blocks_request_with_openai_error_on_llm_api(self) -> None:
+        FakeRequests.reset(response=nemoguard_response("unsafe", categories="Violence"))
+        instance = self._make_policy()
+        ctx = request_context({"messages": [{"role": "user", "content": "violent text"}]})
+        ctx.shared = SimpleNamespace(api_kind="LlmProvider")
+
+        result = instance.on_request_body(None, ctx, {})
+
+        self.assertIsInstance(result, ImmediateResponse)
+        self.assertEqual(400, result.status_code)
+        error = json.loads(result.body)["error"]
+        self.assertEqual("Unsafe content detected.", error["message"])
+        self.assertEqual("invalid_request_error", error["type"])
+        self.assertIsNone(error["param"])
+        self.assertEqual("guardrail_intervened", error["code"])
+        self.assertEqual("REQUEST", error["guardrail"]["direction"])
+        self.assertEqual("NeMo Guard Content Safety", error["guardrail"]["name"])
+
+    def test_service_error_is_openai_server_error_on_llm_api(self) -> None:
+        FakeRequests.reset(error=RuntimeError("down"))
+        instance = self._make_policy()
+        ctx = request_context({"messages": [{"role": "user", "content": "hi"}]})
+        ctx.shared = SimpleNamespace(api_kind="LlmProxy")
+
+        result = instance.on_request_body(None, ctx, {"request": {"passthroughOnError": False}})
+
+        self.assertIsInstance(result, ImmediateResponse)
+        self.assertEqual(503, result.status_code)
+        error = json.loads(result.body)["error"]
+        self.assertEqual("server_error", error["type"])
+        self.assertIsNone(error["code"])
+
     def test_passes_request_when_content_is_safe(self) -> None:
         FakeRequests.reset(response=nemoguard_response("safe"))
         instance = self._make_policy()
@@ -514,6 +546,23 @@ class NemoGuardPolicyTest(unittest.TestCase):
         self.assertEqual("NVIDIA_NEMOGUARD_CONTENT_SAFETY", body["type"])
         self.assertEqual("GUARDRAIL_INTERVENED", body["message"]["action"])
         self.assertEqual("RESPONSE", body["message"]["direction"])
+
+    def test_response_block_is_400_openai_error_on_llm_api(self) -> None:
+        FakeRequests.reset(response=nemoguard_response("safe", response_safety="unsafe", categories="Violence"))
+        instance = self._make_policy()
+        ctx = response_context(
+            response_payload={"choices": [{"message": {"content": "violent reply"}}]},
+            request_payload={"messages": [{"role": "user", "content": "question"}]},
+        )
+        ctx.shared = SimpleNamespace(api_kind="LlmProvider")
+
+        result = instance.on_response_body(None, ctx, {"response": {"enabled": True}})
+
+        self.assertIsInstance(result, ImmediateResponse)
+        self.assertEqual(400, result.status_code)
+        error = json.loads(result.body)["error"]
+        self.assertEqual("guardrail_intervened", error["code"])
+        self.assertEqual("RESPONSE", error["guardrail"]["direction"])
 
     def test_passes_response_when_content_is_safe(self) -> None:
         FakeRequests.reset(response=nemoguard_response("safe", response_safety="safe"))

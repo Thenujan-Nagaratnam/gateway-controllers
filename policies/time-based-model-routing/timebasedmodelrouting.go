@@ -131,11 +131,7 @@ func (p *TimeBasedModelRoutingPolicy) applyTarget(
 		}
 		updated, err := json.Marshal(payload)
 		if err != nil {
-			return policy.ImmediateResponse{
-				StatusCode: 500,
-				Headers:    map[string]string{"Content-Type": "application/json"},
-				Body:       []byte(`{"error":"failed to prepare routed request"}`),
-			}
+			return policy.NewOpenAIErrorResponse(500, policy.OpenAIError{Message: "failed to prepare routed request"})
 		}
 		mods.Body = updated
 	case "header":
@@ -176,12 +172,7 @@ func (p *TimeBasedModelRoutingPolicy) applyTarget(
 }
 
 func badRequest(message string) policy.ImmediateResponse {
-	body, _ := json.Marshal(map[string]string{"error": message})
-	return policy.ImmediateResponse{
-		StatusCode: 400,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       body,
-	}
+	return policy.NewOpenAIErrorResponse(400, policy.OpenAIError{Message: message})
 }
 
 func rewriteQueryParameter(rawPath, name, model string) (string, bool) {
