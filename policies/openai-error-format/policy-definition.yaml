@@ -1,0 +1,33 @@
+name: openai-error-format
+version: v0.1.0
+description: |
+  Fault policy for LlmProvider and LlmProxy APIs. Returns gateway-produced errors
+  (policy rejections, internal errors, and router failures when
+  handle_upstream_faults is on) in the OpenAI error envelope
+  {"error":{"message","type","param","code"}} so OpenAI SDKs can parse them.
+  The status code is never changed. Backend errors pass through unchanged.
+  Has no effect on other API kinds.
+
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    fault:
+      type: object
+      x-wso2-policy-advanced-param: false
+      additionalProperties: false
+      description: Fault-path configuration.
+      properties:
+        maxInspectBytes:
+          type: integer
+          minimum: 0
+          default: 65536
+          x-wso2-policy-advanced-param: true
+          description: |
+            Largest error body (bytes) read to recover the rejecting policy's message.
+            Larger or encoded bodies fall back to the fault description or status text.
+            0 disables body inspection.
+
+systemParameters:
+  type: object
+  properties: {}

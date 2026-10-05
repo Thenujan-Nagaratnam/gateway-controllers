@@ -1,0 +1,11 @@
+{
+  "name": "openai-error-format",
+  "displayName": "OpenAI Error Format",
+  "version": "0.1",
+  "provider": "WSO2",
+  "categories": [
+    "AI",
+    "Transformation"
+  ],
+  "description": "Fault policy for LLM Provider and LLM Proxy APIs.\nReturns the errors the gateway produces (policy rejections, internal errors, and router failures when upstream faults are routed to fault policies) in the OpenAI error envelope, so OpenAI SDK clients can parse them.\nThe status code is never changed and the backend's own errors pass through untouched."
+}
