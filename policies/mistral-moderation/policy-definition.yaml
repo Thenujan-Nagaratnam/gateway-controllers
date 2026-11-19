@@ -1,0 +1,250 @@
+name: mistral-moderation
+version: v0.1.0
+description: |
+  Moderates request and/or response text with the Mistral Moderation API
+  (POST /v1/moderations). Each category in the API result carries a 0-1 score
+  and Mistral's own calibrated flag; the policy blocks when a category crosses
+  the threshold you set for it, or, for categories you do not configure, when
+  Mistral flags it.
+
+  Categories depend on the moderation model. mistral-moderation-2411 reports
+  sexual, hate_and_discrimination, violence_and_threats,
+  dangerous_and_criminal_content, selfharm, health, financial, law and pii.
+  mistral-moderation-2603 splits the dangerous/criminal category in two and
+  adds jailbreaking. The policy does not hard-code the list: it works with
+  whatever categories the API returns.
+
+  By default the subject-matter categories (health, financial, law, pii) are
+  not enforced, because they describe topics rather than harm. Name them in
+  categoryThresholds to enforce them.
+
+  Blocked requests are rejected before they reach the upstream; blocked
+  responses are replaced with the error body. If the moderation call fails the
+  policy fails closed (503) unless passthroughOnError is set.
+
+  Streaming (server-sent events) responses are supported: the stream is held
+  while its text is checked in batches and released only when a batch passes;
+  a violating stream is ended with one error event. Request bodies are always
+  read whole. Several texts from one payload (a wildcard over all messages)
+  are checked together, in batched API calls.
+
+parameters:
+  type: object
+  properties:
+    request:
+      type: object
+      x-wso2-policy-advanced-param: false
+      description: Moderation settings for request payloads.
+      additionalProperties: false
+      properties:
+        jsonPath:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: |
+            JSONPath of the text to moderate. Arrays, wildcards, slices, filters and
+            recursive descent are supported, for example
+            $.messages[*].content (every message) or
+            $.messages[?(@.role=='user')].content (user messages only).
+            Whatever the path selects is read as text: strings, the "text" of
+            content parts such as {"type":"text","text":"..."}, and the
+            "content" of whole messages. Images and other non-text parts are
+            skipped. An empty value means the whole body is the text.
+          default: "$.messages[-1].content"
+        categoryThresholds:
+          type: object
+          x-wso2-policy-advanced-param: false
+          description: |
+            Per-category score thresholds (0-1). Content is blocked when the
+            category's score is at or above its threshold; lower is stricter.
+            A threshold of 1 disables the category. Keys are category names
+            as the API reports them (for example sexual, violence_and_threats,
+            jailbreaking). Categories not listed here follow Mistral's own flag.
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 1
+        ignoreOtherCategories:
+          type: boolean
+          x-wso2-policy-advanced-param: false
+          description: |
+            When true, only categories listed in categoryThresholds are
+            enforced and Mistral's own flags are ignored.
+          default: false
+        ignoredCategories:
+          type: array
+          x-wso2-policy-advanced-param: true
+          description: |
+            Categories whose Mistral flag is not enforced unless they appear in
+            categoryThresholds. Replaces the default list.
+          items:
+            type: string
+          default: [health, financial, law, pii]
+        maxContentChars:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          minimum: 1
+          description: |
+            Most text, in characters, sent to the API for one payload. More is
+            treated as a failed check (503 unless passthroughOnError is set)
+            rather than being truncated. A payload may also yield at most 100
+            separate texts.
+          default: 100000
+        blockStatusCode:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          description: HTTP status returned when content is blocked.
+          minimum: 400
+          maximum: 599
+          default: 422
+        passthroughOnError:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            When true, the request continues if the moderation call fails or
+            the body is not valid JSON. When false (default) it is blocked.
+          default: false
+        showAssessment:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            When true, the error body lists the violated categories and their
+            scores. The moderated text is never included.
+          default: false
+    response:
+      type: object
+      x-wso2-policy-advanced-param: false
+      description: |
+        Moderation settings for response payloads. Non-2xx upstream responses
+        are passed through unmoderated. Streaming (SSE) responses are not
+        supported; use this on non-streaming routes.
+      additionalProperties: false
+      properties:
+        jsonPath:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: |
+            JSONPath of the text to moderate. Arrays, wildcards, slices, filters and
+            recursive descent are supported, for example
+            $.messages[*].content (every message) or
+            $.messages[?(@.role=='user')].content (user messages only).
+            Whatever the path selects is read as text: strings, the "text" of
+            content parts such as {"type":"text","text":"..."}, and the
+            "content" of whole messages. Images and other non-text parts are
+            skipped. An empty value means the whole body is the text.
+          default: "$.choices[0].message.content"
+        categoryThresholds:
+          type: object
+          x-wso2-policy-advanced-param: false
+          description: |
+            Per-category score thresholds (0-1). See the request setting of
+            the same name.
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 1
+        ignoreOtherCategories:
+          type: boolean
+          x-wso2-policy-advanced-param: false
+          description: |
+            When true, only categories listed in categoryThresholds are enforced.
+          default: false
+        ignoredCategories:
+          type: array
+          x-wso2-policy-advanced-param: true
+          description: |
+            Categories whose Mistral flag is not enforced unless they appear in
+            categoryThresholds. Replaces the default list.
+          items:
+            type: string
+          default: [health, financial, law, pii]
+        streamingJsonPath:
+          type: string
+          x-wso2-policy-advanced-param: true
+          minLength: 1
+          description: |
+            JSONPath of the text inside one server-sent-event frame of a
+            streamed response. The default fits OpenAI-style streams; for
+            Anthropic use $.delta.text.
+          default: "$.choices[0].delta.content"
+        streamingTextUnitChars:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          minimum: 0
+          description: |
+            How much streamed text, in characters, is gathered before each
+            check (0, or at least 100). The stream is held until the text has
+            been checked and then released, so nothing unchecked reaches the
+            client. A smaller value stops a violating stream sooner and costs
+            more calls; 0 checks the whole stream once, at its end (the client
+            receives nothing until the stream finishes).
+          default: 1000
+        maxContentChars:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          minimum: 1
+          description: |
+            Most text, in characters, sent to the API for one payload. More is
+            treated as a failed check (503 unless passthroughOnError is set)
+            rather than being truncated. A payload may also yield at most 100
+            separate texts.
+          default: 100000
+        blockStatusCode:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          description: HTTP status returned when content is blocked.
+          minimum: 400
+          maximum: 599
+          default: 422
+        passthroughOnError:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            When true, the response is delivered unmoderated if the moderation
+            call fails or the body is not valid JSON.
+          default: false
+        showAssessment:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            When true, the error body lists the violated categories and their
+            scores. The moderated text is never included.
+          default: false
+  anyOf:
+    - required: [ request ]
+    - required: [ response ]
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    endpoint:
+      type: string
+      format: uri
+      description: |
+        Base URL of the Mistral API, without a trailing slash. The policy
+        appends /v1/moderations.
+      default: "https://api.mistral.ai"
+      "wso2/defaultValue": "${config.mistral_moderation_endpoint}"
+    apiKey:
+      type: string
+      description: |
+        Mistral API key, sent as a Bearer token. Required: with an empty key
+        the policy refuses to start and the route will not enforce it.
+      default: ""
+      "wso2/defaultValue": "${config.mistral_moderation_api_key}"
+    model:
+      type: string
+      description: |
+        Moderation model. Pin a dated model (for example
+        mistral-moderation-2603) in production: category scores are
+        recalibrated between versions, which changes thresholds' meaning.
+      default: "mistral-moderation-latest"
+      "wso2/defaultValue": "${config.mistral_moderation_model}"
+    timeout:
+      type: integer
+      description: |
+        Total time budget in seconds for one moderation call, retries included.
+      default: 10
+      minimum: 1
+      maximum: 120
+      "wso2/defaultValue": "${config.mistral_moderation_timeout}"
