@@ -1,0 +1,280 @@
+name: shieldstral
+version: v0.1.0
+description: |
+  Checks request and/or response text against safety rules you write in plain
+  language, using a self-hosted Mistral Shieldstral classifier
+  (mistralai/Shieldstral-1.0-3B served by vLLM, or any OpenAI-compatible
+  server that returns logprobs).
+
+  Each rule is a yes/no question phrased so that "yes" means the content
+  violates your policy, for example "Does this content promote physical
+  violence?". For every rule the policy asks the model one question and turns
+  the probability of "yes" into a score between 0 and 1. The content is blocked
+  when a rule's score is above its threshold. Rules run in parallel, one
+  classifier call each.
+
+  Shieldstral has no hosted API: you run the model yourself and point the
+  gateway at it. Text only; images are not supported by this policy.
+
+  Blocked requests are rejected before they reach the upstream; blocked
+  responses are replaced with the error body. If the classifier cannot be
+  reached or does not answer yes/no, the policy fails closed (503) unless
+  passthroughOnError is set.
+
+  Streaming (server-sent events) responses are supported: the stream is held
+  while its text is classified in batches and released only when a batch
+  passes; a violating stream is ended with one error event. Request bodies are
+  always read whole. Several texts from one payload (a wildcard over all
+  messages) are classified together as one document.
+
+parameters:
+  type: object
+  properties:
+    request:
+      type: object
+      x-wso2-policy-advanced-param: false
+      description: Moderation settings for request payloads.
+      additionalProperties: false
+      properties:
+        jsonPath:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: |
+            JSONPath of the text to classify. Arrays, wildcards, slices, filters and
+            recursive descent are supported, for example
+            $.messages[*].content (every message) or
+            $.messages[?(@.role=='user')].content (user messages only).
+            Whatever the path selects is read as text: strings, the "text" of
+            content parts such as {"type":"text","text":"..."}, and the
+            "content" of whole messages. Images and other non-text parts are
+            skipped. An empty value means the whole body is the text.
+          default: "$.messages[-1].content"
+        rules:
+          type: array
+          x-wso2-policy-advanced-param: false
+          description: |
+            Safety rules, 1 to 10. Each rule costs one classifier call per
+            request, so keep the list short.
+          minItems: 1
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, query]
+            properties:
+              name:
+                type: string
+                pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+                description: Unique rule name, reported when the rule is violated.
+              query:
+                type: string
+                minLength: 1
+                description: |
+                  Yes/no question where "yes" means a violation, for example
+                  "Does this content contain hate speech targeting a protected group?".
+              instruction:
+                type: string
+                minLength: 1
+                description: Overrides the phase instruction for this rule only.
+              threshold:
+                type: number
+                minimum: 0
+                maximum: 1
+                description: |
+                  Block when the rule's score is above this value. Lower is
+                  stricter. Mistral suggests 0.3 for strict and 0.7 for
+                  permissive.
+                default: 0.5
+        instruction:
+          type: string
+          x-wso2-policy-advanced-param: true
+          minLength: 1
+          description: |
+            Moderator instruction sent with every rule, setting how strict the
+            model should be.
+          default: "You are a strict safety moderator reviewing potentially harmful content. Apply a low tolerance threshold."
+        maxContentChars:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          minimum: 1
+          description: |
+            Longest text, in characters, that will be classified. Longer text is
+            treated as a failed check (blocked with 503 unless
+            passthroughOnError is set) rather than being truncated, because a
+            violation could sit in the part that is cut.
+          default: 40000
+        blockStatusCode:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          description: HTTP status returned when content is blocked.
+          minimum: 400
+          maximum: 599
+          default: 422
+        passthroughOnError:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            When true, the request continues if the classifier call fails or
+            the body is not valid JSON. When false (default) it is blocked.
+          default: false
+        showAssessment:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            When true, the error body lists every rule with its score and
+            threshold. The classified text is never included.
+          default: false
+      required: [rules]
+    response:
+      type: object
+      x-wso2-policy-advanced-param: false
+      description: |
+        Moderation settings for response payloads. Non-2xx upstream responses
+        are passed through unclassified. Streaming (SSE) responses are not
+        supported; use this on non-streaming routes.
+      additionalProperties: false
+      properties:
+        jsonPath:
+          type: string
+          x-wso2-policy-advanced-param: false
+          description: |
+            JSONPath of the text to classify. Arrays, wildcards, slices, filters and
+            recursive descent are supported, for example
+            $.messages[*].content (every message) or
+            $.messages[?(@.role=='user')].content (user messages only).
+            Whatever the path selects is read as text: strings, the "text" of
+            content parts such as {"type":"text","text":"..."}, and the
+            "content" of whole messages. Images and other non-text parts are
+            skipped. An empty value means the whole body is the text.
+          default: "$.choices[0].message.content"
+        rules:
+          type: array
+          x-wso2-policy-advanced-param: false
+          description: |
+            Safety rules, 1 to 10. Each rule costs one classifier call per
+            response.
+          minItems: 1
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, query]
+            properties:
+              name:
+                type: string
+                pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+                description: Unique rule name, reported when the rule is violated.
+              query:
+                type: string
+                minLength: 1
+                description: |
+                  Yes/no question where "yes" means a violation.
+              instruction:
+                type: string
+                minLength: 1
+                description: Overrides the phase instruction for this rule only.
+              threshold:
+                type: number
+                minimum: 0
+                maximum: 1
+                description: Block when the rule's score is above this value.
+                default: 0.5
+        instruction:
+          type: string
+          x-wso2-policy-advanced-param: true
+          minLength: 1
+          description: Moderator instruction sent with every rule.
+          default: "You are a strict safety moderator reviewing potentially harmful content. Apply a low tolerance threshold."
+        maxContentChars:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          minimum: 1
+          description: |
+            Longest text, in characters, that will be classified. Longer text is
+            treated as a failed check rather than being truncated.
+          default: 40000
+        streamingJsonPath:
+          type: string
+          x-wso2-policy-advanced-param: true
+          minLength: 1
+          description: |
+            JSONPath of the text inside one server-sent-event frame of a
+            streamed response. The default fits OpenAI-style streams; for
+            Anthropic use $.delta.text.
+          default: "$.choices[0].delta.content"
+        streamingTextUnitChars:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          minimum: 0
+          description: |
+            How much streamed text, in characters, is gathered before each
+            check (0, or at least 100). The stream is held until the text has
+            been checked and then released, so nothing unchecked reaches the
+            client. A smaller value stops a violating stream sooner and costs
+            more calls; 0 checks the whole stream once, at its end (the client
+            receives nothing until the stream finishes).
+          default: 1000
+        blockStatusCode:
+          type: integer
+          x-wso2-policy-advanced-param: true
+          description: HTTP status returned when content is blocked.
+          minimum: 400
+          maximum: 599
+          default: 422
+        passthroughOnError:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            When true, the response is delivered unclassified if the classifier
+            call fails or the body is not valid JSON.
+          default: false
+        showAssessment:
+          type: boolean
+          x-wso2-policy-advanced-param: true
+          description: |
+            When true, the error body lists every rule with its score and
+            threshold. The classified text is never included.
+          default: false
+      required: [rules]
+  anyOf:
+    - required: [ request ]
+    - required: [ response ]
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties:
+    endpoint:
+      type: string
+      format: uri
+      description: |
+        Base URL of the server hosting Shieldstral, without a trailing slash
+        (for example http://shieldstral:8000). The policy appends
+        /v1/chat/completions. Required: with no endpoint the policy refuses to
+        start and the route will not enforce it.
+      default: ""
+      "wso2/defaultValue": "${config.shieldstral_endpoint}"
+    apiKey:
+      type: string
+      description: |
+        Bearer token for the server (vLLM --api-key). Leave empty if the
+        server does not require one.
+      default: ""
+      "wso2/defaultValue": "${config.shieldstral_api_key}"
+    model:
+      type: string
+      description: |
+        Model name sent in the request. Must match the name the server
+        serves (vLLM's default is the model path).
+      default: "mistralai/Shieldstral-1.0-3B"
+      "wso2/defaultValue": "${config.shieldstral_model}"
+    timeout:
+      type: integer
+      description: |
+        Total time budget in seconds for one rule's classifier call, retries
+        included. Rules run in parallel, so this is also roughly the worst-case
+        added latency.
+      default: 10
+      minimum: 1
+      maximum: 120
+      "wso2/defaultValue": "${config.shieldstral_timeout}"
