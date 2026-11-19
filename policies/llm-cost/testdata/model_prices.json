@@ -3054,7 +3054,12 @@
     "max_output_tokens": 8192,
     "max_tokens": 8192,
     "output_cost_per_token": 4e-07,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-2.0-flash-001": {
     "cache_read_input_token_cost": 3.75e-08,
@@ -3064,7 +3069,12 @@
     "max_output_tokens": 8192,
     "max_tokens": 8192,
     "output_cost_per_token": 6e-07,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-2.0-flash-exp": {
     "cache_read_input_token_cost": 3.75e-08,
@@ -3103,7 +3113,12 @@
     "max_input_tokens": 1048576,
     "max_output_tokens": 8192,
     "output_cost_per_token": 3e-07,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-2.0-flash-lite-001": {
     "cache_read_input_token_cost": 1.875e-08,
@@ -3112,7 +3127,12 @@
     "max_input_tokens": 1048576,
     "max_output_tokens": 8192,
     "output_cost_per_token": 3e-07,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-2.0-flash-live-preview-04-09": {
     "cache_read_input_token_cost": 7.5e-08,
@@ -3209,7 +3229,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 2.5e-06,
     "output_cost_per_token": 2.5e-06,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-2.5-flash-image": {
     "cache_read_input_token_cost": 3e-08,
@@ -3247,7 +3272,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 4e-07,
     "output_cost_per_token": 4e-07,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-2.5-flash-lite-preview-06-17": {
     "cache_read_input_token_cost": 2.5e-08,
@@ -3258,7 +3288,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 4e-07,
     "output_cost_per_token": 4e-07,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-2.5-flash-lite-preview-09-2025": {
     "cache_read_input_token_cost": 1e-08,
@@ -3269,7 +3304,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 4e-07,
     "output_cost_per_token": 4e-07,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-2.5-flash-native-audio-latest": {
     "input_cost_per_audio_token": 1e-06,
@@ -3329,7 +3369,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 2.5e-06,
     "output_cost_per_token": 2.5e-06,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-2.5-flash-preview-tts": {
     "input_cost_per_token": 3e-07,
@@ -3347,7 +3392,12 @@
     "max_tokens": 65535,
     "output_cost_per_token": 1e-05,
     "output_cost_per_token_above_200k_tokens": 1.5e-05,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-2.5-pro-exp-03-25": {
     "cache_read_input_token_cost": 1.25e-07,
@@ -3411,7 +3461,12 @@
     "max_tokens": 65535,
     "output_cost_per_token": 1e-05,
     "output_cost_per_token_above_200k_tokens": 1.5e-05,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-3-flash-preview": {
     "cache_read_input_token_cost": 5e-08,
@@ -3426,7 +3481,12 @@
     "input_cost_per_audio_token_priority": 1.8e-06,
     "output_cost_per_token_priority": 5.4e-06,
     "cache_read_input_token_cost_priority": 9e-08,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini-3-pro-image-preview": {
     "input_cost_per_image": 0.0011,
@@ -3439,7 +3499,12 @@
     "output_cost_per_image_token": 0.00012,
     "output_cost_per_token": 1.2e-05,
     "output_cost_per_token_batches": 6e-06,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini-3-pro-preview": {
     "cache_read_input_token_cost": 2e-07,
@@ -3460,7 +3525,12 @@
     "output_cost_per_token_above_200k_tokens_priority": 3.24e-05,
     "cache_read_input_token_cost_priority": 3.6e-07,
     "cache_read_input_token_cost_above_200k_tokens_priority": 7.2e-07,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini-3.1-flash-image-preview": {
     "input_cost_per_image": 0.00056,
@@ -3471,7 +3541,12 @@
     "output_cost_per_image": 0.0672,
     "output_cost_per_image_token": 6e-05,
     "output_cost_per_token": 3e-06,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini-3.1-flash-lite-preview": {
     "cache_read_input_token_cost": 2.5e-08,
@@ -3483,7 +3558,12 @@
     "max_tokens": 65536,
     "output_cost_per_reasoning_token": 1.5e-06,
     "output_cost_per_token": 1.5e-06,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini-3.1-pro-preview": {
     "cache_read_input_token_cost": 2e-07,
@@ -3505,7 +3585,12 @@
     "output_cost_per_token_above_200k_tokens_priority": 3.24e-05,
     "cache_read_input_token_cost_priority": 3.6e-07,
     "cache_read_input_token_cost_above_200k_tokens_priority": 7.2e-07,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini-3.1-pro-preview-customtools": {
     "cache_read_input_token_cost": 2e-07,
@@ -3521,7 +3606,12 @@
     "output_cost_per_token_above_200k_tokens": 1.8e-05,
     "output_cost_per_token_batches": 6e-06,
     "output_cost_per_image": 0.00012,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini-embedding-001": {
     "input_cost_per_token": 1.5e-07,
@@ -3547,7 +3637,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 2.5e-06,
     "output_cost_per_token": 2.5e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-flash-experimental": {
     "input_cost_per_character": 0,
@@ -3568,7 +3663,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 2.5e-06,
     "output_cost_per_token": 2.5e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-flash-lite-latest": {
     "cache_read_input_token_cost": 1e-08,
@@ -3579,7 +3679,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 4e-07,
     "output_cost_per_token": 4e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-live-2.5-flash-preview-native-audio-09-2025": {
     "cache_read_input_token_cost": 7.5e-08,
@@ -3590,7 +3695,12 @@
     "max_tokens": 65535,
     "output_cost_per_audio_token": 1.2e-05,
     "output_cost_per_token": 2e-06,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-pro": {
     "input_cost_per_character": 1.25e-07,
@@ -3624,7 +3734,12 @@
     "max_tokens": 65535,
     "output_cost_per_token": 1e-05,
     "output_cost_per_token_above_200k_tokens": 1.5e-05,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini-pro-vision": {
     "input_cost_per_image": 0.0025,
@@ -3657,7 +3772,12 @@
     "output_cost_per_image_token": 0.00012,
     "output_cost_per_token": 1.2e-05,
     "output_cost_per_token_batches": 6e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-1.5-flash": {
     "input_cost_per_token": 7.5e-08,
@@ -3811,7 +3931,12 @@
     "max_output_tokens": 8192,
     "max_tokens": 8192,
     "output_cost_per_token": 4e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.0-flash-001": {
     "cache_read_input_token_cost": 2.5e-08,
@@ -3821,7 +3946,12 @@
     "max_output_tokens": 8192,
     "max_tokens": 8192,
     "output_cost_per_token": 4e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.0-flash-exp": {
     "cache_read_input_token_cost": 0.0,
@@ -3860,7 +3990,12 @@
     "max_input_tokens": 1048576,
     "max_output_tokens": 8192,
     "output_cost_per_token": 3e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.0-flash-lite-001": {
     "cache_read_input_token_cost": 1.875e-08,
@@ -3869,7 +4004,12 @@
     "max_input_tokens": 1048576,
     "max_output_tokens": 8192,
     "output_cost_per_token": 3e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.0-flash-lite-preview-02-05": {
     "cache_read_input_token_cost": 1.875e-08,
@@ -3986,7 +4126,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 2.5e-06,
     "output_cost_per_token": 2.5e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.5-flash-image": {
     "cache_read_input_token_cost": 3e-08,
@@ -3999,7 +4144,12 @@
     "output_cost_per_image_token": 3e-05,
     "output_cost_per_reasoning_token": 2.5e-06,
     "output_cost_per_token": 2.5e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.5-flash-image-preview": {
     "cache_read_input_token_cost": 7.5e-08,
@@ -4023,7 +4173,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 4e-07,
     "output_cost_per_token": 4e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.5-flash-lite-preview-06-17": {
     "cache_read_input_token_cost": 2.5e-08,
@@ -4034,7 +4189,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 4e-07,
     "output_cost_per_token": 4e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.5-flash-lite-preview-09-2025": {
     "cache_read_input_token_cost": 1e-08,
@@ -4045,7 +4205,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 4e-07,
     "output_cost_per_token": 4e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.5-flash-native-audio-latest": {
     "input_cost_per_audio_token": 1e-06,
@@ -4105,7 +4270,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 2.5e-06,
     "output_cost_per_token": 2.5e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.5-flash-preview-tts": {
     "input_cost_per_token": 3e-07,
@@ -4126,7 +4296,12 @@
     "output_cost_per_token_above_200k_tokens": 1.5e-05,
     "output_cost_per_token_priority": 1e-05,
     "output_cost_per_token_above_200k_tokens_priority": 1.5e-05,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-2.5-pro-exp-03-25": {
     "cache_read_input_token_cost": 0.0,
@@ -4189,7 +4364,12 @@
     "max_tokens": 65535,
     "output_cost_per_token": 1e-05,
     "output_cost_per_token_above_200k_tokens": 1.5e-05,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-3-flash-preview": {
     "cache_read_input_token_cost": 5e-08,
@@ -4204,7 +4384,12 @@
     "input_cost_per_audio_token_priority": 1.8e-06,
     "output_cost_per_token_priority": 5.4e-06,
     "cache_read_input_token_cost_priority": 9e-08,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini/gemini-3-pro-image-preview": {
     "input_cost_per_image": 0.0011,
@@ -4217,7 +4402,12 @@
     "output_cost_per_image_token": 0.00012,
     "output_cost_per_token": 1.2e-05,
     "output_cost_per_token_batches": 6e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini/gemini-3-pro-preview": {
     "cache_read_input_token_cost": 2e-07,
@@ -4237,7 +4427,12 @@
     "output_cost_per_token_above_200k_tokens_priority": 3.24e-05,
     "cache_read_input_token_cost_priority": 3.6e-07,
     "cache_read_input_token_cost_above_200k_tokens_priority": 7.2e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini/gemini-3.1-flash-lite-preview": {
     "cache_read_input_token_cost": 2.5e-08,
@@ -4249,7 +4444,12 @@
     "max_tokens": 65536,
     "output_cost_per_reasoning_token": 1.5e-06,
     "output_cost_per_token": 1.5e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini/gemini-3.1-pro-preview": {
     "cache_read_input_token_cost": 2e-07,
@@ -4269,7 +4469,12 @@
     "output_cost_per_token_above_200k_tokens_priority": 3.24e-05,
     "cache_read_input_token_cost_priority": 3.6e-07,
     "cache_read_input_token_cost_above_200k_tokens_priority": 7.2e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini/gemini-3.1-pro-preview-customtools": {
     "cache_read_input_token_cost": 2e-07,
@@ -4289,7 +4494,12 @@
     "output_cost_per_token_above_200k_tokens_priority": 3.24e-05,
     "cache_read_input_token_cost_priority": 3.6e-07,
     "cache_read_input_token_cost_above_200k_tokens_priority": 7.2e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "gemini/gemini-embedding-001": {
     "input_cost_per_token": 1.5e-07,
@@ -4335,7 +4545,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 2.5e-06,
     "output_cost_per_token": 2.5e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-flash-lite-latest": {
     "cache_read_input_token_cost": 2.5e-08,
@@ -4346,7 +4561,12 @@
     "max_tokens": 65535,
     "output_cost_per_reasoning_token": 4e-07,
     "output_cost_per_token": 4e-07,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-gemma-2-27b-it": {
     "input_cost_per_token": 3.5e-07,
@@ -4371,7 +4591,12 @@
     "max_tokens": 65535,
     "output_cost_per_audio_token": 1.2e-05,
     "output_cost_per_token": 2e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-pro": {
     "input_cost_per_token": 3.5e-07,
@@ -4393,7 +4618,12 @@
     "max_tokens": 65535,
     "output_cost_per_token": 1e-05,
     "output_cost_per_token_above_200k_tokens": 1.5e-05,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemini-pro-vision": {
     "input_cost_per_token": 3.5e-07,
@@ -4414,7 +4644,12 @@
     "max_tokens": 65535,
     "output_cost_per_token": 2.5e-06,
     "output_cost_per_reasoning_token": 2.5e-06,
-    "provider": "gemini"
+    "provider": "gemini",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.035,
+      "search_context_size_medium": 0.035,
+      "search_context_size_high": 0.035
+    }
   },
   "gemini/gemma-3-27b-it": {
     "input_cost_per_audio_per_second": 0,
@@ -6790,7 +7025,12 @@
     "input_cost_per_audio_token_priority": 1.8e-06,
     "output_cost_per_token_priority": 5.4e-06,
     "cache_read_input_token_cost_priority": 9e-08,
-    "provider": "vertex_ai"
+    "provider": "vertex_ai",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "vertex_ai/gemini-3-pro-image-preview": {
     "input_cost_per_image": 0.0011,
@@ -6824,7 +7064,12 @@
     "output_cost_per_token_above_200k_tokens_priority": 3.24e-05,
     "cache_read_input_token_cost_priority": 3.6e-07,
     "cache_read_input_token_cost_above_200k_tokens_priority": 7.2e-07,
-    "provider": "vertex_ai"
+    "provider": "vertex_ai",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "vertex_ai/gemini-3.1-flash-image-preview": {
     "input_cost_per_image": 0.00056,
@@ -6847,7 +7092,12 @@
     "max_tokens": 65536,
     "output_cost_per_reasoning_token": 1.5e-06,
     "output_cost_per_token": 1.5e-06,
-    "provider": "vertex_ai-language-models"
+    "provider": "vertex_ai-language-models",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "vertex_ai/gemini-3.1-pro-preview": {
     "cache_read_input_token_cost": 2e-07,
@@ -6869,7 +7119,12 @@
     "output_cost_per_token_above_200k_tokens_priority": 3.24e-05,
     "cache_read_input_token_cost_priority": 3.6e-07,
     "cache_read_input_token_cost_above_200k_tokens_priority": 7.2e-07,
-    "provider": "vertex_ai"
+    "provider": "vertex_ai",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "vertex_ai/gemini-3.1-pro-preview-customtools": {
     "cache_read_input_token_cost": 2e-07,
@@ -6891,7 +7146,12 @@
     "output_cost_per_token_above_200k_tokens_priority": 3.24e-05,
     "cache_read_input_token_cost_priority": 3.6e-07,
     "cache_read_input_token_cost_above_200k_tokens_priority": 7.2e-07,
-    "provider": "vertex_ai"
+    "provider": "vertex_ai",
+    "search_context_cost_per_query": {
+      "search_context_size_low": 0.014,
+      "search_context_size_medium": 0.014,
+      "search_context_size_high": 0.014
+    }
   },
   "whisper-1": {
     "provider": "openai",

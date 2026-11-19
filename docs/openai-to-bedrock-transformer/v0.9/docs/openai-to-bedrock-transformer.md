@@ -25,8 +25,23 @@ The policy supports two modes:
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `model` | No | Request `model` | Optional Bedrock model or inference-profile ID override placed in the Converse request path. |
+| `model` | No | Request `model` | Fallback Bedrock model or inference-profile ID for the Converse request path, used when the request payload names none. It does **not** override a model the client named. |
 | `providerId` | No | — | Bedrock provider ID used in multi-provider configurations. |
+
+## Model resolution
+
+`model` is optional, and it is a **fallback**. It does not override what the client asks for. The model that serves a request is resolved in one order, the same order every WSO2 LLM transformer uses:
+
+1. the `model` field of the request payload, whenever it names one, this takes priority;
+2. otherwise the `model` parameter configured on this policy;
+3. if neither supplies one, the request is rejected with a 400 naming both sources.
+
+An absent, `null` or empty (`""`) request `model` counts as naming none, so the configured value applies. A **whitespace-only** `model` is rejected as malformed even when a model is configured, it is bad input rather than a missing value. A non-string `model` is rejected as a bad request.
+
+Set `model` to give clients that name no model a sensible default. There is no way to force every request onto one model: a client that names a model is always served the model it named.
+
+Responses report the model that actually served the request, in buffered and streamed
+responses alike, not the configured value, which may be unset. A response therefore never misattributes its own output.
 
 ## Example
 

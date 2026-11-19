@@ -17,7 +17,6 @@
 package llmcost
 
 import (
-	"encoding/json"
 	"strings"
 )
 
@@ -25,121 +24,6 @@ import (
 // Uses input_tokens/output_tokens field names and adds cache token fields.
 // The speed flag is not echoed in the response — it is read from the request body.
 type AnthropicCalculator struct{}
-
-func (c *AnthropicCalculator) Normalize(responseBody []byte, requestBody []byte) (Usage, error) {
-	// anthropicUsage holds the token fields from Anthropic's usage object.
-	type anthropicUsage struct {
-		InputTokens              int64  `json:"input_tokens"`
-		OutputTokens             int64  `json:"output_tokens"`
-		CacheCreationInputTokens int64  `json:"cache_creation_input_tokens"`
-		CacheReadInputTokens     int64  `json:"cache_read_input_tokens"`
-		InferenceGeo             string `json:"inference_geo"`
-		CacheCreation *struct {
-			Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
-			Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
-		} `json:"cache_creation"`
-		ServerToolUse *struct {
-			WebSearchRequests int64 `json:"web_search_requests"`
-		} `json:"server_tool_use"`
-	}
-	var resp struct {
-		Model   string        `json:"model"`
-		Usage   anthropicUsage `json:"usage"`
-		// Anthropic streaming wraps usage/model inside a "message" envelope
-		// in the message_start event. Check both locations.
-		Message *struct {
-			Model string        `json:"model"`
-			Usage anthropicUsage `json:"usage"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(responseBody, &resp); err != nil {
-		return Usage{}, err
-	}
-
-	// Anthropic SSE splits usage across events: message_start carries input_tokens
-	// inside message.usage; message_delta carries output_tokens at the top-level
-	// usage. After mergeSSEEvents both locations may be populated. Hoist any
-	// missing fields from the message envelope so the merged usage is complete.
-	if resp.Message != nil {
-		msg := resp.Message.Usage
-		if resp.Usage.InputTokens == 0 {
-			resp.Usage.InputTokens = msg.InputTokens
-		}
-		if resp.Usage.OutputTokens == 0 {
-			resp.Usage.OutputTokens = msg.OutputTokens
-		}
-		if resp.Usage.CacheCreationInputTokens == 0 {
-			resp.Usage.CacheCreationInputTokens = msg.CacheCreationInputTokens
-		}
-		if resp.Usage.CacheReadInputTokens == 0 {
-			resp.Usage.CacheReadInputTokens = msg.CacheReadInputTokens
-		}
-		if resp.Usage.CacheCreation == nil {
-			resp.Usage.CacheCreation = msg.CacheCreation
-		}
-		if resp.Usage.ServerToolUse == nil {
-			resp.Usage.ServerToolUse = msg.ServerToolUse
-		}
-		if resp.Usage.InferenceGeo == "" {
-			resp.Usage.InferenceGeo = msg.InferenceGeo
-		}
-	}
-
-	// speed and web_search_options are request-side parameters Anthropic does not echo.
-	// Read them from the original request body (available via ctx.RequestBody).
-	var speed, searchContextSize string
-	if len(requestBody) > 0 {
-		var req struct {
-			Speed            string `json:"speed"`
-			WebSearchOptions *struct {
-				SearchContextSize string `json:"search_context_size"`
-			} `json:"web_search_options"`
-		}
-		if err := json.Unmarshal(requestBody, &req); err == nil {
-			speed = req.Speed
-			if req.WebSearchOptions != nil {
-				searchContextSize = req.WebSearchOptions.SearchContextSize
-			}
-		}
-	}
-
-	u := resp.Usage
-	total := u.InputTokens + u.OutputTokens
-	// Anthropic's 200k tier threshold includes all input categories (regular + cache).
-	inputForTiering := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
-
-	// Split cache writes by TTL; default all to 5-min when the breakdown is absent.
-	var cacheWrite5m, cacheWrite1hr int64
-	if u.CacheCreation != nil {
-		cacheWrite5m = u.CacheCreation.Ephemeral5mInputTokens
-		cacheWrite1hr = u.CacheCreation.Ephemeral1hInputTokens
-	} else {
-		cacheWrite5m = u.CacheCreationInputTokens
-	}
-
-	var webSearchRequests int64
-	if u.ServerToolUse != nil {
-		webSearchRequests = u.ServerToolUse.WebSearchRequests
-	}
-
-	// Anthropic reports input_tokens as regular-only; add cache tokens so
-	// genericCalculateCost can subtract them back to derive the regular count.
-	promptTokens := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
-
-	return Usage{
-		PromptTokens:          promptTokens,
-		CompletionTokens:      u.OutputTokens,
-		TotalTokens:           total,
-		InputTokensForTiering: inputForTiering,
-		CachedReadTokens:      u.CacheReadInputTokens,
-		CacheWriteTokens:      cacheWrite5m,
-		CacheWrite1hrTokens:   cacheWrite1hr,
-		InferenceGeo:          u.InferenceGeo,
-		Speed:                 speed,
-		WebSearchRequests:     webSearchRequests,
-		SearchContextSize:     searchContextSize,
-	}, nil
-}
 
 // Adjust applies Anthropic geo-routing and speed-mode multipliers.
 // Cache costs are excluded from the multiplier — they are charged at fixed rates.
@@ -174,7 +58,7 @@ func (c *AnthropicCalculator) Adjust(baseCost float64, usage Usage, pricing Mode
 		return baseCost
 	}
 
-	// Resolve the cache rates that genericCalculateCost used (tier-aware).
+	// Resolve the cache rates that GenericCalculateCost used (tier-aware).
 	rates := resolveRates(usage, pricing)
 
 	// Carve out cache costs before applying multiplier.
@@ -204,4 +88,28 @@ func (c *AnthropicCalculator) Adjust(baseCost float64, usage Usage, pricing Mode
 	}
 
 	return nonCacheCost*multiplier + cacheCost + webSearchCost
+}
+
+// fees reads the geo and speed flags that drive Adjust's multiplier, plus the
+// web search call and its billed context size.
+func (c *AnthropicCalculator) fees(fields fieldLookups, current Usage) Usage {
+	// The streaming envelope nests usage under "message"; the template declares
+	// both locations, so that difference does not reach this code.
+	if raw, ok := fields.Response("inferenceGeo"); ok {
+		current.InferenceGeo, _ = raw.(string)
+	}
+	if raw, ok := fields.Response("webSearchRequests"); ok {
+		if requests, ok := toFloat(raw); ok {
+			current.WebSearchRequests = int64(requests)
+		}
+	}
+
+	// speed and search depth are request-side parameters Anthropic does not echo.
+	if raw, ok := fields.Request("speed"); ok {
+		current.Speed, _ = raw.(string)
+	}
+	if raw, ok := fields.Request("searchContextSize"); ok {
+		current.SearchContextSize, _ = raw.(string)
+	}
+	return current
 }

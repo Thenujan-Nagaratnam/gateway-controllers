@@ -1,5 +1,5 @@
 name: openai-to-bedrock-transformer
-version: v0.9.1
+version: v0.9.2
 description: |
   Translates OpenAI Chat Completions requests to the AWS Bedrock Converse API
   (/model/{modelId}/converse and /converse-stream) and rewrites Bedrock
@@ -20,11 +20,11 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: false
       description: |
-        Bedrock model or inference-profile id placed in the request path
-        (for example anthropic.claude-3-5-sonnet-20241022-v2:0 or
-        us.anthropic.claude-sonnet-4-5-20250929-v1:0). When configured, it
-        overrides the OpenAI "model" field; when omitted, the request's model
-        field is used.
+        Fallback Bedrock model or inference-profile id placed in the request
+        path (for example anthropic.claude-3-5-sonnet-20241022-v2:0 or
+        us.anthropic.claude-sonnet-4-5-20250929-v1:0). Used only when the
+        request payload names no model; it does not override a model the client
+        named.
       minLength: 1
     providerId:
       type: string

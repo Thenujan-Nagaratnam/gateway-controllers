@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/url"
 	"strings"
 
 	policy "github.com/wso2/api-platform/sdk/core/policy/v1alpha2"
@@ -126,10 +127,15 @@ func (p *TranslatorPolicy) OnRequestBody(
 // the model selection (the awsbedrock provider template extracts it from the
 // path), so it is never placed in the body.
 func bedrockConversePath(model string, streaming bool) string {
+	// The model is reachable from the request payload, so it is escaped before
+	// it enters the path: a value carrying "/" or "?" must not be able to add a
+	// segment or a query of its own. Bedrock model ids ("us.amazon.nova-lite-v1:0")
+	// contain nothing PathEscape touches, so their paths are unchanged.
+	escaped := url.PathEscape(model)
 	if streaming {
-		return "/model/" + model + "/converse-stream"
+		return "/model/" + escaped + "/converse-stream"
 	}
-	return "/model/" + model + "/converse"
+	return "/model/" + escaped + "/converse"
 }
 
 // ─── Response phase ───────────────────────────────────────────────────────────
@@ -260,27 +266,39 @@ func selectedProvider(shared *policy.SharedContext) string {
 	return strings.TrimSpace(value)
 }
 
+// resolveModel returns the model that will serve this request. The model named
+// in the request payload takes priority; the configured model is a fallback,
+// used only when the payload names none. A payload model that is absent, null
+// or an empty string counts as none; a whitespace-only one is malformed and is
+// rejected even when a fallback exists.
 func (p *TranslatorPolicy) resolveModel(payload map[string]interface{}) (string, error) {
+	if raw, present := payload["model"]; present && raw != nil {
+		model, isString := raw.(string)
+		if !isString {
+			return "", fmt.Errorf("request field 'model' must be a string")
+		}
+		if trimmed := strings.TrimSpace(model); trimmed != "" {
+			return trimmed, nil
+		} else if model != "" {
+			return "", fmt.Errorf("request field 'model' must not be blank")
+		}
+	}
+
 	if p.params.Model != "" {
 		return p.params.Model, nil
 	}
-
-	raw, ok := payload["model"]
-	if !ok || raw == nil {
-		return "", fmt.Errorf("a Bedrock model must be provided in either the policy configuration or request body")
-	}
-	model, ok := raw.(string)
-	if !ok {
-		return "", fmt.Errorf("request field 'model' must be a string")
-	}
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return "", fmt.Errorf("a Bedrock model must be provided in either the policy configuration or request body")
-	}
-	return model, nil
+	return "", fmt.Errorf("a Bedrock model must be provided in either the policy configuration or request body")
 }
 
 func storeEffectiveModel(shared *policy.SharedContext, model string) {
+	// A nil shared context is not reachable through the policy engine, which
+	// gives every phase the same instance — the provider selection this policy
+	// already reads in shouldRun travels the same way, as does multi-provider
+	// routing generally. The guard is defensive only. Were it ever nil, the sole
+	// consequence here is that a response omitting "model" is passed through
+	// without the backfill; the request itself is still served with the model the
+	// client asked for. Rejecting such a request instead would defeat the point
+	// of resolving the model from the payload in the first place.
 	if shared == nil {
 		return
 	}

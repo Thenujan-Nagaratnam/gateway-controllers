@@ -16,41 +16,22 @@
 
 package llmcost
 
-import "encoding/json"
-
-// MistralCalculator handles models with provider "mistral".
-// Mistral's chat completion API is OpenAI-compatible, so field names are
-// identical. This is a separate file so Mistral-specific features (e.g.
-// citation tokens) can be added without touching the OpenAI calculator.
+// MistralCalculator handles models with provider "mistral". Kept separate from
+// OpenAI, despite the compatible API, so Mistral-only charges have a home.
 type MistralCalculator struct{}
 
-func (c *MistralCalculator) Normalize(responseBody []byte, _ []byte) (Usage, error) {
-	var resp struct {
-		Usage struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
-			TotalTokens      int64 `json:"total_tokens"`
-			// PromptAudioSeconds is the duration of audio input for Voxtral chat models.
-			// Mistral bills audio per-minute separately from text tokens; prompt_tokens
-			// represents only the text portion. We convert to seconds for genericCalculateCost.
-			PromptAudioSeconds *int64 `json:"prompt_audio_seconds"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(responseBody, &resp); err != nil {
-		return Usage{}, err
-	}
-	u := resp.Usage
-	usage := Usage{
-		PromptTokens:     u.PromptTokens,
-		CompletionTokens: u.CompletionTokens,
-		TotalTokens:      u.TotalTokens,
-	}
-	if u.PromptAudioSeconds != nil {
-		usage.AudioInputSeconds = float64(*u.PromptAudioSeconds)
-	}
-	return usage, nil
-}
-
+// Adjust applies no post-calculation correction; Mistral prices purely per token.
 func (c *MistralCalculator) Adjust(baseCost float64, _ Usage, _ ModelPricing) float64 {
 	return baseCost
+}
+
+// fees reads the Voxtral audio-duration charge.
+func (c *MistralCalculator) fees(fields fieldLookups, current Usage) Usage {
+	// Voxtral bills audio by duration, so prompt_tokens covers only the text.
+	if raw, ok := fields.Response("promptAudioSeconds"); ok {
+		if seconds, ok := toFloat(raw); ok {
+			current.AudioInputSeconds = seconds
+		}
+	}
+	return current
 }

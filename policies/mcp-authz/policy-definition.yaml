@@ -1,11 +1,11 @@
 name: mcp-authz
-version: v1.1.1
+version: v1.3.0
 description: |
   Authorize MCP tools, resources, prompts, and methods using claim/scope rules after `mcp-auth`; evaluate rules by specificity, require all matching rules to pass, and allow access when no rule matches.
 
 parameters:
   type: object
-  additionalProperties: false
+  additionalProperties: true
   anyOf:
     - required:
         - tools
@@ -393,7 +393,11 @@ parameters:
           name:
             type: string
             x-wso2-policy-advanced-param: false
-            description: Specify the method name to authorize (e.g., `tools/call`), or `*` to match all methods.
+            description: Specify the method name to authorize (e.g., `tools/call`), or `*` to match every
+              method this policy can govern. Only `tools/…`, `resources/…` and `prompts/…` methods are
+              governable here; bare methods such as `initialize` and `ping`, and other namespaces such as
+              `server/discover` or `notifications/…`, are skipped before rules are matched. Use the MCP
+              Authentication policy's `methods` configuration for those.
             default: "*"
             minLength: 1
             maxLength: 256

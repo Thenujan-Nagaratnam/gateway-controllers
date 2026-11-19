@@ -33,6 +33,20 @@ const (
 	metadataMcpCapabilityType = "mcp.capabilityType"
 	metadataMcpAction         = "mcp.action"
 	mcpSessionHeader          = "mcp-session-id"
+
+	// Request headers MCP 2026-07-28 mirrors the operation into, and the first revision to do
+	// so. Versions are ISO-8601 dates, so string comparison is chronological.
+	headerProtocolVersion = "MCP-Protocol-Version"
+	headerMcpMethod       = "Mcp-Method"
+	headerMcpName         = "Mcp-Name"
+	specVersionModern     = "2026-07-28"
+
+	attrBodyUnusable = "mcp.body.unusable"
+
+	reasonSyntaxError       = "syntax-error"
+	reasonInvalidMemberType = "invalid-member-type"
+	reasonNotAnObject       = "not-an-object"
+	reasonAmbiguous         = "ambiguous"
 )
 
 type CapabilityEntry struct {
@@ -455,7 +469,11 @@ func (p *McpRewritePolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Req
 
 func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) policy.RequestAction {
 	dsReq := reqCtx.DownstreamRequest()
-	if !isMcpPostRequest(dsReq.Method, reqCtx.OperationPath) {
+	routePath := dsReq.Path
+	if reqCtx.SharedContext != nil && reqCtx.OperationPath != "" {
+		routePath = reqCtx.OperationPath
+	}
+	if !isMcpPostRequest(dsReq.Method, routePath) {
 		return policy.UpstreamRequestModifications{}
 	}
 	slog.Debug("MCP Rewrite Policy: OnRequest started")
@@ -466,6 +484,14 @@ func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) pol
 
 	// Read Content-Type and the session id (used for error responses) from the downstream snapshot.
 	ds := dsReq.Headers
+
+	// Resolver routes only; a no-op without one. This policy rewrites these bytes, so it must
+	// not act on a reading the server may not share.
+	if reason := unusableBodyReason(reqCtx.SharedContext); reason != "" {
+		slog.Debug("MCP Rewrite Policy: Rejecting request whose body the resolver could not read", "reason", reason)
+		return p.handleUnusableBody(ds, reason)
+	}
+
 	requestPayload, requestEvents, requestEventIndex, err := parseRequestPayload(reqCtx.Body.Content, isEventStream(ds))
 	if err != nil {
 		slog.Debug("MCP Rewrite Policy: Failed to parse MCP request", "error", err, "path", dsReq.Path)
@@ -475,6 +501,13 @@ func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) pol
 	requestID := requestPayload["id"]
 
 	method, _ := requestPayload["method"].(string)
+
+	if mismatch := mirroredMethodMismatch(ds, method); mismatch != "" {
+		slog.Debug("MCP Rewrite Policy: Refusing a request whose mirrored method cannot be trusted",
+			"bodyMethod", method, "requestID", requestID, "reason", mismatch)
+		return p.buildRequestErrorResponse(ds, 400, -32020, mismatch, requestID)
+	}
+
 	capabilityType, action, ok := parseMcpMethod(method)
 	if !ok {
 		return policy.UpstreamRequestModifications{}
@@ -503,6 +536,15 @@ func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) pol
 
 	paramKey := getParamKey(capabilityType)
 	capabilityName, _ := paramsRaw[paramKey].(string)
+
+	// Verify before overwriting: restating Mcp-Name to agree with a body it contradicted would
+	// launder a capability that peer policies governed under the header's name.
+	if mismatch := mirroredNameMismatch(ds, capabilityName); mismatch != "" {
+		slog.Debug("MCP Rewrite Policy: Refusing a request whose mirrored name cannot be trusted",
+			"capabilityType", capabilityType, "capabilityName", capabilityName, "requestID", requestID, "reason", mismatch)
+		return p.buildRequestErrorResponse(ds, 400, -32020, mismatch, requestID)
+	}
+
 	if strings.TrimSpace(capabilityName) == "" {
 		slog.Debug("MCP Rewrite Policy: Missing capability name", "capabilityType", capabilityType, "requestID", requestID, "paramKey", paramKey)
 		return p.buildRequestErrorResponse(ds, 400, -32602, fmt.Sprintf("Missing MCP %s name", capabilityType), requestID)
@@ -534,11 +576,105 @@ func (p *McpRewritePolicy) processRequestBody(reqCtx *policy.RequestContext) pol
 			requestEvents[requestEventIndex].data = string(updatedPayload)
 			updatedPayload = buildEventStream(requestEvents)
 		}
+
+		mods := policy.UpstreamRequestModifications{Body: updatedPayload}
+
+		// The mirror is now stale and a conformant 2026-07-28 server rejects that. Only the
+		// name is restated; a rewrite never changes the method, so Mcp-Method is left as it came.
+		if isModernRequest(ds) {
+			mods.HeadersToSet = map[string]string{headerMcpName: encodeSentinel(entry.Target)}
+		}
+
 		slog.Debug("MCP Rewrite Policy: Request rewritten", "capabilityType", capabilityType, "requestName", capabilityName, "targetName", entry.Target, "requestID", requestID)
-		return policy.UpstreamRequestModifications{Body: updatedPayload}
+		return mods
 	}
 
 	return policy.UpstreamRequestModifications{}
+}
+
+// unusableBodyReason returns why the resolver could not read the request body, or "" if it read it
+// or never ran. The only resolver attribute this policy reads; it parses the body itself.
+func unusableBodyReason(shared *policy.SharedContext) string {
+	if shared == nil {
+		return ""
+	}
+	return shared.ResolutionAttributes.Get(attrBodyUnusable)
+}
+
+// handleUnusableBody turns a resolver unusable reason into the JSON-RPC code the spec assigns
+// it. Mirrors the other MCP policies, so one gateway answers an unreadable body one way.
+func (p *McpRewritePolicy) handleUnusableBody(headers *policy.Headers, reason string) policy.RequestAction {
+	code, message := -32600, "Invalid MCP request"
+	switch reason {
+	case reasonSyntaxError:
+		code, message = -32700, "Invalid JSON"
+	case reasonInvalidMemberType:
+		message = "Request body has a member of the wrong type"
+	case reasonNotAnObject:
+		message = "Request body is not a single JSON-RPC request object"
+	case reasonAmbiguous:
+		// The one this policy cannot detect itself — its map[string]any is case-sensitive.
+		message = "Ambiguous MCP request: body names a member more than once"
+	}
+	return p.buildRequestErrorResponse(headers, 400, code, message, nil)
+}
+
+// isModernRequest reports whether the request declares a revision that mirrors the operation into
+// headers. An absent version header is legacy.
+func isModernRequest(headers *policy.Headers) bool {
+	return firstHeader(headers, headerProtocolVersion) >= specVersionModern
+}
+
+// firstHeader returns a header's first value, or "" when absent.
+func firstHeader(headers *policy.Headers, name string) string {
+	values := headers.Get(name)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+// mirroredMethodMismatch reports why a mirrored Mcp-Method cannot be trusted, or "" when it agrees
+// or there is nothing to compare. Neither failure is repairable here, so the request is refused
+// rather than rewritten.
+func mirroredMethodMismatch(headers *policy.Headers, method string) string {
+	if !isModernRequest(headers) {
+		return ""
+	}
+
+	got := firstHeader(headers, headerMcpMethod)
+	if got == "" && method != "" {
+		return "Mcp-Method header is missing, but a method is present in the request body"
+	}
+	if got != method {
+		return "Mcp-Method does not match the method in the request body"
+	}
+	return ""
+}
+
+// mirroredNameMismatch is the same rule for the capability name. Not delegable to
+// mcp-spec-validation, which is optional: a rewrite would launder the contradiction whenever
+// it is unattached.
+func mirroredNameMismatch(headers *policy.Headers, capabilityName string) string {
+	if !isModernRequest(headers) {
+		return ""
+	}
+
+	raw := firstHeader(headers, headerMcpName)
+	if raw == "" && capabilityName != "" {
+		return "Mcp-Name header is missing, but a capability name is present in the request body"
+	}
+
+	decoded, err := decodeSentinel(raw)
+	if err != nil {
+		// Not the same as absent: the client mirrored something, and what a peer made of it
+		// cannot be established. Refuse rather than overwrite it.
+		return "Mcp-Name is not a decodable sentinel value"
+	}
+	if decoded != capabilityName {
+		return "Mcp-Name does not match the capability in the request body"
+	}
+	return ""
 }
 
 // isEventStream reports whether v1alpha2 headers indicate an SSE payload.
@@ -626,7 +762,11 @@ func (p *McpRewritePolicy) buildEventStreamErrorResponse(statusCode int, jsonRpc
 // OnResponseBody applies rewrite rules to the MCP response body.
 func (p *McpRewritePolicy) OnResponseBody(ctx context.Context, respCtx *policy.ResponseContext, _ map[string]any) policy.ResponseAction {
 	dsReq := respCtx.DownstreamRequest()
-	if !isMcpPostRequest(dsReq.Method, respCtx.OperationPath) {
+	routePath := dsReq.Path
+	if respCtx.SharedContext != nil && respCtx.OperationPath != "" {
+		routePath = respCtx.OperationPath
+	}
+	if !isMcpPostRequest(dsReq.Method, routePath) {
 		return nil
 	}
 	slog.Debug("MCP Rewrite Policy: OnResponseBody started")

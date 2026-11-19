@@ -47,8 +47,8 @@ func translateResponse(respBody []byte, status int, requestModel string) policy.
 }
 
 // translateSuccessResponse leaves Mistral's OpenAI-shaped body alone but
-// backfills the "model" field with the operator-pinned model when the
-// upstream omitted it, so clients always see a non-empty model.
+// backfills the "model" field with the model that actually served the request
+// when the upstream omitted it, so clients always see a non-empty model.
 func translateSuccessResponse(respBody []byte, requestModel string) policy.ResponseAction {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(respBody, &payload); err != nil {

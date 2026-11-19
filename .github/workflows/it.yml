@@ -1,0 +1,153 @@
+name: Gateway Controller Policy Integration Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'policies/**'
+      - '.github/workflows/it.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  gateway-controller-tests:
+    name: Gateway Controller unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: "1"
+
+    steps:
+      - name: Checkout api-platform
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803b # v6
+        with:
+          repository: wso2/api-platform
+          ref: main
+          path: api-platform
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: |
+            api-platform/go.work.sum
+            api-platform/gateway/gateway-controller/go.sum
+
+      - name: Ensure C compiler is available
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Gateway-controller unit tests
+        working-directory: api-platform
+        run: make -C gateway/gateway-controller test
+
+  integration-test:
+    name: Gateway Integration (${{ matrix.gateway_version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        gateway_version: [latest, "1.2.0"]
+
+    steps:
+      - name: Checkout gateway-controllers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803b # v6
+        with:
+          path: gateway-controllers
+          persist-credentials: false
+
+      - name: Checkout api-platform
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803b # v6
+        with:
+          repository: wso2/api-platform
+          ref: main
+          path: api-platform
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: |
+            api-platform/go.work.sum
+            api-platform/tests/framework/go.sum
+
+      # The suite's database matrix boots several short-lived containers and
+      # published ports. Under concurrent connection churn, the default
+      # conntrack table can fill and cause intermittent connection failures.
+      - name: Raise the conntrack table limit
+        run: sudo sysctl -w net.netfilter.nf_conntrack_max=524288
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build framework testbench image
+        run: make -C api-platform/tests/framework testbench
+
+      - name: Run gateway-controller policy suite block
+        working-directory: api-platform/tests/framework
+        shell: bash
+        env:
+          GATEWAY_VERSION: ${{ matrix.gateway_version }}
+        run: |
+          set -euo pipefail
+
+          suite_args=(-blocks=gateway-controller-policies)
+          if [[ "$GATEWAY_VERSION" != "latest" ]]; then
+            suite_args+=("-gateway-version=$GATEWAY_VERSION")
+          fi
+
+          go test ./suites/it -count=1 -timeout=25m -v \
+            -args "${suite_args[@]}" 2>&1 | tee "$GITHUB_WORKSPACE/framework-it-$GATEWAY_VERSION.log"
+
+      - name: Upload framework test output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: gateway-controller-policy-test-output-${{ matrix.gateway_version }}
+          path: framework-it-${{ matrix.gateway_version }}.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Dump Docker diagnostics on failure
+        if: failure()
+        shell: bash
+        env:
+          GATEWAY_VERSION: ${{ matrix.gateway_version }}
+        run: |
+          set +e
+          diagnostics_dir="$GITHUB_WORKSPACE/docker-diagnostics-$GATEWAY_VERSION"
+          mkdir -p "$diagnostics_dir"
+
+          echo "=== Docker Containers ==="
+          docker ps -a | tee "$diagnostics_dir/containers.txt"
+
+          echo "=== Docker Logs ==="
+          docker ps -aq | while read -r container_id; do
+            container_name="$(docker inspect --format '{{.Name}}' "$container_id" | sed 's#^/##; s#[^A-Za-z0-9_.-]#_#g')"
+            {
+              echo "=== $container_name ($container_id) ==="
+              docker logs "$container_id" 2>&1
+              echo
+            } >> "$diagnostics_dir/containers.log"
+          done
+
+      - name: Upload Docker diagnostics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: gateway-controller-policy-docker-diagnostics-${{ matrix.gateway_version }}
+          path: docker-diagnostics-${{ matrix.gateway_version }}
+          if-no-files-found: ignore
+          retention-days: 7

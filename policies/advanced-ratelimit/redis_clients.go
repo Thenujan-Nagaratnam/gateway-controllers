@@ -38,6 +38,9 @@ type redisConnKey struct {
 	readTimeout  time.Duration
 	writeTimeout time.Duration
 	poolSize     int
+	// tlsFingerprint identifies the TLS settings (see redistls.Config.Build); "" = plaintext.
+	// A *tls.Config is not comparable, so the key carries its fingerprint instead.
+	tlsFingerprint string
 }
 
 // redisClients is the process-wide registry of shared Redis clients. Without it,
@@ -61,7 +64,8 @@ func hashRedisPassword(p string) string {
 // call created the client; pingErr is non-nil only when created and the initial ping
 // failed. The client is registered and returned even on ping failure (go-redis
 // reconnects lazily). Clients are never closed — they live for the process lifetime.
-func getOrCreateRedisClient(opts *redis.Options, pingTimeout time.Duration) (client *redis.Client, created bool, pingErr error) {
+// tlsFingerprint must identify opts.TLSConfig ("" when it is nil).
+func getOrCreateRedisClient(opts *redis.Options, tlsFingerprint string, pingTimeout time.Duration) (client *redis.Client, created bool, pingErr error) {
 	key := redisConnKey{
 		addr:         opts.Addr,
 		username:     opts.Username,
@@ -71,6 +75,8 @@ func getOrCreateRedisClient(opts *redis.Options, pingTimeout time.Duration) (cli
 		readTimeout:  opts.ReadTimeout,
 		writeTimeout: opts.WriteTimeout,
 		poolSize:     opts.PoolSize,
+
+		tlsFingerprint: tlsFingerprint,
 	}
 
 	redisClients.mu.Lock()

@@ -19,6 +19,7 @@ package llmcost
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 )
 
 const (
@@ -30,6 +31,24 @@ const (
 type bedrockEventStreamFrame struct {
 	eventType string
 	payload   []byte
+}
+
+// decodeIfEventStream unwraps an Amazon event-stream body to the JSON the
+// template expects. Bedrock streaming responses arrive as binary frames that no
+// JSON path can address, so without this the usage never resolves and the
+// request prices at zero. Bodies that are already JSON pass straight through,
+// which is every other provider and Bedrock's own non-streaming replies.
+func decodeIfEventStream(body []byte) []byte {
+	if len(body) == 0 || json.Valid(body) {
+		return body
+	}
+	if metadata, ok := bedrockConverseStreamMetadata(body); ok {
+		return metadata
+	}
+	if merged, ok := bedrockInvokeStreamResponse(body); ok {
+		return merged
+	}
+	return body
 }
 
 // bedrockConverseStreamMetadata extracts the JSON payload from the metadata
@@ -84,6 +103,38 @@ func bedrockInvokeStreamResponse(data []byte) ([]byte, bool) {
 
 	merged, err := mergeJSONEvents(payloads)
 	return merged, err == nil
+}
+
+// mergeJSONEvents merges a sequence of streaming JSON events into one object,
+// deep-merging "usage" and "usageMetadata" maps so that fields from earlier
+// events (e.g. input_tokens) survive when a later event only carries
+// output_tokens.
+func mergeJSONEvents(events [][]byte) ([]byte, error) {
+	merged := make(map[string]interface{})
+	for _, data := range events {
+		var event map[string]interface{}
+		if err := json.Unmarshal(data, &event); err != nil {
+			continue
+		}
+		for k, v := range event {
+			if (k == "usage" || k == "usageMetadata") && v != nil {
+				if newMap, ok := v.(map[string]interface{}); ok {
+					if existing, ok := merged[k].(map[string]interface{}); ok {
+						for ek, ev := range newMap {
+							existing[ek] = ev
+						}
+						continue
+					}
+				}
+			}
+			merged[k] = v
+		}
+	}
+	if len(merged) == 0 {
+		return nil, fmt.Errorf("no valid JSON events found")
+	}
+
+	return json.Marshal(merged)
 }
 
 func bedrockInvokeChunkPayload(payload []byte) ([]byte, bool) {

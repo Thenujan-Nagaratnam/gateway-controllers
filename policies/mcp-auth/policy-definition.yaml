@@ -1,11 +1,11 @@
 name: mcp-auth
-version: v1.2.1
+version: v1.4.0
 description: |
   Secure Model Context Protocol traffic by validating bearer access tokens for MCP resources using the underlying JWT authentication runtime.
 
 parameters:
   type: object
-  additionalProperties: false
+  additionalProperties: true
   properties:
     tools:
       type: object
@@ -160,7 +160,7 @@ parameters:
 
 systemParameters:          
   type: object
-  additionalProperties: false
+  additionalProperties: true
   properties:
     keyManagers:
       type: array
@@ -295,10 +295,23 @@ systemParameters:
     
     gatewayHost:
       type: string
-      description: The host of the gateway to be included in the protected metadata URL and response.
+      x-wso2-policy-deprecated-param: true
+      description: >-
+        DEPRECATED — use `gatewayUrl` instead. The host of the gateway to be
+        included in the protected metadata URL and response. Ignored when
+        `gatewayUrl` is configured.
       example: mcp1.api-platform.com
       default: localhost
       "wso2/defaultValue": "${config.policy_configurations.mcpauth_v1.gatewayhost}"
 
+    gatewayUrl:
+      type: string
+      format: uri
+      description: >-
+        Full externally-reachable base URL of the gateway (scheme + host +
+        optional port), used verbatim for the protected resource metadata URL
+        and response. Takes precedence over the deprecated `gatewayHost`.
+      example: https://mcp1.api-platform.com
+      "wso2/defaultValue": "${config.policy_configurations.mcpauth_v1.gatewayurl}"
 
   required: ["keyManagers"]

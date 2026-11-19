@@ -1,5 +1,5 @@
 name: openai-to-azure-openai-transformer
-version: v0.9.0
+version: v0.9.1
 description: |
   Routes OpenAI Chat Completions requests to an Azure OpenAI upstream by
   rewriting the request path with deployment and API version details. The body
@@ -21,8 +21,9 @@ parameters:
       type: string
       x-wso2-policy-advanced-param: false
       description: |
-        Azure deployment id used in the rewritten path. When omitted, the
-        request body's "model" field is used as the deployment id.
+        Fallback Azure deployment id used in the rewritten path, applied only
+        when the request payload names no model. The request body's "model"
+        field takes priority and is used as the deployment id when present.
       minLength: 1
     providerId:
       type: string

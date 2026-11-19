@@ -1,0 +1,13 @@
+{
+  "name": "set-headers",
+  "displayName": "Set Headers",
+  "version": "1.2",
+  "provider": "WSO2",
+  "categories": [
+    "Transformation",
+    "MCP",
+    "WebSub",
+    "WebBroker"
+  ],
+  "description": "This policy provides the capability to set or append arbitrary headers to either the request or the response.\nIn set mode (the default) configuring the same header overwrites the existing header value, while in append mode the configured values are added while preserving any existing values."
+}

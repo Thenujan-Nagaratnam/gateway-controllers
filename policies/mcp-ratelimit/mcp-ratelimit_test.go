@@ -21,6 +21,7 @@ package mcpratelimit
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -464,11 +465,11 @@ func TestFindMatches(t *testing.T) {
 
 // ─── small helpers ───────────────────────────────────────────────────────────
 
-func TestIsMcpPostRequest(t *testing.T) {
-	if !isMcpPostRequest("POST") || !isMcpPostRequest("post") {
-		t.Fatalf("expected POST (any case) to be an MCP request")
+func TestIsPostRequest(t *testing.T) {
+	if !isPostRequest("POST") || !isPostRequest("post") {
+		t.Fatalf("expected POST in any case to be accepted")
 	}
-	if isMcpPostRequest("GET") {
+	if isPostRequest("GET") {
 		t.Fatalf("expected GET to be rejected")
 	}
 }
@@ -941,5 +942,679 @@ func newResponseHeaderCtx(t *testing.T, metadata map[string]any) *policy.Respons
 		RequestHeaders:  policy.NewHeaders(nil),
 		ResponseHeaders: policy.NewHeaders(nil),
 		ResponseStatus:  200,
+	}
+}
+
+// ─── resolver-bearing routes ─────────────────────────────────────────────────
+//
+// Everything above builds contexts with no resolver, so those tests are the gateway-without-a-
+// resolver path and must keep passing untouched. What follows covers the route that carries one,
+// where the capability arrives in the mirrored headers or the resolver's attributes.
+
+const modernVersion = "2026-07-28"
+
+// newHeaderCtx builds a header-phase context on a route whose resolver ran.
+//
+// mcp.body.present is set for every caller: the resolver publishes it for any body it
+// received, so a fixture that omits it models a state the engine cannot produce. Use
+// newHeaderCtxNoBody for the one case that legitimately publishes nothing.
+// newHeaderCtxNoResolver is the same request on a route that carries no resolver, which is what
+// makes the header phase stand aside.
+func newHeaderCtxNoResolver(t *testing.T, method string, headers map[string][]string, attrs map[string]string) *policy.RequestHeaderContext {
+	t.Helper()
+	c := newHeaderCtx(t, method, headers, attrs)
+	c.APIKind, c.ResolvedOperation = "", ""
+	delete(c.Metadata, metadataBodyResolved)
+	return c
+}
+
+// newResolvedRequestCtx is a body-phase context on a route whose resolver already ran.
+func newResolvedRequestCtx(t *testing.T, method string, headers map[string][]string, body []byte) *policy.RequestContext {
+	t.Helper()
+	c := newRequestCtx(t, method, headers, body)
+	c.APIKind, c.ResolvedOperation = policy.APIKindMCP, "mcp"
+	c.Metadata = map[string]any{metadataBodyResolved: true}
+	return c
+}
+
+func newHeaderCtx(t *testing.T, method string, headers map[string][]string, attrs map[string]string) *policy.RequestHeaderContext {
+	t.Helper()
+	withBody := map[string]string{attrBodyPresent: "true"}
+	for k, v := range attrs {
+		withBody[k] = v
+	}
+	return newHeaderCtxRaw(t, method, headers, withBody)
+}
+
+// newHeaderCtxNoBody models a request that reached the resolver carrying no body.
+func newHeaderCtxNoBody(t *testing.T, method string, headers map[string][]string) *policy.RequestHeaderContext {
+	t.Helper()
+	return newHeaderCtxRaw(t, method, headers, nil)
+}
+
+func newHeaderCtxRaw(t *testing.T, method string, headers map[string][]string, attrs map[string]string) *policy.RequestHeaderContext {
+	t.Helper()
+	return &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID:            "test-request-id",
+			Metadata:             map[string]any{metadataBodyResolved: true},
+			OperationPath:        "/mcp",
+			APIKind:              policy.APIKindMCP,
+			ResolvedOperation:    "mcp",
+			ResolutionAttributes: policy.NewResolutionAttributes(attrs),
+		},
+		Headers: policy.NewHeaders(headers),
+		Method:  method,
+		Path:    "/mcp",
+		Scheme:  "http",
+	}
+}
+
+// legacyAttrs is what the resolver publishes for a body naming this operation.
+func legacyAttrs(method, name string) map[string]string {
+	attrs := map[string]string{attrBodyMethod: method, attrBodyJSONRPCID: "1"}
+	if name != "" {
+		attrs[attrBodyCapabilityName] = name
+	}
+	return attrs
+}
+
+// modernHeaders is what a 2026-07-28 client mirrors alongside its body.
+func modernHeaders(method, name string) map[string][]string {
+	headers := map[string][]string{headerProtocolVersion: {modernVersion}, headerMcpMethod: {method}}
+	if name != "" {
+		headers[headerMcpName] = []string{name}
+	}
+	return headers
+}
+
+func TestMode_AsksForBothRequestPhases(t *testing.T) {
+	m := newToolPolicy(t, "toolA", 5).Mode()
+	if m.RequestHeaderMode != policy.HeaderModeProcess || m.RequestBodyMode != policy.BodyModeBuffer {
+		t.Fatalf("request modes = %v/%v, want Process/Buffer: which phase decides is settled per request", m.RequestHeaderMode, m.RequestBodyMode)
+	}
+	// The delegates replay here whichever phase invoked them.
+	if m.ResponseHeaderMode != policy.HeaderModeProcess {
+		t.Fatalf("ResponseHeaderMode = %v, want Process", m.ResponseHeaderMode)
+	}
+}
+
+func TestOnRequestHeaders_LimitsFromResolverAttributes(t *testing.T) {
+	p := newToolPolicy(t, "toolA", 1)
+	attrs := legacyAttrs("tools/call", "toolA")
+
+	if action := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", nil, attrs), nil); action != nil {
+		t.Fatalf("expected the first request to be allowed, got %T", action)
+	}
+
+	action := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", nil, attrs), nil)
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected ImmediateResponse on limit breach, got %T", action)
+	}
+	if resp.StatusCode != 429 {
+		t.Fatalf("expected status 429, got %d", resp.StatusCode)
+	}
+}
+
+func TestOnRequestHeaders_LimitsFromMirroredHeaders(t *testing.T) {
+	p := newToolPolicy(t, "toolA", 1)
+	headers := modernHeaders("tools/call", "toolA")
+
+	// No body attributes at all: a modern request is identified from its headers alone.
+	if action := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", headers, nil), nil); action != nil {
+		t.Fatalf("expected the first request to be allowed, got %T", action)
+	}
+	if action := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", headers, nil), nil); action == nil {
+		t.Fatalf("expected the second request to be limited")
+	}
+}
+
+// Both eras must land in the same bucket: a re-bucketing here would silently reset every counter
+// on upgrade, with nothing failing to show it.
+func TestOnRequestHeaders_BothErasReachTheSameDelegate(t *testing.T) {
+	keysOf := func(p *McpRateLimitPolicy) []string {
+		var keys []string
+		p.delegates.Range(func(k, _ any) bool {
+			keys = append(keys, k.(string))
+			return true
+		})
+		return keys
+	}
+
+	viaAttributes := newToolPolicy(t, "toolA", 5)
+	viaAttributes.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", nil, legacyAttrs("tools/call", "toolA")), nil)
+
+	viaHeaders := newToolPolicy(t, "toolA", 5)
+	viaHeaders.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", modernHeaders("tools/call", "toolA"), nil), nil)
+
+	viaBody := newToolPolicy(t, "toolA", 5)
+	body, _ := json.Marshal(map[string]any{"method": "tools/call", "params": map[string]any{"name": "toolA"}})
+	viaBody.OnRequestBody(context.Background(), newRequestCtx(t, "POST", nil, body), nil)
+
+	attrKeys, headerKeys, bodyKeys := keysOf(viaAttributes), keysOf(viaHeaders), keysOf(viaBody)
+	if len(bodyKeys) != 1 {
+		t.Fatalf("expected exactly one delegate, got %v", bodyKeys)
+	}
+	if !slices.Equal(attrKeys, bodyKeys) || !slices.Equal(headerKeys, bodyKeys) {
+		t.Fatalf("delegate keys diverge: attributes=%v headers=%v body=%v", attrKeys, headerKeys, bodyKeys)
+	}
+}
+
+func TestOnRequestHeaders_RejectsUnreadableBody(t *testing.T) {
+	tests := []struct {
+		reason      string
+		wantCode    int
+		wantMessage string
+	}{
+		{reasonSyntaxError, jsonRpcErrCodeParseError, "Request body is not valid JSON"},
+		{reasonInvalidMemberType, jsonRpcErrCodeInvalidRequest, "Request body has a member of the wrong type"},
+		{reasonNotAnObject, jsonRpcErrCodeInvalidRequest, "Request body is not a single JSON-RPC request object"},
+		{reasonAmbiguous, jsonRpcErrCodeInvalidRequest, "Ambiguous MCP request: body names a member more than once"},
+		{"a reason this build does not know", jsonRpcErrCodeInvalidRequest, "Invalid MCP request body"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.reason, func(t *testing.T) {
+			p := newToolPolicy(t, "toolA", 5)
+			reqCtx := newHeaderCtx(t, "POST", nil, map[string]string{attrBodyUnusable: tc.reason})
+
+			action := p.OnRequestHeaders(context.Background(), reqCtx, nil)
+			resp, ok := action.(policy.ImmediateResponse)
+			if !ok {
+				t.Fatalf("expected a rejection, got %T", action)
+			}
+			if resp.StatusCode != 400 {
+				t.Fatalf("expected status 400, got %d", resp.StatusCode)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+				t.Fatalf("expected a JSON-RPC error body: %v", err)
+			}
+			errObj := parsed["error"].(map[string]any)
+			if errObj["code"] != float64(tc.wantCode) {
+				t.Fatalf("expected code %d, got %v", tc.wantCode, errObj["code"])
+			}
+			if errObj["message"] != tc.wantMessage {
+				t.Fatalf("expected message %q, got %v", tc.wantMessage, errObj["message"])
+			}
+			// No facts are published alongside a reason, so there is no id to echo.
+			if parsed["id"] != nil {
+				t.Fatalf("expected a null id, got %v", parsed["id"])
+			}
+		})
+	}
+}
+
+// A body that read fine but named no operation forwards. This policy restricts, so an
+// unidentified request must not be counted against a bucket that is not its own — the case being
+// a legacy client POSTing a JSON-RPC response, which carries an id and a result and no method.
+//
+// The rule is measured against `methods: ["*"]`, the one config that would otherwise catch it: a
+// tools rule needs a capability type, which an empty method yields none of, so it would appear to
+// pass whether or not the guard is there.
+func TestOnRequestHeaders_ForwardsWhenNoOperationIsNamed(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string][]string
+		attrs   map[string]string
+	}{
+		{"legacy response POST: an id and no method", nil, map[string]string{attrBodyJSONRPCID: "1"}},
+		{"nothing published at all", nil, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newWildcardMethodResolverPolicy(t, 1)
+			// Two requests against a limit of one: if either were counted the second would block.
+			for i := range 2 {
+				reqCtx := newHeaderCtx(t, "POST", tc.headers, tc.attrs)
+				if action := p.OnRequestHeaders(context.Background(), reqCtx, nil); action != nil {
+					t.Fatalf("request %d: expected it to be forwarded, got %T", i+1, action)
+				}
+				// Nothing was identified, so no capability metadata may be published either —
+				// a downstream policy reading an empty mcp.method would be reading a guess.
+				if _, published := reqCtx.Metadata[metadataMcpMethod]; published {
+					t.Fatalf("request %d: expected no capability metadata, got %v", i+1, reqCtx.Metadata)
+				}
+			}
+		})
+	}
+}
+
+// The forward above is legacy-only: 2026-07-28 requires Mcp-Method, and forwarding a request
+// without it would let a client go uncounted by withholding one header.
+func TestOnRequestHeaders_ModernWithoutMcpMethodIsRejected(t *testing.T) {
+	p := newWildcardMethodResolverPolicy(t, 1)
+	reqCtx := newHeaderCtx(t, "POST", map[string][]string{headerProtocolVersion: {modernVersion}}, nil)
+	resp, ok := p.OnRequestHeaders(context.Background(), reqCtx, nil).(policy.ImmediateResponse)
+	if !ok || resp.StatusCode != 400 {
+		t.Fatalf("expected a 400 rejection, got %#v", resp)
+	}
+	var env struct {
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(resp.Body, &env); err != nil || env.Error.Code != jsonRpcErrCodeHeaderMismatch {
+		t.Fatalf("error code = %d (%v), want %d; body %s", env.Error.Code, err, jsonRpcErrCodeHeaderMismatch, resp.Body)
+	}
+}
+
+func newWildcardMethodResolverPolicy(t *testing.T, limit int) *McpRateLimitPolicy {
+	t.Helper()
+	return newPolicy(t, map[string]any{
+		"backend":   "memory",
+		"algorithm": "fixed-window",
+		"methods": []any{
+			map[string]any{
+				"name":   "*",
+				"limits": []any{map[string]any{"limit": float64(limit), "duration": "1m"}},
+			},
+		},
+	})
+}
+
+func newWildcardResolverToolPolicy(t *testing.T, limit int) *McpRateLimitPolicy {
+	t.Helper()
+	return newPolicy(t, map[string]any{
+		"backend":   "memory",
+		"algorithm": "fixed-window",
+		"tools": []any{
+			map[string]any{
+				"name":   "*",
+				"limits": []any{map[string]any{"limit": float64(limit), "duration": "1m"}},
+			},
+		},
+	})
+}
+
+// A tools/call must mirror Mcp-Name; a withheld or undecodable one is rejected rather than going
+// uncounted under an empty name that matches no tools rule.
+func TestOnRequestHeaders_ModernWithoutRequiredMcpNameIsRejected(t *testing.T) {
+	body := map[string]string{
+		attrBodyMethod:         "tools/call",
+		attrBodyCapabilityName: "toolA",
+	}
+	modern := func(name string) map[string][]string {
+		h := map[string][]string{headerProtocolVersion: {modernVersion}, headerMcpMethod: {"tools/call"}}
+		if name != "" {
+			h[headerMcpName] = []string{name}
+		}
+		return h
+	}
+
+	for _, tc := range []struct {
+		name    string
+		headers map[string][]string
+	}{
+		{"Mcp-Name withheld", modern("")},
+		{"Mcp-Name will not decode", modern("=?base64?not-valid-base64!?=")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newWildcardResolverToolPolicy(t, 100)
+			resp, ok := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", tc.headers, body), nil).(policy.ImmediateResponse)
+			if !ok || resp.StatusCode != 400 {
+				t.Fatalf("expected a 400 rejection, got %#v", resp)
+			}
+			var env struct {
+				Error struct {
+					Code int `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(resp.Body, &env); err != nil || env.Error.Code != jsonRpcErrCodeHeaderMismatch {
+				t.Fatalf("error code = %d (%v), want %d; body %s", env.Error.Code, err, jsonRpcErrCodeHeaderMismatch, resp.Body)
+			}
+		})
+	}
+}
+
+// Intended behaviour, not an omission. The resolver publishes a name whenever params.name or
+// params.uri is present, so resources/subscribe carries its URI — but taking it would make an
+// exact-URI rule start matching requests that only a wildcard rule reaches today, and findMatches
+// enforces every match, so that can only add rejections. Both paths narrow identically.
+func TestCapabilityFrom_TakesTheNameOnlyForTheThreeMethodsThatNameOne(t *testing.T) {
+	tests := []struct {
+		method      string
+		name        string
+		wantType    string
+		wantCapName string
+	}{
+		{"tools/call", "toolA", "tool", "toolA"},
+		{"tools/list", "toolA", "tool", ""},
+		{"resources/read", "file:///logs", "resource", "file:///logs"},
+		{"resources/subscribe", "file:///logs", "resource", ""},
+		{"prompts/get", "promptA", "prompt", "promptA"},
+		{"prompts/list", "promptA", "prompt", ""},
+		{"ping", "", "", ""},
+		{"server/discover", "", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.method, func(t *testing.T) {
+			capType, capName := capabilityFrom(tc.method, tc.name)
+			if capType != tc.wantType || capName != tc.wantCapName {
+				t.Fatalf("got (%q,%q), want (%q,%q)", capType, capName, tc.wantType, tc.wantCapName)
+			}
+		})
+	}
+}
+
+// The end-to-end half of the narrowing: an exact-URI rule stays out of resources/subscribe.
+func TestOnRequestHeaders_SubscribeUriDoesNotMatchAnExactRule(t *testing.T) {
+	p := newPolicy(t, map[string]any{
+		"backend":   "memory",
+		"algorithm": "fixed-window",
+		"resources": []any{
+			map[string]any{
+				"name":   "file:///logs",
+				"limits": []any{map[string]any{"limit": float64(1), "duration": "1m"}},
+			},
+		},
+	})
+	attrs := legacyAttrs("resources/subscribe", "file:///logs")
+	for i := range 2 {
+		if action := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", nil, attrs), nil); action != nil {
+			t.Fatalf("request %d: expected subscribe to stay ungoverned by an exact-URI rule, got %T", i+1, action)
+		}
+	}
+}
+
+// The rejection echoes the id as the JSON token the client sent, so its correlation matches. The
+// resolver publishes the token verbatim — 7 for a number, "7" with its quotes for a string.
+func TestOnRequestHeaders_RateLimitErrorEchoesTheIDType(t *testing.T) {
+	tests := []struct {
+		name   string
+		attr   string
+		wantID any
+	}{
+		{"number", `7`, float64(7)},
+		{"a string that looks numeric", `"7"`, "7"},
+		{"a plain string", `"req-7"`, "req-7"},
+		{"an empty string is still a string", `""`, ""},
+		{"absent", "", nil},
+		// The kernel drops an attribute value over 256 chars rather than truncating it, and a
+		// string id costs two more for its quotes — so a very long one simply never arrives.
+		// A null id beats one that was silently altered.
+		{"dropped by the kernel's length bound", "", nil},
+		// Defensive; see TestMcpFacts_RequestIDIsValidJSONOrEmpty for why the guard exists,
+		// since the envelope reaches null either way.
+		{"a half token", `{"a":`, nil},
+		{"not JSON at all", "not-json", nil},
+		{"two tokens", "7 8", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newToolPolicy(t, "toolA", 1)
+			attrs := map[string]string{attrBodyMethod: "tools/call", attrBodyCapabilityName: "toolA"}
+			if tc.attr != "" {
+				attrs[attrBodyJSONRPCID] = tc.attr
+			}
+
+			p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", nil, attrs), nil)
+			action := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", nil, attrs), nil)
+			resp, ok := action.(policy.ImmediateResponse)
+			if !ok {
+				t.Fatalf("expected the second request to be limited, got %T", action)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+				t.Fatalf("expected a JSON-RPC error body: %v", err)
+			}
+			if parsed["id"] != tc.wantID {
+				t.Fatalf("expected id %#v, got %#v", tc.wantID, parsed["id"])
+			}
+		})
+	}
+}
+
+// Each hook belongs to exactly one kind of route. The executor already gates on Mode(), so these
+// guards are unreachable in production — they stop a direct call in a test deciding twice, or
+// deciding without facts.
+func TestHooksDeferToTheOtherPhase(t *testing.T) {
+	t.Run("header phase does nothing without a resolver", func(t *testing.T) {
+		p := newToolPolicy(t, "toolA", 1)
+		attrs := legacyAttrs("tools/call", "toolA")
+		for i := range 2 {
+			if action := p.OnRequestHeaders(context.Background(), newHeaderCtxNoResolver(t, "POST", nil, attrs), nil); action != nil {
+				t.Fatalf("request %d: expected the header phase to defer, got %T", i+1, action)
+			}
+		}
+		// Prove the stand-in still detects what it claims to: the same input on a resolver
+		// route does limit, so the skip above is the guard and not an inert fixture.
+		resolver := newToolPolicy(t, "toolA", 1)
+		resolver.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", nil, attrs), nil)
+		if action := resolver.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", nil, attrs), nil); action == nil {
+			t.Fatalf("control: expected a resolver route to limit the same request")
+		}
+	})
+
+	t.Run("body phase does nothing on a resolver route", func(t *testing.T) {
+		p := newToolPolicy(t, "toolA", 1)
+		body, _ := json.Marshal(map[string]any{"method": "tools/call", "params": map[string]any{"name": "toolA"}})
+		for i := range 2 {
+			action := p.OnRequestBody(context.Background(), newResolvedRequestCtx(t, "POST", nil, body), nil)
+			if _, blocked := action.(policy.ImmediateResponse); blocked {
+				t.Fatalf("request %d: expected the body phase to defer", i+1)
+			}
+		}
+		// Control: the same body on a resolver-less route is limited.
+		legacy := newToolPolicy(t, "toolA", 1)
+		legacy.OnRequestBody(context.Background(), newRequestCtx(t, "POST", nil, body), nil)
+		action := legacy.OnRequestBody(context.Background(), newRequestCtx(t, "POST", nil, body), nil)
+		if _, blocked := action.(policy.ImmediateResponse); !blocked {
+			t.Fatalf("control: expected a resolver-less route to limit the same request")
+		}
+	})
+}
+
+func TestOnRequestHeaders_PublishesCapabilityMetadata(t *testing.T) {
+	p := newToolPolicy(t, "toolA", 5)
+	reqCtx := newHeaderCtx(t, "POST", nil, legacyAttrs("tools/call", "toolA"))
+
+	p.OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	for key, want := range map[string]string{
+		metadataMcpMethod:         "tools/call",
+		metadataMcpCapabilityType: "tool",
+		metadataMcpCapabilityName: "toolA",
+	} {
+		if got, _ := reqCtx.Metadata[key].(string); got != want {
+			t.Fatalf("metadata %q: got %q, want %q", key, got, want)
+		}
+	}
+	// The response phase replays these, so the write has to survive the hook move.
+	if invoked, _ := reqCtx.Metadata[metadataInvokedDelegates].([]string); len(invoked) != 1 {
+		t.Fatalf("expected one invoked delegate recorded, got %v", reqCtx.Metadata[metadataInvokedDelegates])
+	}
+}
+
+func TestOnRequestHeaders_SkipsNonPost(t *testing.T) {
+	p := newToolPolicy(t, "toolA", 1)
+	attrs := legacyAttrs("tools/call", "toolA")
+	for _, method := range []string{"GET", "DELETE"} {
+		for range 2 {
+			if action := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, method, nil, attrs), nil); action != nil {
+				t.Fatalf("%s: expected it to be forwarded, got %T", method, action)
+			}
+		}
+	}
+}
+
+// The route is matched segment-exactly on the API-definition path, so a path that merely ends in
+// "/mcp" is not the MCP endpoint. Matches the MCP authorization and access-control policies.
+func TestOnRequestHeaders_SkipsNonMcpPaths(t *testing.T) {
+	for _, path := range []string{"/resource/mcp", "/mcpx", "/"} {
+		t.Run(path, func(t *testing.T) {
+			p := newToolPolicy(t, "toolA", 1)
+			for i := range 2 {
+				reqCtx := newHeaderCtx(t, "POST", nil, legacyAttrs("tools/call", "toolA"))
+				reqCtx.OperationPath = path
+				if action := p.OnRequestHeaders(context.Background(), reqCtx, nil); action != nil {
+					t.Fatalf("request %d: expected %q to be forwarded, got %T", i+1, path, action)
+				}
+			}
+		})
+	}
+
+	// An empty OperationPath falls back to the downstream request path, so a real POST /mcp is
+	// still limited rather than silently skipped.
+	t.Run("empty operation path falls back to the request path", func(t *testing.T) {
+		p := newToolPolicy(t, "toolA", 1)
+		limited := false
+		for range 2 {
+			reqCtx := newHeaderCtx(t, "POST", nil, legacyAttrs("tools/call", "toolA"))
+			reqCtx.OperationPath = ""
+			if action := p.OnRequestHeaders(context.Background(), reqCtx, nil); action != nil {
+				limited = true
+			}
+		}
+		if !limited {
+			t.Fatal("expected the downstream /mcp path to be recognised and limited")
+		}
+	})
+
+	// A subpath under /mcp is the endpoint, and is limited.
+	p := newToolPolicy(t, "toolA", 1)
+	for _, path := range []string{"/mcp", "/mcp/v1"} {
+		reqCtx := newHeaderCtx(t, "POST", nil, legacyAttrs("tools/call", "toolA"))
+		reqCtx.OperationPath = path
+		p.OnRequestHeaders(context.Background(), reqCtx, nil)
+	}
+	reqCtx := newHeaderCtx(t, "POST", nil, legacyAttrs("tools/call", "toolA"))
+	if action := p.OnRequestHeaders(context.Background(), reqCtx, nil); action == nil {
+		t.Fatalf("expected /mcp and /mcp/v1 to share the bucket and breach the limit")
+	}
+}
+
+// Both request paths render an unreadable body through handleUnusableBody, so the same bytes get
+// the same error whether the resolver read them or this policy parsed them itself.
+func TestUnreadableBodyRendersIdenticallyOnBothPaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   []byte
+		reason string
+	}{
+		{"broken JSON", []byte(`{"method":`), reasonSyntaxError},
+		{"a member named twice", []byte(`{"method":"tools/call","method":"tools/list"}`), reasonAmbiguous},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			viaBody := newToolPolicy(t, "toolA", 5).
+				OnRequestBody(context.Background(), newRequestCtx(t, "POST", nil, tc.body), nil)
+			bodyResp, ok := viaBody.(policy.ImmediateResponse)
+			if !ok {
+				t.Fatalf("expected the body parse to reject, got %T", viaBody)
+			}
+
+			viaResolver := newToolPolicy(t, "toolA", 5).
+				OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", nil, map[string]string{attrBodyUnusable: tc.reason}), nil)
+			resolverResp, ok := viaResolver.(policy.ImmediateResponse)
+			if !ok {
+				t.Fatalf("expected the resolver path to reject, got %T", viaResolver)
+			}
+
+			if bodyResp.StatusCode != resolverResp.StatusCode || string(bodyResp.Body) != string(resolverResp.Body) {
+				t.Fatalf("the two paths disagree:\n  body     %d %s\n  resolver %d %s",
+					bodyResp.StatusCode, bodyResp.Body, resolverResp.StatusCode, resolverResp.Body)
+			}
+		})
+	}
+}
+
+// A modern request carries its id in a body this policy does not read, so the rejection renders
+// null rather than taking the one value a modern request would owe to the body.
+func TestOnRequestHeaders_ModernRateLimitErrorHasANullID(t *testing.T) {
+	p := newToolPolicy(t, "toolA", 1)
+	headers := modernHeaders("tools/call", "toolA")
+	attrs := map[string]string{attrBodyJSONRPCID: `7`}
+
+	p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", headers, attrs), nil)
+	action := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", headers, attrs), nil)
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected the second request to be limited, got %T", action)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		t.Fatalf("expected a JSON-RPC error body: %v", err)
+	}
+	if parsed["id"] != nil {
+		t.Errorf("id = %v, want null: a modern request's id is not read from the body", parsed["id"])
+	}
+}
+
+// facts.RequestID is always valid JSON or empty. The envelope reaches `"id":null` for a mangled
+// attribute either way — without the guard by failing json.Marshal and falling back — so the
+// guard is only observable here. It keeps a bad id from failing the whole envelope rather than
+// just the id, and matches the MCP Spec Validation policy's jsonRPCID.
+func TestMcpFacts_RequestIDIsValidJSONOrEmpty(t *testing.T) {
+	tests := []struct {
+		attr string
+		want string
+	}{
+		{`7`, `7`},
+		{`"7"`, `"7"`},
+		{`""`, `""`},
+		{`null`, `null`},
+		{`{"a":`, ""},
+		{"not-json", ""},
+		{"7 8", ""},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.attr, func(t *testing.T) {
+			shared := &policy.SharedContext{
+				ResolutionAttributes: policy.NewResolutionAttributes(map[string]string{attrBodyJSONRPCID: tc.attr}),
+			}
+			got := mcpFacts(policy.NewHeaders(nil), shared).RequestID
+			if string(got) != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			if len(got) > 0 && !json.Valid(got) {
+				t.Fatalf("RequestID must be valid JSON when set, got %q", got)
+			}
+		})
+	}
+}
+
+// Every context embeds *SharedContext, so a nil one panics on any Metadata access.
+func TestNilSharedContextDoesNotPanic(t *testing.T) {
+	p := newToolPolicy(t, "toolA", 5)
+
+	headerCtx := newHeaderCtx(t, "POST", nil, legacyAttrs("tools/call", "toolA"))
+	headerCtx.SharedContext = nil
+	if action := p.OnRequestHeaders(context.Background(), headerCtx, nil); action != nil {
+		t.Fatalf("expected a request with no shared context to be forwarded, got %T", action)
+	}
+
+	respCtx := newResponseHeaderCtx(t, nil)
+	respCtx.SharedContext = nil
+	if mods, ok := p.OnResponseHeaders(context.Background(), respCtx, nil).(policy.DownstreamResponseHeaderModifications); !ok || len(mods.HeadersToSet) != 0 {
+		t.Fatalf("expected no header modifications, got %#v", mods)
+	}
+
+	bodyCtx := newRequestCtx(t, "POST", nil, []byte(`{"method":"tools/call","params":{"name":"toolA"}}`))
+	bodyCtx.SharedContext = nil
+	legacy := newToolPolicy(t, "toolA", 5)
+	if _, blocked := legacy.OnRequestBody(context.Background(), bodyCtx, nil).(policy.ImmediateResponse); blocked {
+		t.Fatalf("expected a request with no shared context to be forwarded")
+	}
+}
+
+// A modern request is limited on Mcp-Method and Mcp-Name, so the body verdict says nothing about
+// it and the rules apply as usual. Rejecting that body is mcp-spec-validation's job.
+func TestOnRequestHeaders_ModernUnusableBodyStillLimitsOnTheHeaders(t *testing.T) {
+	for _, reason := range []string{reasonSyntaxError, reasonInvalidMemberType, reasonNotAnObject, reasonAmbiguous} {
+		t.Run(reason, func(t *testing.T) {
+			p := newToolPolicy(t, "toolA", 1)
+			headers := modernHeaders("tools/call", "toolA")
+			attrs := map[string]string{attrBodyUnusable: reason}
+
+			if action := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", headers, attrs), nil); action != nil {
+				t.Fatalf("the first request must pass, got %T", action)
+			}
+			action := p.OnRequestHeaders(context.Background(), newHeaderCtx(t, "POST", headers, attrs), nil)
+			if resp, ok := action.(policy.ImmediateResponse); !ok || resp.StatusCode != 429 {
+				t.Fatalf("expected the second request to be limited, got %#v", action)
+			}
+		})
 	}
 }

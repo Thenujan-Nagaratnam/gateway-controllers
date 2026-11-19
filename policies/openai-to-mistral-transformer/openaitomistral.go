@@ -34,6 +34,7 @@ const (
 	PolicyName                  = "openai-to-mistral-transformer"
 	MistralChatCompletionsPath  = "/v1/chat/completions"
 	MetadataKeySelectedProvider = "selected_provider"
+	MetadataKeyEffectiveModel   = "openai_to_mistral_effective_model"
 )
 
 // unsupportedRequestFields lists OpenAI fields Mistral's API rejects. Keep in
@@ -50,7 +51,8 @@ var unsupportedRequestFields = []string{
 }
 
 type PolicyParams struct {
-	// Model overrides the OpenAI "model" field in the translated request.
+	// Model is the fallback used when the request payload names no model. It
+	// never overrides a model the client named — see resolveModel.
 	Model string
 	// ProviderID is the upstream provider this translator targets. It serves two
 	// purposes: it is the upstream cluster the request is routed to, and it
@@ -98,10 +100,11 @@ func (p *TranslatorPolicy) OnRequestBody(
 		return errResponse(400, fmt.Sprintf("Invalid JSON in request body: %s", err.Error()))
 	}
 
-	model := p.params.Model
-	if model == "" {
-		return errResponse(400, "'model' policy parameter is required for Mistral translation.")
+	model, err := p.resolveModel(payload)
+	if err != nil {
+		return errResponse(400, err.Error())
 	}
+	storeEffectiveModel(reqCtx.SharedContext, model)
 
 	payload["model"] = model
 	for _, key := range unsupportedRequestFields {
@@ -153,7 +156,8 @@ func (p *TranslatorPolicy) OnResponseBody(
 	}
 
 	slog.Debug(PolicyName+": translating response", "status", respCtx.ResponseStatus)
-	return translateResponse(body, respCtx.ResponseStatus, p.params.Model)
+	return translateResponse(body, respCtx.ResponseStatus,
+		effectiveModel(respCtx.SharedContext, p.params.Model))
 }
 
 // shouldRun reports whether the request should be translated. When no upstream
@@ -192,6 +196,62 @@ func selectedProviderFromMetadata(shared *policy.SharedContext, metadata map[str
 	return strings.TrimSpace(v)
 }
 
+// storeEffectiveModel records the model that served this request so the
+// response phase can report it rather than the configured value, which may be
+// empty. Mirrors the Bedrock implementation; these policies share no package.
+func storeEffectiveModel(shared *policy.SharedContext, model string) {
+	// A nil shared context is not reachable through the policy engine, which
+	// gives every phase the same instance — the provider selection this policy
+	// already reads in shouldRun travels the same way, as does multi-provider
+	// routing generally. The guard is defensive only. Were it ever nil, the sole
+	// consequence here is that a response omitting "model" is passed through
+	// without the backfill; the request itself is still served with the model the
+	// client asked for. Rejecting such a request instead would defeat the point
+	// of resolving the model from the payload in the first place.
+	if shared == nil {
+		return
+	}
+	if shared.Metadata == nil {
+		shared.Metadata = map[string]interface{}{}
+	}
+	shared.Metadata[MetadataKeyEffectiveModel] = model
+}
+
+// effectiveModel reads back what storeEffectiveModel recorded, falling back to
+// the configured model so no response path can report nothing.
+func effectiveModel(shared *policy.SharedContext, configured string) string {
+	if shared != nil && shared.Metadata != nil {
+		if model, ok := shared.Metadata[MetadataKeyEffectiveModel].(string); ok && model != "" {
+			return model
+		}
+	}
+	return configured
+}
+
+// resolveModel returns the model that will serve this request. The model named
+// in the request payload takes priority; the configured model is a fallback,
+// used only when the payload names none. A payload model that is absent, null
+// or an empty string counts as none; a whitespace-only one is malformed and is
+// rejected even when a fallback exists.
+func (p *TranslatorPolicy) resolveModel(payload map[string]interface{}) (string, error) {
+	if raw, present := payload["model"]; present && raw != nil {
+		model, isString := raw.(string)
+		if !isString {
+			return "", fmt.Errorf("request field 'model' must be a string")
+		}
+		if trimmed := strings.TrimSpace(model); trimmed != "" {
+			return trimmed, nil
+		} else if model != "" {
+			return "", fmt.Errorf("request field 'model' must not be blank")
+		}
+	}
+
+	if p.params.Model != "" {
+		return p.params.Model, nil
+	}
+	return "", fmt.Errorf("a Mistral model must be provided in either the policy configuration or request body")
+}
+
 func parseParams(params map[string]interface{}) (PolicyParams, error) {
 	result := PolicyParams{}
 
@@ -199,9 +259,7 @@ func parseParams(params map[string]interface{}) (PolicyParams, error) {
 	if err != nil {
 		return result, err
 	}
-	if model == "" {
-		return result, fmt.Errorf("'model' is required")
-	}
+	// Optional: an unset model means each request supplies its own.
 	result.Model = model
 
 	if v, err := optionalString(params, "providerId"); err != nil {

@@ -35,6 +35,7 @@ import (
 	_ "github.com/wso2/gateway-controllers/policies/advanced-ratelimit/algorithms/fixedwindow" // Register Fixed Window algorithm
 	_ "github.com/wso2/gateway-controllers/policies/advanced-ratelimit/algorithms/gcra"        // Register GCRA algorithm
 	"github.com/wso2/gateway-controllers/policies/advanced-ratelimit/limiter"
+	"github.com/wso2/gateway-controllers/policies/advanced-ratelimit/redistls"
 )
 
 // contextKey is used for storing values in context
@@ -220,6 +221,7 @@ func GetPolicy(
 	//                        client AND the shared limiter cache (holds a flusher goroutine).
 	// "memory"            -> per-replica counting via the shared limiter cache.
 	var redisClient *redis.Client
+	var redisTLSFingerprint string // "" = plaintext; see redistls.Config.Build
 	redisFailOpen := true
 	redisKeyPrefix := getStringParam(params, "redis.keyPrefix", "ratelimit:v1:")
 	localSyncInterval := getDurationParam(params, "local.syncInterval", 50*time.Millisecond)
@@ -250,6 +252,26 @@ func GetPolicy(
 		writeTimeout := getDurationParam(params, "redis.writeTimeout", 3*time.Second)
 		poolSize := getIntParam(params, "redis.poolSize", 0)
 
+		tlsParams := redistls.Config{
+			Enabled:            getBoolParam(params, "redis.tls.enabled", false),
+			CAFile:             getStringParam(params, "redis.tls.caFile", ""),
+			ServerName:         getStringParam(params, "redis.tls.serverName", ""),
+			InsecureSkipVerify: getBoolParam(params, "redis.tls.insecureSkipVerify", false),
+			CertFile:           getStringParam(params, "redis.tls.certFile", ""),
+			KeyFile:            getStringParam(params, "redis.tls.keyFile", ""),
+		}
+		// A TLS misconfiguration (unreadable CA file, mismatched key pair) is an operator
+		// error, not Redis being unavailable, so it fails regardless of failureMode.
+		tlsConfig, tlsFingerprint, err := tlsParams.Build()
+		if err != nil {
+			return nil, err
+		}
+		redisTLSFingerprint = tlsFingerprint
+		if tlsParams.Enabled && tlsParams.InsecureSkipVerify {
+			slog.Warn("Redis TLS certificate verification is disabled (redis.tls.insecureSkipVerify); do not use this in production",
+				"addr", fmt.Sprintf("%s:%d", redisHost, redisPort))
+		}
+
 		// Get-or-create the process-wide shared client for this connection config.
 		// Sharing one pool across all policy instances (and reloads) avoids the
 		// per-instance client/connection explosion. Ping happens once, on creation.
@@ -264,7 +286,8 @@ func GetPolicy(
 			ReadTimeout:  readTimeout,
 			WriteTimeout: writeTimeout,
 			PoolSize:     poolSize,
-		}, connTimeout)
+			TLSConfig:    tlsConfig,
+		}, tlsFingerprint, connTimeout)
 		// Fail-fast only when we created the client and it failed to connect; a reused
 		// client is assumed healthy (go-redis reconnects lazily).
 		if created && pingErr != nil {
@@ -311,7 +334,7 @@ func GetPolicy(
 		// limiter per quota. redis-local-async holds a per-replica counter + flusher
 		// goroutine, so it MUST be a shared singleton (cached) and Close()d on reload.
 		cleanupInterval := getDurationParam(params, "memory.cleanupInterval", 5*time.Minute)
-		baseCacheKey = getBaseCacheKey(routeName, apiName, algorithm, backend, params)
+		baseCacheKey = getBaseCacheKey(routeName, apiName, algorithm, backend, params, redisTLSFingerprint)
 
 		// Compute desired quota keys before acquiring lock
 		type quotaInfo struct {
@@ -1168,7 +1191,7 @@ func getDurationFromQuota(q *QuotaRuntime) time.Duration {
 
 // getBaseCacheKey computes a stable hash key base for caching memory-backed limiters.
 // This includes shared aspects like algorithm, headers config, etc.
-func getBaseCacheKey(routeName, apiName, algorithm, backend string, params map[string]interface{}) string {
+func getBaseCacheKey(routeName, apiName, algorithm, backend string, params map[string]interface{}, redisTLSFingerprint string) string {
 	h := sha256.New()
 
 	h.Write([]byte("route:"))
@@ -1194,9 +1217,10 @@ func getBaseCacheKey(routeName, apiName, algorithm, backend string, params map[s
 	// reusing the old one. (Counts survive in Redis; the coordinator's global settings
 	// are first-registrant-wins regardless.)
 	if backend == "redis-local-async" {
-		h.Write([]byte(fmt.Sprintf("redis:%s/%d|local:%s,w=%d,pipe=%d,max=%d|",
+		h.Write([]byte(fmt.Sprintf("redis:%s/%d|tls:%s|local:%s,w=%d,pipe=%d,max=%d|",
 			getStringParam(params, "redis.host", "localhost"),
 			getIntParam(params, "redis.db", 0),
+			redisTLSFingerprint,
 			getDurationParam(params, "local.syncInterval", 50*time.Millisecond),
 			getIntParam(params, "local.flushWorkers", 0),
 			getIntParam(params, "local.maxPipelineCommands", 0),

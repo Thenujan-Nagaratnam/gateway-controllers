@@ -596,3 +596,458 @@ func createMockResponseContext(requestHeaders, responseHeaders map[string][]stri
 		ResponseBody:    nil,
 	}
 }
+
+// ─── resolver-bearing routes ─────────────────────────────────────────────────
+//
+// Everything above builds contexts with no resolver, so those tests are the
+// gateway-without-a-resolver path and must keep passing untouched. What follows covers the route
+// that carries one, where the capability arrives in the mirrored headers or the resolver's
+// attributes instead of a body.
+
+const (
+	attrPresent  = "mcp.body.present"
+	attrMethod   = "mcp.body.method"
+	attrCapName  = "mcp.body.capability.name"
+	attrUnusable = "mcp.body.unusable"
+	attrJSONRPC  = "mcp.body.jsonrpc.id"
+)
+
+// toolsDenyAllExcept builds a policy that denies every tool but the ones listed.
+// unresolvedHeaderCtx strips the resolver marks, modelling a route that carries no resolver.
+func unresolvedHeaderCtx(c *policy.RequestHeaderContext) *policy.RequestHeaderContext {
+	c.APIKind, c.ResolvedOperation = "", ""
+	delete(c.Metadata, metadataBodyResolved)
+	return c
+}
+
+// resolvedRequestCtx marks a body-phase context as belonging to a route whose resolver already
+// ran, which is what makes the body phase stand aside.
+func resolvedRequestCtx(c *policy.RequestContext) *policy.RequestContext {
+	c.APIKind, c.ResolvedOperation = policy.APIKindMCP, "mcp"
+	c.Metadata = map[string]any{metadataBodyResolved: true}
+	return c
+}
+
+func toolsDenyAllExcept(t *testing.T, allowed ...string) *McpAclListPolicy {
+	t.Helper()
+	exceptions := make([]any, 0, len(allowed))
+	for _, a := range allowed {
+		exceptions = append(exceptions, a)
+	}
+	params := map[string]any{
+		"tools": map[string]any{"mode": "deny", "exceptions": exceptions},
+	}
+	p, err := GetPolicy(policy.PolicyMetadata{}, params)
+	if err != nil {
+		t.Fatalf("GetPolicy: %v", err)
+	}
+	return p.(*McpAclListPolicy)
+}
+
+// resolvedHeaderPost builds a header-phase POST /mcp on a route whose resolver ran. The resolver
+// publishes mcp.body.present for any body it received, so a fixture that omits it models a state
+// the engine cannot produce.
+func resolvedHeaderPost(headers map[string][]string, attrs map[string]string) *policy.RequestHeaderContext {
+	withBody := map[string]string{attrPresent: "true"}
+	for k, v := range attrs {
+		withBody[k] = v
+	}
+	ctx := &policy.RequestHeaderContext{
+		SharedContext: &policy.SharedContext{
+			RequestID:            "test-request-id",
+			Metadata:             map[string]any{metadataBodyResolved: true},
+			APIKind:              policy.APIKindMCP,
+			ResolvedOperation:    "mcp",
+			ResolutionAttributes: policy.NewResolutionAttributes(withBody),
+		},
+		Headers: policy.NewHeaders(headers),
+		Path:    "/mcp",
+		Method:  "POST",
+	}
+	ctx.OperationPath = "/mcp"
+	return ctx
+}
+
+func TestMode_AsksForBothRequestPhases(t *testing.T) {
+	m := toolsDenyAllExcept(t, "toolB").Mode()
+	if m.RequestHeaderMode != policy.HeaderModeProcess || m.RequestBodyMode != policy.BodyModeBuffer {
+		t.Fatalf("request modes = %v/%v, want Process/Buffer: which phase decides is settled per request", m.RequestHeaderMode, m.RequestBodyMode)
+	}
+	// Filtering a */list result is body work no header carries, so this never varies.
+	if m.ResponseBodyMode != policy.BodyModeBuffer {
+		t.Fatalf("ResponseBodyMode = %v, want Buffer", m.ResponseBodyMode)
+	}
+}
+
+func TestOnRequestHeaders_EnforcesTheAcl(t *testing.T) {
+	tests := []struct {
+		name    string
+		attrs   map[string]string
+		blocked bool
+	}{
+		{"a denied tool is blocked", map[string]string{attrMethod: "tools/call", attrCapName: "toolA"}, true},
+		{"an allowed tool passes", map[string]string{attrMethod: "tools/call", attrCapName: "toolB"}, false},
+		{"a listing is not an invocation", map[string]string{attrMethod: "tools/list"}, false},
+		{"a family with no ACL configured passes", map[string]string{attrMethod: "prompts/get", attrCapName: "p"}, false},
+		{"a method outside the three families passes", map[string]string{attrMethod: "ping"}, false},
+		{"a body that named no operation passes", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := toolsDenyAllExcept(t, "toolB")
+			action := p.OnRequestHeaders(context.Background(), resolvedHeaderPost(nil, tc.attrs), nil)
+			if tc.blocked && action == nil {
+				t.Fatal("expected the request to be blocked")
+			}
+			if !tc.blocked && action != nil {
+				t.Fatalf("expected the request to pass, got %#v", action)
+			}
+		})
+	}
+}
+
+// The live ACL bypass this migration closes, on a resolver route.
+//
+// The gateway parses into map[string]any, which is case-SENSITIVE; the backend's struct tags are
+// not, and take the last match. So a body naming both "method" and "Method" reads as tools/list
+// here — not an invocation, no ACL check — and as tools/call there, executing the denied tool.
+// The resolver refuses to read such a body at all, and this rejection is what acts on that.
+func TestOnRequestHeaders_RejectsAnUnreadableBody(t *testing.T) {
+	tests := []struct {
+		reason      string
+		wantCode    float64
+		wantMessage string
+	}{
+		// the bypass: "method" and "Method" in one body
+		{reasonAmbiguous, -32600, "Ambiguous MCP request: body names a member more than once"},
+		{reasonSyntaxError, -32700, "Invalid JSON"},
+		{reasonNotAnObject, -32600, "Request body is not a single JSON-RPC request object"},
+		{reasonInvalidMemberType, -32600, "Request body has a member of the wrong type"},
+		{"a reason this build does not know", -32600, "Invalid MCP request"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.reason, func(t *testing.T) {
+			p := toolsDenyAllExcept(t, "toolB")
+			ctx := resolvedHeaderPost(nil, map[string]string{attrUnusable: tc.reason})
+			action := p.OnRequestHeaders(context.Background(), ctx, nil)
+			resp, ok := action.(policy.ImmediateResponse)
+			if !ok {
+				t.Fatalf("expected a rejection, got %#v", action)
+			}
+			if resp.StatusCode != 400 {
+				t.Fatalf("expected 400, got %d", resp.StatusCode)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+				t.Fatalf("expected a JSON-RPC error body: %v", err)
+			}
+			errObj := parsed["error"].(map[string]any)
+			if errObj["code"] != tc.wantCode {
+				t.Fatalf("expected code %v, got %v", tc.wantCode, errObj["code"])
+			}
+			if errObj["message"] != tc.wantMessage {
+				t.Fatalf("expected message %q, got %v", tc.wantMessage, errObj["message"])
+			}
+		})
+	}
+}
+
+// The highest-value test in this migration. The response filter is gated entirely on a note the
+// request phase leaves in SharedContext.Metadata — a response body does not say what was asked for
+// — so if the write does not survive the hook move, */list results silently stop being filtered
+// and denied tools leak to the client. Nothing else fails if it is dropped.
+func TestOnRequestHeaders_LeavesTheNoteTheResponsePhaseNeeds(t *testing.T) {
+	p := toolsDenyAllExcept(t, "toolB")
+	ctx := resolvedHeaderPost(nil, map[string]string{attrMethod: "tools/list"})
+
+	if action := p.OnRequestHeaders(context.Background(), ctx, nil); action != nil {
+		t.Fatalf("a listing is not an invocation and must pass, got %#v", action)
+	}
+
+	// Plural, not the resolver's singular "tool": this value is used to pick the ACL group
+	// AND to index the response JSON at {"result":{"tools":[…]}}. A singular value silently
+	// disables both, and no request-blocking test would catch it.
+	if got := ctx.Metadata[metadataMcpCapabilityType]; got != "tools" {
+		t.Fatalf("capability type = %#v, want the plural %q", got, "tools")
+	}
+	if got := ctx.Metadata[metadataMcpAction]; got != "list" {
+		t.Fatalf("action = %#v, want %q", got, "list")
+	}
+}
+
+// And the note actually drives the filter: the same SharedContext carried into the response phase
+// must still strip the denied tool out of the list.
+func TestResponseFilteringSurvivesTheHookMove(t *testing.T) {
+	p := toolsDenyAllExcept(t, "toolB")
+	reqCtx := resolvedHeaderPost(nil, map[string]string{attrMethod: "tools/list"})
+	p.OnRequestHeaders(context.Background(), reqCtx, nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1,
+		"result": map[string]any{"tools": []any{
+			map[string]any{"name": "toolA"},
+			map[string]any{"name": "toolB"},
+		}},
+	})
+	respCtx := &policy.ResponseContext{
+		SharedContext:   reqCtx.SharedContext, // the same map the request phase wrote into
+		RequestHeaders:  policy.NewHeaders(nil),
+		ResponseHeaders: policy.NewHeaders(nil),
+		ResponseBody:    &policy.Body{Content: body, Present: true},
+		RequestMethod:   "POST",
+	}
+	respCtx.OperationPath = "/mcp"
+
+	action := p.OnResponseBody(context.Background(), respCtx, nil)
+	mods, ok := action.(policy.DownstreamResponseModifications)
+	if !ok {
+		t.Fatalf("expected the list to be filtered, got %#v", action)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(mods.Body, &parsed); err != nil {
+		t.Fatalf("filtered body is not JSON: %v", err)
+	}
+	tools := parsed["result"].(map[string]any)["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "toolB" {
+		t.Fatalf("expected only toolB to survive, got %v", tools)
+	}
+}
+
+// Each hook belongs to exactly one kind of route. The executor already gates on Mode(), so these
+// guards are unreachable in production — they stop a direct call in a test deciding twice.
+func TestHooksDeferToTheOtherPhase(t *testing.T) {
+	denied, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "toolA"},
+	})
+	bodyCtx := func() *policy.RequestContext {
+		c := createMockRequestContext(nil)
+		c.OperationPath = "/mcp"
+		c.Body = &policy.Body{Content: denied, Present: true}
+		return c
+	}
+
+	t.Run("body phase defers on a resolver route", func(t *testing.T) {
+		action := toolsDenyAllExcept(t, "toolB").OnRequestBody(context.Background(), resolvedRequestCtx(bodyCtx()), nil)
+		if _, blocked := action.(policy.ImmediateResponse); blocked {
+			t.Fatal("expected the body phase to defer")
+		}
+		// Control: the same body on a resolver-less route IS blocked.
+		control := toolsDenyAllExcept(t, "toolB").OnRequestBody(context.Background(), bodyCtx(), nil)
+		if _, blocked := control.(policy.ImmediateResponse); !blocked {
+			t.Fatal("control: a resolver-less route must block the denied tool")
+		}
+	})
+
+	t.Run("header phase defers without a resolver", func(t *testing.T) {
+		p := toolsDenyAllExcept(t, "toolB")
+		attrs := map[string]string{attrMethod: "tools/call", attrCapName: "toolA"}
+		if action := p.OnRequestHeaders(context.Background(), unresolvedHeaderCtx(resolvedHeaderPost(nil, attrs)), nil); action != nil {
+			t.Fatalf("expected the header phase to defer, got %#v", action)
+		}
+		// Control: the same input on a resolver route IS blocked.
+		if action := toolsDenyAllExcept(t, "toolB").OnRequestHeaders(context.Background(), resolvedHeaderPost(nil, attrs), nil); action == nil {
+			t.Fatal("control: a resolver route must block the denied tool")
+		}
+	})
+}
+
+// A resource is identified by its uri, a tool and a prompt by name — the same family-keyed choice
+// the resolver makes when it publishes capability.name, so both paths agree.
+func TestOnRequestHeaders_ResourcesAreKeyedOnTheUri(t *testing.T) {
+	p, err := GetPolicy(policy.PolicyMetadata{}, map[string]any{
+		"resources": map[string]any{"mode": "deny", "exceptions": []any{"file:///public"}},
+	})
+	if err != nil {
+		t.Fatalf("GetPolicy: %v", err)
+	}
+	acl := p.(*McpAclListPolicy)
+
+	allowed := resolvedHeaderPost(nil, map[string]string{attrMethod: "resources/read", attrCapName: "file:///public"})
+	if action := acl.OnRequestHeaders(context.Background(), allowed, nil); action != nil {
+		t.Fatalf("expected the listed uri to pass, got %#v", action)
+	}
+	denied := resolvedHeaderPost(nil, map[string]string{attrMethod: "resources/read", attrCapName: "file:///secret"})
+	if action := acl.OnRequestHeaders(context.Background(), denied, nil); action == nil {
+		t.Fatal("expected an unlisted uri to be blocked")
+	}
+}
+
+// Every context embeds *SharedContext, so a nil one panics on any Metadata access.
+func TestNilSharedContextDoesNotPanic(t *testing.T) {
+	p := toolsDenyAllExcept(t, "toolB")
+
+	headerCtx := resolvedHeaderPost(nil, map[string]string{attrMethod: "tools/call", attrCapName: "toolA"})
+	headerCtx.SharedContext = nil
+	if action := p.OnRequestHeaders(context.Background(), headerCtx, nil); action != nil {
+		t.Fatalf("expected a request with no shared context to pass, got %#v", action)
+	}
+
+	respCtx := createMockResponseContext(nil, nil)
+	respCtx.SharedContext = nil
+	if action := p.OnResponseBody(context.Background(), respCtx, nil); action != nil {
+		t.Fatalf("expected no response modifications, got %#v", action)
+	}
+}
+
+// Both request paths render an unreadable body through handleUnusableBody, so the same bytes get
+// the same error whether the resolver read them or this policy parsed them itself. The
+// resolver-less path can only ever reach reasonSyntaxError — it has no ambiguity check — which is
+// the gap recorded in the docs.
+func TestUnreadableBodyRendersIdenticallyOnBothPaths(t *testing.T) {
+	bodyCtx := createMockRequestContext(nil)
+	bodyCtx.OperationPath = "/mcp"
+	bodyCtx.Body = &policy.Body{Content: []byte(`{"method":`), Present: true}
+
+	viaBody := toolsDenyAllExcept(t, "toolB").OnRequestBody(context.Background(), bodyCtx, nil)
+	bodyResp, ok := viaBody.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected the body parse to reject, got %#v", viaBody)
+	}
+
+	hdrCtx := resolvedHeaderPost(nil, map[string]string{attrUnusable: reasonSyntaxError})
+	viaResolver := toolsDenyAllExcept(t, "toolB").OnRequestHeaders(context.Background(), hdrCtx, nil)
+	resolverResp, ok := viaResolver.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("expected the resolver path to reject, got %#v", viaResolver)
+	}
+
+	if bodyResp.StatusCode != resolverResp.StatusCode || string(bodyResp.Body) != string(resolverResp.Body) {
+		t.Fatalf("the two paths disagree:\n  body     %d %s\n  resolver %d %s",
+			bodyResp.StatusCode, bodyResp.Body, resolverResp.StatusCode, resolverResp.Body)
+	}
+}
+
+// Released ordering: a params that is not an object at all is reported only when this policy
+// would actually govern the operation. Checking it any earlier would surface -32602 for a
+// capability family the operator configured no ACL for, or for a listing this policy only acts on
+// in the response phase — turning requests that flow today into 400s.
+//
+// Only the body path can reach this; the header path is handed a plain string by the resolver.
+func TestMalformedParamsReportedOnlyWhenTheOperationIsGoverned(t *testing.T) {
+	tests := []struct {
+		name     string
+		method   string
+		rejected bool
+	}{
+		{"an invocation of a configured family is reported", "tools/call", true},
+		{"a family with no ACL configured passes", "prompts/get", false},
+		{"a family with no ACL configured passes (resources)", "resources/read", false},
+		{"a listing is not an invocation, so it passes", "tools/list", false},
+		{"a method outside the three families passes", "ping", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// params is a string, not an object — malformed for every case here.
+			body, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0", "id": 1, "method": tc.method, "params": "not-an-object",
+			})
+			ctx := createMockRequestContext(nil)
+			ctx.OperationPath = "/mcp"
+			ctx.Body = &policy.Body{Content: body, Present: true}
+
+			action := toolsDenyAllExcept(t, "toolB").OnRequestBody(context.Background(), ctx, nil)
+			resp, rejected := action.(policy.ImmediateResponse)
+			if rejected != tc.rejected {
+				t.Fatalf("rejected = %v, want %v (got %#v)", rejected, tc.rejected, action)
+			}
+			if !tc.rejected {
+				return
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+				t.Fatalf("expected a JSON-RPC error body: %v", err)
+			}
+			errObj := parsed["error"].(map[string]any)
+			if errObj["code"] != float64(-32602) || errObj["message"] != "Invalid MCP request params" {
+				t.Fatalf("expected the released -32602 params error, got %v", errObj)
+			}
+		})
+	}
+}
+
+// A modern request is governed on Mcp-Method and Mcp-Name, so the body verdict says nothing about
+// it and the ACL applies as usual. Rejecting that body is mcp-spec-validation's job.
+func TestOnRequestHeaders_ModernUnusableBodyStillGovernsOnTheHeaders(t *testing.T) {
+	modern := func(name string) map[string][]string {
+		return map[string][]string{
+			headerProtocolVersion: {"2026-07-28"},
+			headerMcpMethod:       {"tools/call"},
+			headerMcpName:         {name},
+		}
+	}
+	for _, reason := range []string{reasonSyntaxError, reasonInvalidMemberType, reasonNotAnObject, reasonAmbiguous} {
+		t.Run(reason+", denied tool", func(t *testing.T) {
+			p := toolsDenyAllExcept(t, "toolB")
+			ctx := resolvedHeaderPost(modern("toolA"), map[string]string{attrUnusable: reason})
+			resp, ok := p.OnRequestHeaders(context.Background(), ctx, nil).(policy.ImmediateResponse)
+			if !ok || resp.StatusCode != 400 {
+				t.Fatalf("expected the ACL to block the tool named in the headers, got %#v", resp)
+			}
+		})
+
+		t.Run(reason+", allowed tool", func(t *testing.T) {
+			p := toolsDenyAllExcept(t, "toolB")
+			ctx := resolvedHeaderPost(modern("toolB"), map[string]string{attrUnusable: reason})
+			if action := p.OnRequestHeaders(context.Background(), ctx, nil); action != nil {
+				t.Fatalf("expected the allowed tool to pass, got %#v", action)
+			}
+		})
+	}
+}
+
+// 2026-07-28 requires Mcp-Method, so the legacy pass-through does not apply: a modern request
+// without it is refused, even when the body names a tool the ACL would deny.
+func TestOnRequestHeaders_ModernWithoutMcpMethodIsRejected(t *testing.T) {
+	p := toolsDenyAllExcept(t, "toolB")
+	ctx := resolvedHeaderPost(map[string][]string{headerProtocolVersion: {"2026-07-28"}},
+		map[string]string{attrBodyMethod: "tools/call", attrBodyCapabilityName: "toolA"})
+	resp, ok := p.OnRequestHeaders(context.Background(), ctx, nil).(policy.ImmediateResponse)
+	if !ok || resp.StatusCode != 400 {
+		t.Fatalf("expected a 400 rejection, got %#v", resp)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		t.Fatalf("expected a JSON-RPC error body: %v", err)
+	}
+	if code := parsed["error"].(map[string]any)["code"]; code != float64(jsonRpcErrCodeHeaderMismatch) {
+		t.Fatalf("error code = %v, want %d", code, jsonRpcErrCodeHeaderMismatch)
+	}
+}
+
+// Likewise a missing or undecodable Mcp-Name; a legacy body naming no tool is left to the server.
+func TestOnRequestHeaders_ModernWithoutRequiredMcpNameIsRejected(t *testing.T) {
+	for name, headerName := range map[string][]string{
+		"withheld":        nil,
+		"does not decode": {"=?base64?!!!not-base64!!!?="},
+	} {
+		t.Run(name, func(t *testing.T) {
+			headers := map[string][]string{headerProtocolVersion: {"2026-07-28"}, headerMcpMethod: {"tools/call"}}
+			if headerName != nil {
+				headers[headerMcpName] = headerName
+			}
+			p := toolsDenyAllExcept(t, "toolB")
+			ctx := resolvedHeaderPost(headers, map[string]string{attrBodyMethod: "tools/call", attrBodyCapabilityName: "toolB"})
+			resp, ok := p.OnRequestHeaders(context.Background(), ctx, nil).(policy.ImmediateResponse)
+			if !ok || resp.StatusCode != 400 {
+				t.Fatalf("expected a 400 rejection, got %#v", resp)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+				t.Fatalf("expected a JSON-RPC error body: %v", err)
+			}
+			if code := parsed["error"].(map[string]any)["code"]; code != float64(jsonRpcErrCodeHeaderMismatch) {
+				t.Fatalf("error code = %v, want %d", code, jsonRpcErrCodeHeaderMismatch)
+			}
+		})
+	}
+
+	t.Run("legacy body naming no tool is unchanged", func(t *testing.T) {
+		p := toolsDenyAllExcept(t, "toolB")
+		ctx := resolvedHeaderPost(nil, map[string]string{attrBodyMethod: "tools/call"})
+		if resp, ok := p.OnRequestHeaders(context.Background(), ctx, nil).(policy.ImmediateResponse); ok && resp.Body != nil &&
+			strings.Contains(string(resp.Body), "Mcp-Name") {
+			t.Fatalf("a legacy request must not be judged on Mcp-Name, got %s", resp.Body)
+		}
+	})
+}

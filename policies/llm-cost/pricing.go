@@ -30,10 +30,8 @@ var (
 	pricingCacheMu sync.RWMutex
 )
 
-// loadPricingFromFile reads a JSON pricing file at path and returns a map of
-// model key → ModelPricing. Results are cached at the package level by file path;
-// a gateway restart is required to pick up changes to the pricing file.
-// Returns an error if the file cannot be read or parsed.
+// loadPricingFromFile reads a pricing file into a model key → ModelPricing map.
+// Cached per path, so a restart is needed to pick up edits.
 func loadPricingFromFile(path string) (map[string]ModelPricing, error) {
 	pricingCacheMu.RLock()
 	if pm, ok := pricingCache[path]; ok {
@@ -77,8 +75,7 @@ func loadPricingFromDisk(path string) (map[string]ModelPricing, error) {
 	return pm, nil
 }
 
-// ModelPricing holds all cost rate fields for a single model entry.
-// Fields map directly to keys in model_prices.json.
+// ModelPricing holds one model's rates; fields map to model_prices.json keys.
 type ModelPricing struct {
 	Provider string `json:"provider"`
 
@@ -86,21 +83,20 @@ type ModelPricing struct {
 	InputCostPerToken  float64 `json:"input_cost_per_token"`
 	OutputCostPerToken float64 `json:"output_cost_per_token"`
 
-	// Tiered rates — above 128k context window (Gemini 1.x, some OpenAI)
+	// Tiered rates — above a 128k context window
 	InputCostPerTokenAbove128k  float64 `json:"input_cost_per_token_above_128k_tokens"`
 	OutputCostPerTokenAbove128k float64 `json:"output_cost_per_token_above_128k_tokens"`
 
-	// Tiered rates — above 200k context window (Gemini 2.x, Claude Opus 4)
+	// Tiered rates — above a 200k context window
 	InputCostPerTokenAbove200k  float64 `json:"input_cost_per_token_above_200k_tokens"`
 	OutputCostPerTokenAbove200k float64 `json:"output_cost_per_token_above_200k_tokens"`
 
-	// Tiered rates — above 272k context window (gpt-5.4, gpt-5.4-pro with 1.05M context)
+	// Tiered rates — above a 272k context window
 	InputCostPerTokenAbove272k  float64 `json:"input_cost_per_token_above_272k_tokens"`
 	OutputCostPerTokenAbove272k float64 `json:"output_cost_per_token_above_272k_tokens"`
 
-	// ON_DEMAND_PRIORITY service tier rates (Vertex AI Gemini, OpenAI priority).
-	// When usageMetadata.trafficType == "ON_DEMAND_PRIORITY" the _priority variants
-	// are billed instead of the standard rates.
+	// Billed instead of the standard rates when Usage.ServiceTier is "priority".
+	// Providers name the tier differently; the template maps it.
 	InputCostPerTokenPriority                float64 `json:"input_cost_per_token_priority"`
 	OutputCostPerTokenPriority               float64 `json:"output_cost_per_token_priority"`
 	CacheReadInputTokenCostPriority          float64 `json:"cache_read_input_token_cost_priority"`
@@ -112,7 +108,7 @@ type ModelPricing struct {
 	OutputCostPerTokenAbove272kPriority      float64 `json:"output_cost_per_token_above_272k_tokens_priority"`
 	CacheReadInputTokenCostAbove272kPriority float64 `json:"cache_read_input_token_cost_above_272k_tokens_priority"`
 
-	// Flex service tier rates (OpenAI flex processing — lower price, higher latency).
+	// Flex tier rates — lower price, higher latency.
 	InputCostPerTokenFlex       float64 `json:"input_cost_per_token_flex"`
 	OutputCostPerTokenFlex      float64 `json:"output_cost_per_token_flex"`
 	CacheReadInputTokenCostFlex float64 `json:"cache_read_input_token_cost_flex"`
@@ -126,32 +122,29 @@ type ModelPricing struct {
 	CacheCreationInputTokenCostAbove1hrAbove200k float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens"`
 	CacheReadInputTokenCostAbove272k             float64 `json:"cache_read_input_token_cost_above_272k_tokens"`
 
-	// Cached audio token read rate (Gemini models with separate audio caching cost).
 	// When set, cached audio input tokens are billed at this rate instead of
-	// the standard CacheReadInputTokenCost.
+	// CacheReadInputTokenCost.
 	CacheReadInputTokenCostPerAudioToken float64 `json:"cache_read_input_token_cost_per_audio_token"`
 
-	// Reasoning tokens (o-series, Claude 3.7+, Gemini thinking)
+	// Reasoning / thinking tokens, where a provider rates them apart from output.
 	OutputCostPerReasoningToken float64 `json:"output_cost_per_reasoning_token"`
 
-	// Batch API discount (OpenAI)
+	// Batch API discounted rates.
 	InputCostPerTokenBatches  float64 `json:"input_cost_per_token_batches"`
 	OutputCostPerTokenBatches float64 `json:"output_cost_per_token_batches"`
 
-	// Modality-specific token rates (Gemini audio/image models)
+	// Per-modality rates. These tokens are also counted in the prompt/completion
+	// totals, so the generic path subtracts them before billing.
 	InputCostPerAudioToken  float64 `json:"input_cost_per_audio_token"`
 	OutputCostPerAudioToken float64 `json:"output_cost_per_audio_token"`
 	OutputCostPerImageToken float64 `json:"output_cost_per_image_token"`
 
-	// InputCostPerAudioPerSecond is used for providers (e.g. Mistral Voxtral)
-	// that bill audio input by duration rather than by token count. The response
-	// includes a prompt_audio_seconds field; cost = seconds × this rate.
-	// Maps to the existing input_cost_per_audio_per_second JSON field.
+	// For providers billing audio input by duration rather than tokens:
+	// cost = seconds × this rate. Only the Mistral calculator reads it, though
+	// Gemini entries carry it too.
 	InputCostPerAudioPerSecond float64 `json:"input_cost_per_audio_per_second"`
 
-	// Non-token pricing units for specialised model types.
-	// These are stored for reference and future billing support; current calculators
-	// handle them via provider-specific paths rather than generic_calculate_cost.
+	// Carried for reference; no calculator reads these yet.
 	InputCostPerCharacter         float64 `json:"input_cost_per_character"`          // TTS models ($/character)
 	InputCostPerSecond            float64 `json:"input_cost_per_second"`             // Whisper transcription ($/second)
 	OutputCostPerSecond           float64 `json:"output_cost_per_second"`            // Whisper output ($/second)
@@ -161,35 +154,31 @@ type ModelPricing struct {
 	OutputCostPerVideoPerSecond   float64 `json:"output_cost_per_video_per_second"`  // Video generation ($/second)
 	CodeInterpreterCostPerSession float64 `json:"code_interpreter_cost_per_session"` // Container/code interpreter ($/session)
 
-	// Built-in web search tool cost (Anthropic, OpenAI).
-	// The JSON value is an object keyed by search_context_size: low / medium / high.
-	// We decode it as a map and pick the right entry at runtime.
+	// Built-in web search tool cost, keyed by search_context_size: low / medium / high.
+	// Falls back to WebSearchCostPerRequest when the requested size is absent.
 	SearchContextCostPerQuery map[string]float64 `json:"search_context_cost_per_query"`
 
-	// Gemini Live: fixed per-invocation fee for grounding / web search tool calls.
-	// When set, any toolUsePromptTokenCount > 0 triggers this flat fee instead of
-	// per-token billing.
+	// Flat per-call web search rate, charged by every provider that has no tiered
+	// entry above.
 	WebSearchCostPerRequest float64 `json:"web_search_cost_per_request"`
 
-	// Anthropic geo/speed multipliers — stored in provider_specific_entry in the JSON.
-	// We decode this sub-object into ProviderSpecificEntry.
+	// Anthropic geo/speed multipliers, from the provider_specific_entry sub-object.
 	ProviderSpecificEntry map[string]float64 `json:"provider_specific_entry"`
 
-	// Context window limits (used for tiering decisions)
+	// Carried for reference; tiering compares the token count to the thresholds,
+	// not these.
 	MaxInputTokens int64 `json:"max_input_tokens"`
 	MaxTokens      int64 `json:"max_tokens"`
 }
 
-// Usage holds the normalised token counts extracted from an LLM response.
-// Every provider calculator maps its raw response fields into this struct.
+// Usage holds the normalised counts every provider calculator maps its response into.
 type Usage struct {
 	PromptTokens     int64
 	CompletionTokens int64
 	TotalTokens      int64
 
-	// InputTokensForTiering is used to decide the pricing tier (>128k, >200k).
-	// Anthropic includes all input categories (regular + cache writes + reads);
-	// other providers use PromptTokens. Falls back to PromptTokens when zero.
+	// Decides the pricing tier. Anthropic counts all input categories; others use
+	// PromptTokens, as does the zero fallback.
 	InputTokensForTiering int64
 
 	// Cached / reasoning tokens.
@@ -200,84 +189,39 @@ type Usage struct {
 	CacheWrite1hrTokens int64 // 1-hr TTL cache write tokens
 	ReasoningTokens     int64
 
-	// Modality-specific tokens (Gemini multi-modal models).
-	// Audio/image tokens are included in PromptTokens/CompletionTokens;
-	// genericCalculateCost re-bills them at their respective modality rates.
+	// Included in PromptTokens/CompletionTokens, then re-billed at modality rates.
 	AudioInputTokens  int64
 	AudioOutputTokens int64
 	ImageOutputTokens int64
 
-	// CachedAudioInputTokens is the subset of CachedReadTokens that are audio.
-	// Billed at CacheReadInputTokenCostPerAudioToken when that rate is defined.
+	// The audio subset of CachedReadTokens, billed at the per-audio cache rate
+	// when one is defined.
 	CachedAudioInputTokens int64
 
-	// AudioInputSeconds is audio duration for providers that bill by time (e.g. Mistral Voxtral).
-	// Cost = AudioInputSeconds × InputCostPerAudioPerSecond.
+	// Audio duration for providers billing by time (e.g. Mistral Voxtral).
 	AudioInputSeconds float64
 
-	// ToolUsePromptTokens is the Gemini Live search tool token count.
-	// Separate from PromptTokens; billed at WebSearchCostPerRequest or standard input rate.
+	// Gemini Live search tool tokens, separate from PromptTokens.
 	ToolUsePromptTokens int64
 
 	// ServiceTier selects rate variants:
 	//   "priority" → _priority fields, "flex" → _flex fields, "" → standard.
 	ServiceTier string
 
-	// GeminiWebSearchRequests is the grounding query count from candidates[].groundingMetadata.
-	// Google AI Studio: $0.035 × N; Vertex AI: $0.035 flat per call.
+	// GeminiWebSearchRequests is the grounding query count. The Developer API bills
+	// each query; Vertex bills once per grounded request.
 	GeminiWebSearchRequests int64
 
 	// InferenceGeo and Speed are Anthropic-specific routing fields.
 	InferenceGeo string // echoed in response usage.inference_geo
 	Speed        string // NOT echoed — read from ctx.RequestBody ($.speed)
 
-	// WebSearchRequests and SearchContextSize are set for built-in web search tool calls.
-	// SearchContextSize ("low"/"medium"/"high") comes from the request body.
+	// Built-in web search tool calls. SearchContextSize ("low"/"medium"/"high")
+	// comes from the request body.
 	WebSearchRequests int64
 	SearchContextSize string
 }
 
-// providerCalculator is implemented by each provider-specific calculator file.
-type providerCalculator interface {
-	// Normalize extracts token counts from the raw response (and optionally request)
-	// body and returns a normalised Usage struct.
-	Normalize(responseBody []byte, requestBody []byte) (Usage, error)
-
-	// Adjust applies any provider-specific post-calculation corrections
-	// (e.g. geo/speed multipliers for Anthropic)
-	// and returns the final cost in USD.
-	Adjust(baseCost float64, usage Usage, pricing ModelPricing) float64
-}
-
-// selectCalculator returns the appropriate calculator for a given provider value,
-// or nil if the provider is not supported.
-func selectCalculator(provider string) providerCalculator {
-	switch provider {
-	case "openai":
-		return &OpenAICalculator{}
-	case "anthropic":
-		return &AnthropicCalculator{}
-	case "gemini",
-		"vertex_ai",
-		"vertex_ai-language-models",
-		"vertex_ai-chat-models",
-		"vertex_ai-code-chat-models",
-		"vertex_ai-vision-models",
-		"vertex_ai-embedding-models":
-		return &GeminiCalculator{}
-	case "mistral":
-		return &MistralCalculator{}
-	case "bedrock":
-		return &BedrockCalculator{}
-	default:
-		return nil
-	}
-}
-
-// lookupPricing finds the ModelPricing entry for a given model name.
-// It tries: exact match → strip provider prefix → prepend known prefixes → progressive suffix stripping.
-// knownProviderPrefixes are namespaces where the API returns bare model names
-// but the pricing key is namespaced (e.g. "mistral-large-latest" → "mistral/mistral-large-latest").
 var knownProviderPrefixes = []string{
 	"bedrock/",
 	"mistral/",
@@ -288,43 +232,31 @@ var bedrockInferenceProfilePrefixes = []string{
 	"us-gov.", "us.", "eu.", "apac.", "global.", "au.", "jp.",
 }
 
-func lookupPricing(pricingMap map[string]ModelPricing, modelName string) (ModelPricing, bool) {
-	pricing, _, found := lookupPricingWithKey(pricingMap, modelName)
-	return pricing, found
-}
-
-// lookupPricingWithKey returns both the pricing record and the canonical key
-// that matched it. The key is used for analytics so URL ARNs and bare model IDs
-// do not create separate model dimensions for the same pricing entry.
-func lookupPricingWithKey(pricingMap map[string]ModelPricing, modelName string) (ModelPricing, string, bool) {
+// LookupPricingWithKey finds a model's entry, trying: exact match → Bedrock
+// aliases → strip provider prefix → prepend known prefixes. All matches are
+// whole-key. It also returns the key that matched, so analytics does not split
+// one pricing entry across ARN and bare-ID dimensions.
+func LookupPricingWithKey(pricingMap map[string]ModelPricing, modelName string) (ModelPricing, string, bool) {
 	// Canonicalize to lowercase once upfront so all comparisons are case-insensitive.
 	modelName = strings.ToLower(strings.TrimSpace(modelName))
 
-	// tryMatch checks the map and also runs progressive suffix stripping on candidate.
+	// Every path below matches a whole key. Truncating an unmatched name to a
+	// shorter prefix would price an unknown model at some other model's rate, so
+	// a name we do not recognise is reported as unpriced instead.
 	tryMatch := func(candidate string) (ModelPricing, string, bool) {
 		if p, ok := pricingMap[candidate]; ok {
 			return p, candidate, true
 		}
-		// Progressive suffix stripping: "gpt-4o-2024-11-20" → "gpt-4o-2024-11" → "gpt-4o-2024" → "gpt-4o"
-		parts := strings.Split(candidate, "-")
-		for i := len(parts) - 1; i >= 1; i-- {
-			key := strings.Join(parts[:i], "-")
-			if p, ok := pricingMap[key]; ok {
-				return p, key, true
-			}
-		}
 		return ModelPricing{}, "", false
 	}
 
-	// 1. Exact match (with suffix stripping).
+	// 1. Exact match.
 	if p, key, ok := tryMatch(modelName); ok {
 		return p, key, true
 	}
 
-	// Bedrock may identify a foundation model through a cross-region inference
-	// profile (for example "us.anthropic.claude-...") or a URL-encoded ARN.
-	// Exact profile-specific pricing wins above; these aliases are fallbacks for
-	// pricing files that contain only the underlying foundation-model ID.
+	// Bedrock may name a model via an inference profile or ARN. Profile-specific
+	// pricing wins above; these aliases cover files with only the foundation ID.
 	for _, alias := range bedrockModelAliases(modelName) {
 		if p, key, ok := tryMatch(alias); ok {
 			return p, key, true
@@ -336,8 +268,7 @@ func lookupPricingWithKey(pricingMap map[string]ModelPricing, modelName string) 
 		}
 	}
 
-	// 2. Strip provider-prefix duplicates: some responses echo "openai/gpt-4o"
-	//    but the JSON key is "gpt-4o".
+	// 2. Responses may echo "openai/gpt-4o" where the key is "gpt-4o".
 	if idx := strings.Index(modelName, "/"); idx != -1 {
 		bare := modelName[idx+1:]
 		if p, key, ok := tryMatch(bare); ok {
@@ -345,10 +276,8 @@ func lookupPricingWithKey(pricingMap map[string]ModelPricing, modelName string) 
 		}
 	}
 
-	// 3. Try prepending known provider prefixes. Providers such as Mistral
-	//    return bare model names (e.g. "mistral-large-latest") in $.model, but
-	//    the pricing JSON stores them under a namespaced key
-	//    (e.g. "mistral/mistral-large-latest").
+	// 3. The reverse: Mistral returns "mistral-large-latest" where the key is
+	//    "mistral/mistral-large-latest".
 	if !strings.Contains(modelName, "/") {
 		for _, prefix := range knownProviderPrefixes {
 			if p, key, ok := tryMatch(prefix + modelName); ok {
@@ -360,9 +289,8 @@ func lookupPricingWithKey(pricingMap map[string]ModelPricing, modelName string) 
 	return ModelPricing{}, "", false
 }
 
-// bedrockModelAliases returns canonical model IDs for Bedrock foundation-model
-// and system-defined inference-profile identifiers. Application/provisioned
-// profile IDs cannot be resolved locally because they do not encode a model ID.
+// bedrockModelAliases canonicalises foundation-model and system-defined profile IDs.
+// Application/provisioned profile IDs do not encode a model ID, so they cannot resolve.
 func bedrockModelAliases(modelName string) []string {
 	candidate := strings.TrimPrefix(modelName, "bedrock/")
 	for _, marker := range []string{"foundation-model/", "inference-profile/"} {
@@ -385,8 +313,7 @@ func bedrockModelAliases(modelName string) []string {
 	return aliases
 }
 
-// effectiveRates holds the resolved per-token rates after applying context-window
-// tiering and service-tier overrides.
+// effectiveRates holds the rates left after tiering and service-tier overrides.
 type effectiveRates struct {
 	input        float64
 	output       float64
@@ -395,8 +322,7 @@ type effectiveRates struct {
 	cacheWrite1h float64
 }
 
-// resolveRates selects the correct per-token rates for the given usage and pricing,
-// applying context-window tiering first and then service-tier overrides on top.
+// resolveRates applies context-window tiering, then service-tier overrides on top.
 func resolveRates(usage Usage, pricing ModelPricing) effectiveRates {
 	r := effectiveRates{
 		input:        pricing.InputCostPerToken,
@@ -406,13 +332,12 @@ func resolveRates(usage Usage, pricing ModelPricing) effectiveRates {
 		cacheWrite1h: pricing.CacheCreationInputTokenCostAbove1hr,
 	}
 	if r.cacheWrite1h == 0 {
-		// Fallback: if no distinct 1hr rate is defined, use the standard write rate.
+		// No distinct 1hr rate: fall back to the standard write rate.
 		r.cacheWrite1h = r.cacheWrite5m
 	}
 
-	// Use provider-specific input token count for tier decisions when available.
-	// Anthropic defines the 200k threshold as input_tokens + cache tokens (no outputs).
-	// All other providers (Gemini, OpenAI, etc.) tier on prompt tokens only.
+	// Anthropic's 200k threshold counts input + cache tokens; everyone else tiers
+	// on prompt tokens alone.
 	tierTokens := usage.InputTokensForTiering
 	if tierTokens == 0 {
 		tierTokens = usage.PromptTokens
@@ -438,8 +363,7 @@ func resolveRates(usage Usage, pricing ModelPricing) effectiveRates {
 		}
 		if pricing.CacheCreationInputTokenCostAbove200k > 0 {
 			r.cacheWrite5m = pricing.CacheCreationInputTokenCostAbove200k
-			// Preserve the previous fallback for pricing entries that define only
-			// a general >200k cache-write rate.
+			// For entries defining only a general >200k cache-write rate.
 			r.cacheWrite1h = pricing.CacheCreationInputTokenCostAbove200k
 		}
 		if pricing.CacheCreationInputTokenCostAbove1hrAbove200k > 0 {
@@ -452,9 +376,8 @@ func resolveRates(usage Usage, pricing ModelPricing) effectiveRates {
 		}
 	}
 
-	// Service-tier override: priority and flex requests use their respective rate
-	// variants. Priority tiers are checked from the narrowest threshold downward so
-	// that a >272k prompt on a priority tier gets the right compounding rate.
+	// Priority thresholds are checked narrowest first, so a >272k priority prompt
+	// gets the compounded rate.
 	switch usage.ServiceTier {
 	case "priority":
 		switch {
@@ -505,17 +428,44 @@ func resolveRates(usage Usage, pricing ModelPricing) effectiveRates {
 	return r
 }
 
-// genericCalculateCost computes cost in USD from a normalised Usage and ModelPricing.
-// Handles context-window tiering, service tiers, cache costs, reasoning tokens,
-// audio/image modality tokens, and web search fees. Provider-specific adjustments
-// are applied in calculator.Adjust() after this call.
-func genericCalculateCost(usage Usage, pricing ModelPricing) float64 {
+// CostComponents holds each separately-rated part of one request's cost. The
+// parts are reported individually for analytics and summed for billing, so both
+// come from the same arithmetic.
+type CostComponents struct {
+	Prompt       float64
+	Completion   float64
+	CacheRead    float64
+	CacheWrite5m float64
+	CacheWrite1h float64
+	Reasoning    float64
+	AudioInput   float64
+	AudioOutput  float64
+	ImageOutput  float64
+	AudioSeconds float64
+	WebSearch    float64
+	ToolUse      float64
+}
+
+// total is the amount billed for the request before any provider-specific
+// adjustment.
+func (c CostComponents) Total() float64 {
+	return c.Prompt + c.Completion + c.CacheRead + c.CacheWrite5m + c.CacheWrite1h +
+		c.Reasoning + c.WebSearch + c.ToolUse + c.AudioInput + c.AudioOutput +
+		c.ImageOutput + c.AudioSeconds
+}
+
+// GenericCalculateCost prices one request using the provider-agnostic rules.
+func GenericCalculateCost(usage Usage, pricing ModelPricing) float64 {
+	return CalculateCostComponents(usage, pricing).Total()
+}
+
+// CalculateCostComponents rates each category separately, for breakdown and sum.
+func CalculateCostComponents(usage Usage, pricing ModelPricing) CostComponents {
 	r := resolveRates(usage, pricing)
 
 	// --- Token costs ---------------------------------------------------------
 
-	// Exclude cached, cache-write, and audio tokens from the regular prompt count;
-	// each category is billed separately below.
+	// Cached, cache-write and audio tokens are billed separately below.
 	regularPromptTokens := usage.PromptTokens - usage.CachedReadTokens - usage.CacheWriteTokens - usage.CacheWrite1hrTokens - usage.AudioInputTokens
 	if regularPromptTokens < 0 {
 		regularPromptTokens = 0
@@ -529,8 +479,7 @@ func genericCalculateCost(usage Usage, pricing ModelPricing) float64 {
 	promptCost := float64(regularPromptTokens) * r.input
 	completionCost := float64(regularCompletionTokens) * r.output
 
-	// Cache read: when the model defines a per-audio cache rate, split cached
-	// tokens by modality; otherwise bill all at the standard cache-read rate.
+	// Split cached tokens by modality only when a per-audio cache rate exists.
 	var cacheReadCost float64
 	if pricing.CacheReadInputTokenCostPerAudioToken > 0 {
 		textCachedTokens := usage.CachedReadTokens - usage.CachedAudioInputTokens
@@ -542,7 +491,10 @@ func genericCalculateCost(usage Usage, pricing ModelPricing) float64 {
 	} else {
 		cacheReadCost = float64(usage.CachedReadTokens) * r.cacheRead
 	}
-	cacheWriteCost := float64(usage.CacheWriteTokens)*r.cacheWrite5m + float64(usage.CacheWrite1hrTokens)*r.cacheWrite1h
+	// Per TTL: providers offering both rate them differently and report them
+	// as separate fields.
+	cacheWrite5mCost := float64(usage.CacheWriteTokens) * r.cacheWrite5m
+	cacheWrite1hCost := float64(usage.CacheWrite1hrTokens) * r.cacheWrite1h
 
 	// Reasoning tokens billed at their own rate if defined, otherwise at output rate.
 	reasoningRate := pricing.OutputCostPerReasoningToken
@@ -577,20 +529,10 @@ func genericCalculateCost(usage Usage, pricing ModelPricing) float64 {
 
 	// --- Tool / search costs -------------------------------------------------
 
-	// Web search: variable rate keyed by context size, or flat rate per call.
+	// Rate by context size, falling back to the single per-call rate.
 	var webSearchCost float64
 	if usage.WebSearchRequests > 0 {
-		if len(pricing.SearchContextCostPerQuery) > 0 {
-			size := usage.SearchContextSize
-			if size == "" {
-				size = "medium"
-			}
-			if rate, ok := pricing.SearchContextCostPerQuery["search_context_size_"+size]; ok {
-				webSearchCost = float64(usage.WebSearchRequests) * rate
-			}
-		} else if pricing.WebSearchCostPerRequest > 0 {
-			webSearchCost = float64(usage.WebSearchRequests) * pricing.WebSearchCostPerRequest
-		}
+		webSearchCost = float64(usage.WebSearchRequests) * webSearchRate(usage.SearchContextSize, pricing)
 	}
 
 	// Gemini Live tool-use tokens: flat fee when defined, otherwise standard input rate.
@@ -603,5 +545,30 @@ func genericCalculateCost(usage Usage, pricing ModelPricing) float64 {
 		}
 	}
 
-	return promptCost + completionCost + cacheReadCost + cacheWriteCost + reasoningCost + webSearchCost + toolUseCost + audioInputCost + audioOutputCost + imageOutputCost + audioSecondsCost
+	return CostComponents{
+		Prompt:       promptCost,
+		Completion:   completionCost,
+		CacheRead:    cacheReadCost,
+		CacheWrite5m: cacheWrite5mCost,
+		CacheWrite1h: cacheWrite1hCost,
+		Reasoning:    reasoningCost,
+		AudioInput:   audioInputCost,
+		AudioOutput:  audioOutputCost,
+		ImageOutput:  imageOutputCost,
+		AudioSeconds: audioSecondsCost,
+		WebSearch:    webSearchCost,
+		ToolUse:      toolUseCost,
+	}
+}
+
+// webSearchRate resolves the rate for a context size. The single per-call rate is
+// the fallback whenever the map does not answer — including when it lacks the size.
+func webSearchRate(size string, pricing ModelPricing) float64 {
+	if size == "" {
+		size = "medium"
+	}
+	if rate, ok := pricing.SearchContextCostPerQuery["search_context_size_"+size]; ok && rate > 0 {
+		return rate
+	}
+	return pricing.WebSearchCostPerRequest
 }

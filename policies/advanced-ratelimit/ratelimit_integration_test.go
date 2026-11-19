@@ -2254,20 +2254,20 @@ func TestParseQuotasAndHelpers(t *testing.T) {
 			"onRateLimitExceeded": map[string]interface{}{"statusCode": float64(429), "body": "a"},
 			"memory":              map[string]interface{}{"cleanupInterval": "1m"},
 		}
-		k1 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", params1)
-		k2 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", params2)
+		k1 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", params1, "")
+		k2 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", params2, "")
 		if k1 != k2 {
 			t.Fatalf("expected deterministic key regardless of map order, got %q vs %q", k1, k2)
 		}
 		params2["headers"].(map[string]interface{})["includeIETF"] = false
-		k3 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", params2)
+		k3 := getBaseCacheKey("route1", "api1", "fixed-window", "memory", params2, "")
 		if k3 == k1 {
 			t.Fatalf("expected cache key change when significant params change")
 		}
 		// Backend is part of the key: same route/algo/params under a different backend
 		// must not collide (memory vs redis-local-async share the cache path).
-		if getBaseCacheKey("route1", "api1", "fixed-window", "memory", params1) ==
-			getBaseCacheKey("route1", "api1", "fixed-window", "redis-local-async", params1) {
+		if getBaseCacheKey("route1", "api1", "fixed-window", "memory", params1, "") ==
+			getBaseCacheKey("route1", "api1", "fixed-window", "redis-local-async", params1, "") {
 			t.Fatalf("expected distinct cache keys for different backends")
 		}
 	})

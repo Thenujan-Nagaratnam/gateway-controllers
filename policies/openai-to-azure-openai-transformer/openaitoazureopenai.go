@@ -84,14 +84,9 @@ func (p *TranslatorPolicy) OnRequestBody(
 		return policy.UpstreamRequestModifications{}
 	}
 
-	deployment := p.params.Model
-	if deployment == "" {
-		deployment = readModelFromBody(reqCtx)
-	}
-	if deployment == "" {
-		return errResponse(400,
-			"'model' is required in the request body (or as a policy parameter) "+
-				"to derive the Azure deployment id.")
+	deployment, err := p.resolveDeployment(reqCtx)
+	if err != nil {
+		return errResponse(400, err.Error())
 	}
 
 	newPath := buildAzurePath(deployment, p.params.PathSuffix, p.params.APIVersion)
@@ -135,16 +130,48 @@ func selectedProvider(reqCtx *policy.RequestContext) string {
 	return strings.TrimSpace(v)
 }
 
-func readModelFromBody(reqCtx *policy.RequestContext) string {
+// resolveDeployment returns the Azure deployment id that will serve this
+// request. The model named in the request payload takes priority; the
+// configured model is a fallback, used only when the payload names none. A
+// payload model that is absent, null or an empty string counts as none; a
+// whitespace-only one is malformed and is rejected even when a fallback exists.
+//
+// This policy has no response phase, so it records no effective model: nothing
+// downstream of it reports one.
+func (p *TranslatorPolicy) resolveDeployment(reqCtx *policy.RequestContext) (string, error) {
+	raw, present := readModelFromBody(reqCtx)
+	if present && raw != nil {
+		model, isString := raw.(string)
+		if !isString {
+			return "", fmt.Errorf("request field 'model' must be a string")
+		}
+		if trimmed := strings.TrimSpace(model); trimmed != "" {
+			return trimmed, nil
+		} else if model != "" {
+			return "", fmt.Errorf("request field 'model' must not be blank")
+		}
+	}
+
+	if p.params.Model != "" {
+		return p.params.Model, nil
+	}
+	return "", fmt.Errorf("'model' is required in the request body (or as a policy parameter) " +
+		"to derive the Azure deployment id.")
+}
+
+// readModelFromBody returns the raw "model" value and whether the payload
+// carried one at all, so a non-string can be rejected rather than coerced. An
+// absent or unparseable body simply names no model.
+func readModelFromBody(reqCtx *policy.RequestContext) (interface{}, bool) {
 	if reqCtx.Body == nil || !reqCtx.Body.Present || len(reqCtx.Body.Content) == 0 {
-		return ""
+		return nil, false
 	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal(reqCtx.Body.Content, &payload); err != nil {
-		return ""
+		return nil, false
 	}
-	model, _ := payload["model"].(string)
-	return strings.TrimSpace(model)
+	raw, present := payload["model"]
+	return raw, present
 }
 
 // buildAzurePath escapes the deployment as a single path segment and the

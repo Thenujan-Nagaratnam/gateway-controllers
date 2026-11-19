@@ -67,12 +67,23 @@ func TestReadModelFromBody(t *testing.T) {
 	reqCtx := &policy.RequestContext{
 		Body: &policy.Body{Present: true, Content: []byte(`{"model":"gpt-4o-mini","messages":[]}`)},
 	}
-	if got := readModelFromBody(reqCtx); got != "gpt-4o-mini" {
-		t.Errorf("expected model read from body 'gpt-4o-mini', got %q", got)
+	raw, present := readModelFromBody(reqCtx)
+	if !present || raw != "gpt-4o-mini" {
+		t.Errorf("expected model read from body 'gpt-4o-mini', got %v (present=%v)", raw, present)
 	}
-	// Empty/absent body yields no deployment.
-	if got := readModelFromBody(&policy.RequestContext{}); got != "" {
-		t.Errorf("expected empty string for missing body, got %q", got)
+	// An absent body names no model at all — distinct from naming an empty one.
+	if raw, present := readModelFromBody(&policy.RequestContext{}); present || raw != nil {
+		t.Errorf("expected no model for missing body, got %v (present=%v)", raw, present)
+	}
+	// A non-string is returned as-is so the caller can reject rather than coerce it.
+	raw, present = readModelFromBody(&policy.RequestContext{
+		Body: &policy.Body{Present: true, Content: []byte(`{"model":123}`)},
+	})
+	if !present {
+		t.Error("expected a non-string model to be reported as present")
+	}
+	if _, isString := raw.(string); isString {
+		t.Errorf("expected a non-string model to survive as non-string, got %T", raw)
 	}
 }
 
@@ -153,5 +164,63 @@ func TestShouldRun_RoutingGates(t *testing.T) {
 	}
 	if p.shouldRun(newReqCtx("", map[string]interface{}{"selected_provider": "gemini-provider"})) {
 		t.Error("non-matching selected_provider: expected to be skipped")
+	}
+}
+
+// TestResolveDeployment covers every row of the resolution table. Azure OpenAI
+// resolved configuration-first until the payload-first rule was adopted for all
+// five policies, and it coerced a non-string model to "" rather than rejecting
+// it.
+func TestResolveDeployment(t *testing.T) {
+	const configured = "gpt-4o"
+	const requested = "gpt-4o-mini"
+
+	cases := []struct {
+		name           string
+		configured     string
+		body           string // empty means no body at all
+		wantDeployment string // empty means the request must be rejected
+		wantErr        string
+	}{
+		{"request overrides the configured deployment", configured, `{"model":"` + requested + `"}`, requested, ""},
+		{"configured deployment is the fallback when the request names none", configured, `{"messages":[]}`, configured, ""},
+		{"empty request model falls back to the configured deployment", configured, `{"model":""}`, configured, ""},
+		{"null request model falls back to the configured deployment", configured, `{"model":null}`, configured, ""},
+		{"absent body falls back to the configured deployment", configured, "", configured, ""},
+		{"unparseable body falls back to the configured deployment", configured, `not json`, configured, ""},
+		{"request model used when none is configured", "", `{"model":"` + requested + `"}`, requested, ""},
+		{"padded request model is trimmed, not rejected", "", `{"model":"  ` + requested + `  "}`, requested, ""},
+		{"neither source supplies one", "", `{"messages":[]}`, "", "'model' is required in the request body"},
+		{"whitespace-only request model is malformed", "", `{"model":"   "}`, "", "must not be blank"},
+		{"whitespace-only is malformed even with a configured deployment", configured, `{"model":"   "}`, "", "must not be blank"},
+		{"non-string request model is a bad request", "", `{"model":123}`, "", "must be a string"},
+		{"non-string is a bad request even with a configured deployment", configured, `{"model":123}`, "", "must be a string"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &TranslatorPolicy{params: PolicyParams{Model: tc.configured, APIVersion: "2024-02-15-preview"}}
+			reqCtx := &policy.RequestContext{}
+			if tc.body != "" {
+				reqCtx.Body = &policy.Body{Present: true, Content: []byte(tc.body)}
+			}
+			got, err := p.resolveDeployment(reqCtx)
+
+			if tc.wantDeployment == "" {
+				if err == nil {
+					t.Fatalf("expected rejection, got deployment %q", got)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error = %v, want it to mention %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantDeployment {
+				t.Errorf("resolved deployment = %q, want %q", got, tc.wantDeployment)
+			}
+		})
 	}
 }

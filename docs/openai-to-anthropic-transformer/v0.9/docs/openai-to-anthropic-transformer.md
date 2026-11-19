@@ -32,9 +32,24 @@ Use this policy when you need to:
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `model` | Yes | — | Anthropic model name used in the translated request (for example `claude-sonnet-4-20250514`). Overrides the OpenAI `model` field. |
+| `model` | No | Request `model` | Fallback Anthropic model name (for example `claude-sonnet-4-20250514`), used when the request payload names none. It does **not** override a model the client named. |
 | `providerId` | No | — | Provider this translator targets. Used as the upstream cluster name and, in multi-provider mode, matched case-insensitively against `SharedContext.Metadata["selected_provider"]`. When omitted, routing is left to the route's default upstream. |
 | `anthropicVersion` | No | `2023-06-01` | Value of the `anthropic-version` request header sent upstream. |
+
+## Model resolution
+
+`model` is optional, and it is a **fallback**. It does not override what the client asks for. The model that serves a request is resolved in one order, the same order every WSO2 LLM transformer uses:
+
+1. the `model` field of the request payload, whenever it names one, this takes priority;
+2. otherwise the `model` parameter configured on this policy;
+3. if neither supplies one, the request is rejected with a 400 naming both sources.
+
+An absent, `null` or empty (`""`) request `model` counts as naming none, so the configured value applies. A **whitespace-only** `model` is rejected as malformed even when a model is configured, it is bad input rather than a missing value. A non-string `model` is rejected as a bad request.
+
+Set `model` to give clients that name no model a sensible default. There is no way to force every request onto one model: a client that names a model is always served the model it named.
+
+Responses report the model that actually served the request, in buffered and streamed
+responses alike, not the configured value, which may be unset. A response therefore never misattributes its own output.
 
 ## Example
 

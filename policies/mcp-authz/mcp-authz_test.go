@@ -1326,3 +1326,173 @@ func TestGovernedInvocation_PromotesMcpOAuthAuthType(t *testing.T) {
 		t.Errorf("expected AuthType=%q, got %q", McpOAuthzAuthType, authCtx.AuthType)
 	}
 }
+
+// TestGenerateResourcePath_GatewayUrlHandling covers gatewayUrl, the recommended
+// replacement for gatewayHost: when set, it is used verbatim as the full base URL
+// — no scheme/port inference from the request, and it takes priority over both
+// vhost and gatewayHost.
+func TestGenerateResourcePath_GatewayUrlHandling(t *testing.T) {
+	tests := []struct {
+		name        string
+		gatewayURL  string
+		gatewayHost string
+		vhost       string
+		scheme      string
+		authority   string
+		want        string
+	}{
+		{
+			name:       "gatewayUrl used verbatim, no port inference at all",
+			gatewayURL: "https://shriek-prescribe-pleading.ngrok-free.dev",
+			scheme:     "https",
+			authority:  "localhost:8443",
+			want:       "https://shriek-prescribe-pleading.ngrok-free.dev/.well-known/oauth-protected-resource",
+		},
+		{
+			name:       "gatewayUrl with its own port used verbatim",
+			gatewayURL: "https://gateway.com:9443",
+			scheme:     "https",
+			authority:  "localhost:8443",
+			want:       "https://gateway.com:9443/.well-known/oauth-protected-resource",
+		},
+		{
+			name:       "trailing slash on gatewayUrl is trimmed, not doubled",
+			gatewayURL: "https://gateway.com/",
+			scheme:     "https",
+			authority:  "localhost:8443",
+			want:       "https://gateway.com/.well-known/oauth-protected-resource",
+		},
+		{
+			name:        "gatewayUrl overrides gatewayHost when both are set",
+			gatewayURL:  "https://gateway.com",
+			gatewayHost: "should-be-ignored.example.com",
+			scheme:      "https",
+			authority:   "localhost:8443",
+			want:        "https://gateway.com/.well-known/oauth-protected-resource",
+		},
+		{
+			name:       "gatewayUrl overrides vhost when both are set",
+			gatewayURL: "https://gateway.com",
+			vhost:      "should-be-ignored.example.com",
+			scheme:     "https",
+			authority:  "localhost:8443",
+			want:       "https://gateway.com/.well-known/oauth-protected-resource",
+		},
+		{
+			// The design question this locks in: adding a non-empty schema
+			// default for gatewayUrl would make it win here too, permanently
+			// hiding gatewayHost — so it must stay empty/absent by default.
+			name:        "gatewayUrl overrides both gatewayHost AND vhost when all three are set simultaneously",
+			gatewayURL:  "https://gateway.com",
+			gatewayHost: "should-be-ignored-1.example.com",
+			vhost:       "should-be-ignored-2.example.com",
+			scheme:      "https",
+			authority:   "localhost:8443",
+			want:        "https://gateway.com/.well-known/oauth-protected-resource",
+		},
+		{
+			// gatewayUrl absent (the "not migrated yet" case, and what every
+			// deployment looks like today since there is no schema default) —
+			// must fall through to gatewayHost exactly as it did before
+			// gatewayUrl existed. The regression this whole table exists to
+			// guard: adding gatewayUrl must not change any existing
+			// gatewayHost-only deployment's behavior.
+			name:        "gatewayUrl absent falls through to gatewayHost",
+			gatewayHost: "legacy.example.com",
+			scheme:      "https",
+			authority:   "localhost:8443",
+			want:        "https://legacy.example.com:8443/.well-known/oauth-protected-resource",
+		},
+		{
+			// gatewayUrl absent AND gatewayHost absent: falls all the way
+			// through to the original "localhost" default — the
+			// pre-gatewayUrl baseline, unaffected.
+			name:      "gatewayUrl and gatewayHost both absent falls through to localhost default",
+			scheme:    "https",
+			authority: "localhost:8443",
+			want:      "https://localhost:8443/.well-known/oauth-protected-resource",
+		},
+		{
+			// gatewayUrl absent, vhost set, gatewayHost absent: vhost's
+			// existing priority over gatewayHost is unaffected by gatewayUrl's
+			// mere existence.
+			name:      "gatewayUrl absent, vhost still takes its existing priority over gatewayHost",
+			vhost:     "api.example.com",
+			scheme:    "https",
+			authority: "localhost:8443",
+			want:      "https://api.example.com:8443/.well-known/oauth-protected-resource",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := generateResourcePath(tt.scheme, tt.authority, tt.vhost, "", tt.gatewayHost, tt.gatewayURL, WellKnownPath)
+			if got != tt.want {
+				t.Errorf("generateResourcePath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGenerateWwwAuthenticateHeader_MetadataExtraction covers the mcp-authz-
+// specific layer mcp-auth doesn't have: gatewayHost/gatewayUrl arrive here via
+// shared reqCtx.Metadata (populated by mcp-auth running earlier in the chain),
+// extracted via a type assertion (`metadata["gatewayUrl"].(string)`) rather than
+// read directly from this policy's own params. That extraction must stay safe —
+// no panic — when the key is missing, the map itself is nil, or the stored value
+// isn't a string, and it must still respect gatewayUrl's priority over
+// gatewayHost once both are present.
+func TestGenerateWwwAuthenticateHeader_MetadataExtraction(t *testing.T) {
+	tests := []struct {
+		name       string
+		metadata   map[string]any
+		scheme     string
+		authority  string
+		wantPrefix string
+	}{
+		{
+			name:       "nil metadata map does not panic, falls through to localhost default",
+			metadata:   nil,
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://localhost:8443/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:       "metadata present but missing both keys falls through to localhost default",
+			metadata:   map[string]any{"unrelated": "value"},
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://localhost:8443/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:       "gatewayUrl present with the wrong type does not panic, falls through to gatewayHost",
+			metadata:   map[string]any{"gatewayHost": "legacy.example.com", "gatewayUrl": 12345},
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://legacy.example.com:8443/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:       "gatewayHost present with the wrong type does not panic, falls through to localhost default",
+			metadata:   map[string]any{"gatewayHost": true},
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://localhost:8443/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:       "both present and correctly typed: gatewayUrl still wins via the metadata extraction path",
+			metadata:   map[string]any{"gatewayHost": "should-be-ignored.example.com", "gatewayUrl": "https://gateway.com"},
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://gateway.com/.well-known/oauth-protected-resource"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := generateWwwAuthenticateHeader(tt.scheme, tt.authority, "", "", tt.metadata, nil, "", "")
+			if !strings.HasPrefix(got, tt.wantPrefix) {
+				t.Errorf("generateWwwAuthenticateHeader() = %q, want prefix %q", got, tt.wantPrefix)
+			}
+		})
+	}
+}

@@ -452,7 +452,7 @@ func (p *TranslatorPolicy) streamStateFor(
 		return nil
 	}
 
-	state := newStreamState(p.params.Model, requestID(shared), respCtx.ResponseStatus)
+	state := newStreamState(effectiveModel(shared, p.params.Model), requestID(shared), respCtx.ResponseStatus)
 	shared.Metadata[streamStateMetadataKey] = state
 	return state
 }

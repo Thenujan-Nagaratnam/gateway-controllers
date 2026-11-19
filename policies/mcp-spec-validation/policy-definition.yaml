@@ -1,0 +1,30 @@
+name: mcp-spec-validation
+version: v0.9.0
+description: |
+  Validates incoming MCP POST requests for conformance with the MCP specification applicable
+  to the declared protocol version.
+
+  For all MCP protocol versions, the policy rejects a request body that cannot be read
+  unambiguously, such as malformed JSON, a batch, or a member of the wrong type or with an
+  ambiguous name.
+
+  For MCP 2026-07-28 and later, the policy additionally validates the MCP request headers.
+  It verifies that required headers such as MCP-Protocol-Version, Mcp-Method, and Mcp-Name
+  are present when applicable, contain valid HTTP field values, and are consistent with the
+  corresponding protocol version, method, and capability identifier in the request body. A
+  MCP-Protocol-Version that is not a dated revision is rejected as malformed.
+
+  Requests that are malformed or contain inconsistent MCP header and body metadata are
+  rejected with the appropriate protocol-level error response.
+
+  On a gateway without the MCP operation resolver, only the request body is validated, since
+  such a gateway accepts only MCP versions that mirror nothing into headers.
+
+parameters:
+  type: object
+  additionalProperties: false
+  properties: {}
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

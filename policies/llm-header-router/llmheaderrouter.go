@@ -104,8 +104,17 @@ func (p *RouterPolicy) Mode() policy.ProcessingMode {
 }
 
 // OnRequestHeaders performs provider selection during the request-header phase
-// so the selection is published before header-phase consumers (upstream auth
-// injection) evaluate their selected_provider gate.
+// and acts on it: it routes the request to the selected provider's named
+// upstream and publishes the selection, so header-phase consumers (upstream
+// auth injection) evaluate their selected_provider gate against a choice that
+// has already been made.
+//
+// Routing belongs in this phase so the cluster is known before the request is
+// forwarded, matching the contract the model routers implement — see
+// model-round-robin's OnRequestHeaders. Publishing a selection without routing
+// it leaves the request at the default cluster, the primary, whichever provider
+// was chosen; it then reaches the selected provider only if some later policy
+// happens to route on its behalf.
 func (p *RouterPolicy) OnRequestHeaders(
 	_ context.Context,
 	reqCtx *policy.RequestHeaderContext,
@@ -117,8 +126,16 @@ func (p *RouterPolicy) OnRequestHeaders(
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]interface{}{}
 	}
-	p.publishSelection(reqCtx.Metadata, reqCtx.Headers)
-	return policy.UpstreamRequestHeaderModifications{}
+	mods := policy.UpstreamRequestHeaderModifications{}
+
+	// Route only a selection this policy just made. When nothing was selected,
+	// or an earlier policy already chose, leave the upstream unset so the
+	// primary fallback, its authentication and the default cluster logic keep
+	// working — and so an upstream another policy set is never overridden.
+	if selected := p.publishSelection(reqCtx.Metadata, reqCtx.Headers); selected != "" {
+		mods.UpstreamName = &selected
+	}
+	return mods
 }
 
 // OnRequestBody republishes the selection in the body phase as an idempotent
@@ -146,9 +163,13 @@ func (p *RouterPolicy) OnRequestBody(
 // matches, selected_provider is left unset so the LlmProxy uses its primary
 // provider. If selected_provider is already set by an upstream policy or an
 // earlier phase, it is left untouched. Shared by the header and body phases.
-func (p *RouterPolicy) publishSelection(metadata map[string]interface{}, headers *policy.Headers) {
+//
+// It returns the provider it published, or "" when it published nothing —
+// either because nothing matched, or because an earlier policy had already
+// chosen. The caller routes only what this policy itself selected.
+func (p *RouterPolicy) publishSelection(metadata map[string]interface{}, headers *policy.Headers) string {
 	if existing, ok := metadata[MetadataKeySelectedProvider].(string); ok && existing != "" {
-		return
+		return ""
 	}
 
 	headerValue := readHeader(headers, p.params.HeaderName)
@@ -162,6 +183,8 @@ func (p *RouterPolicy) publishSelection(metadata map[string]interface{}, headers
 	slog.Debug(PolicyName+": provider selected",
 		"headerName", p.params.HeaderName, "headerValue", headerValue,
 		"provider", provider, "source", source)
+
+	return provider
 }
 
 // selectProvider picks a provider id for the given header value and

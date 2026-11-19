@@ -34,13 +34,13 @@ func TestRedisClientRegistry(t *testing.T) {
 	opts := func(db int) *redis.Options { return &redis.Options{Addr: addr, DB: db} }
 
 	// First call creates and pings.
-	c1, created1, err1 := getOrCreateRedisClient(opts(0), time.Second)
+	c1, created1, err1 := getOrCreateRedisClient(opts(0), "", time.Second)
 	if !created1 || err1 != nil {
 		t.Fatalf("first call: created=%v err=%v (want true,nil)", created1, err1)
 	}
 
 	// Identical config reuses the same client (no second create).
-	c2, created2, err2 := getOrCreateRedisClient(opts(0), time.Second)
+	c2, created2, err2 := getOrCreateRedisClient(opts(0), "", time.Second)
 	if created2 || err2 != nil {
 		t.Fatalf("second call: created=%v err=%v (want false,nil)", created2, err2)
 	}
@@ -50,13 +50,13 @@ func TestRedisClientRegistry(t *testing.T) {
 
 	// Reuse must NOT re-ping: close Redis, re-get -> still reused, no error.
 	mr.Close()
-	c3, created3, err3 := getOrCreateRedisClient(opts(0), time.Second)
+	c3, created3, err3 := getOrCreateRedisClient(opts(0), "", time.Second)
 	if created3 || err3 != nil || c3 != c1 {
 		t.Fatalf("reuse after Redis down should skip ping: created=%v err=%v same=%v", created3, err3, c3 == c1)
 	}
 
 	// Different connection config (db) -> distinct client.
-	c4, created4, _ := getOrCreateRedisClient(opts(1), time.Second)
+	c4, created4, _ := getOrCreateRedisClient(opts(1), "", time.Second)
 	if !created4 || c4 == c1 {
 		t.Fatalf("different db should create a distinct client (created=%v same=%v)", created4, c4 == c1)
 	}

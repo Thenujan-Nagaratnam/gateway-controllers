@@ -16,6 +16,13 @@
  * under the License.
  */
 
+// Package mcpauthn decides whether an MCP request must present a token, and delegates the check
+// to jwt-auth. The operation it decides on comes from one source per era, never both:
+//
+//	modern (2026-07-28+)  the mirrored Mcp-Method / Mcp-Name headers; the body is not read
+//	legacy                the body, via the route's resolver or this policy's own parse
+//
+// Checking that a modern request's headers describe its body is mcp-spec-validation's job.
 package mcpauthn
 
 import (
@@ -25,6 +32,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -49,6 +57,14 @@ const (
 	JSONRPCVersion        = "2.0"
 	JSONRPCParseError     = -32700 // invalid JSON was received
 	JSONRPCInvalidRequest = -32600 // valid JSON that is not a valid request object
+	JSONRPCHeaderMismatch = -32020 // a required MCP 2026-07-28 mirrored header is missing
+
+	// The values the resolver publishes under mcp.body.unusable. Only syntax-error describes a
+	// document that would not parse; the rest parsed but are not a usable request object.
+	reasonSyntaxError       = "syntax-error"
+	reasonInvalidMemberType = "invalid-member-type"
+	reasonNotAnObject       = "not-an-object"
+	reasonAmbiguous         = "ambiguous"
 )
 
 type McpAuthPolicy struct {
@@ -57,7 +73,8 @@ type McpAuthPolicy struct {
 	RequiredScopes      []string      `json:"requiredScopes"`
 	OnFailureStatusCode int           `json:"onFailureStatusCode"`
 	ErrorMessageFormat  string        `json:"errorMessageFormat"`
-	GatewayHost         string        `json:"gatewayHost"`
+	GatewayHost         string        `json:"gatewayHost"` // Deprecated: use GatewayURL.
+	GatewayURL          string        `json:"gatewayUrl"`
 }
 
 type ProtectedResourceMetadata struct {
@@ -110,8 +127,49 @@ func GetPolicy(
 	ins.OnFailureStatusCode = getIntParam(params, "onFailureStatusCode", 401)
 	ins.ErrorMessageFormat = getStringParam(params, "errorMessageFormat", "json")
 	ins.GatewayHost = getStringParam(params, "gatewayHost", "")
+	gatewayURL := strings.TrimRight(getStringParam(params, "gatewayUrl", ""), "/")
+	if gatewayURL != "" {
+		if err := validateGatewayURL(gatewayURL); err != nil {
+			return nil, fmt.Errorf("invalid gatewayUrl: %w", err)
+		}
+	}
+	ins.GatewayURL = gatewayURL
+	logDeprecatedParamUsage(ins.GatewayHost, ins.GatewayURL)
 
 	return ins, nil
+}
+
+// validateGatewayURL requires an absolute http(s) URL with a host and no query or fragment,
+// since both metadata producers append /.well-known/oauth-protected-resource to it verbatim.
+func validateGatewayURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("scheme must be http or https, got %q", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return errors.New("host is required")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("must not include a query string or fragment")
+	}
+	return nil
+}
+
+// Logs a warning for the deprecated gatewayHost param when used, noting when it's ignored in favor of gatewayUrl.
+// "localhost" is gatewayHost's schema default, filled in by the config resolver whenever it's
+// left unset, so it's treated as not-configured here rather than as an explicit value.
+func logDeprecatedParamUsage(gatewayHost, gatewayURL string) {
+	if gatewayHost == "" || gatewayHost == "localhost" {
+		return
+	}
+	if gatewayURL != "" {
+		slog.Warn("MCP Auth Policy: 'gatewayhost' is deprecated and ignored because 'gatewayurl' is configured; remove 'gatewayhost' and use 'gatewayurl' in config.toml.")
+	} else {
+		slog.Warn("MCP Auth Policy: 'gatewayhost' is deprecated; migrate to 'gatewayurl' in config.toml.")
+	}
 }
 
 // parseAuthority extracts host and port from an authority string (e.g., "example.com:8080")
@@ -229,34 +287,35 @@ func GetMcpAuthConfig(params map[string]any) McpAuthConfig {
 
 // isAuthRequired determines if authentication is required for the given MCP request.
 // It returns true if auth is required, false if the request is exempt based on configuration.
-func (p *McpAuthPolicy) isAuthRequired(mcpReq MCPRequest) bool {
+func (p *McpAuthPolicy) isAuthRequired(facts mcpRequestFacts) bool {
 	var config SecurityConfig
 	var name string
 
-	switch mcpReq.Method {
+	switch facts.Method {
 	case "tools/call":
 		config = p.AuthConfig.Tools
-		name = mcpReq.Params.Name
+		name = facts.Name
 	case "resources/read":
 		config = p.AuthConfig.Resources
-		name = mcpReq.Params.URI
+		name = facts.Name
 	case "prompts/get":
 		config = p.AuthConfig.Prompts
-		name = mcpReq.Params.Name
+		name = facts.Name
 	default:
 		// For any other methods (e.g., "initialize", "ping", "tools/list", etc.)
 		// Check if the method is in the methods exceptions list
 		config = p.AuthConfig.Methods
-		name = mcpReq.Method
+		name = facts.Method
 	}
 
+	// An empty name here comes only from a legacy body naming no capability; the rule decides it.
 	if config.Enabled {
 		if len(config.Exceptions) == 0 {
 			return true
 		} else {
 			for _, exception := range config.Exceptions {
 				if exception == name {
-					slog.Debug("MCP Auth Policy: Auth not required - item in exceptions list", "method", mcpReq.Method, "name", name)
+					slog.Debug("MCP Auth Policy: Auth not required - item in exceptions list", "method", facts.Method, "name", name)
 					return false
 				}
 			}
@@ -268,7 +327,7 @@ func (p *McpAuthPolicy) isAuthRequired(mcpReq MCPRequest) bool {
 		} else {
 			for _, exception := range config.Exceptions {
 				if exception == name {
-					slog.Debug("MCP Auth Policy: Auth required - item in exceptions list", "method", mcpReq.Method, "name", name)
+					slog.Debug("MCP Auth Policy: Auth required - item in exceptions list", "method", facts.Method, "name", name)
 					return true
 				}
 			}
@@ -391,6 +450,8 @@ func ensureRequestMetadata(reqCtx *policy.RequestContext) {
 	}
 }
 
+// Both request phases are asked for. Mode is read once at chain-build time and cannot know
+// whether the route carries the MCP resolver, so shouldParseBody settles which phase decides.
 func (p *McpAuthPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
 		RequestHeaderMode:  policy.HeaderModeProcess,
@@ -452,17 +513,37 @@ func (p *McpAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 			ScopesSupported:      p.RequiredScopes,
 		}
 		jsonOut, _ := json.Marshal(prm)
+		prmHeaders := map[string]string{"Content-Type": "application/json"}
+		echoSessionID(prmHeaders, sessionId)
 		return policy.ImmediateResponse{
 			StatusCode: 200,
-			Headers: map[string]string{
-				"Content-Type":   "application/json",
-				McpSessionHeader: sessionId,
-			},
-			Body: jsonOut,
+			Headers:    prmHeaders,
+			Body:       jsonOut,
 		}
 	}
 
+	// POST /mcp is the only route naming a JSON-RPC method. On a resolver-bearing route its
+	// facts are already here — mirrored into headers, or published by the resolver. Without a
+	// resolver a legacy request has neither and the body has not arrived, so it defers to
+	// OnRequestBody, which is why Mode() still asks for the body there.
+	if isMcpPostRequest(ds.Method, reqCtx.OperationPath) {
+		if shouldParseBody(reqCtx.SharedContext) {
+			return policy.UpstreamRequestHeaderModifications{}
+		}
+		// Published for mcp-authz, which builds the resource_metadata URL of its
+		// WWW-Authenticate challenge from these. The body phase publishes them too but does
+		// not run on a resolver route, and mcp-authz falls back to "localhost" without them.
+		if ensureSharedMetadata(reqCtx.SharedContext) {
+			reqCtx.Metadata["gatewayHost"] = p.GatewayHost
+			reqCtx.Metadata["gatewayUrl"] = p.GatewayURL
+		}
+		return p.authenticateResolvedRequest(ctx, reqCtx, params)
+	}
+
 	// GET /mcp and DELETE /mcp carry no body, so gate them here instead of the body phase.
+	// They name no JSON-RPC method in either era, so there is nothing to match against the
+	// exception lists and nothing for a resolver to contribute — which is why this runs the
+	// same way whether or not the route has one.
 	if p.requiresTransportAuth(ds.Method, reqCtx.OperationPath) {
 		slog.Debug("MCP Auth Policy: Authenticating MCP transport request",
 			"method", ds.Method,
@@ -473,20 +554,32 @@ func (p *McpAuthPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.Req
 	return policy.UpstreamRequestHeaderModifications{}
 }
 
-// OnRequestBody processes the request body phase for MCP authentication.
+// OnRequestBody runs only on a route with no operation resolver, which serves legacy proxies,
+// so the body is the source here.
 func (p *McpAuthPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, params map[string]any) policy.RequestAction {
 	if err := validateAuthFailureConfig(p.OnFailureStatusCode, p.ErrorMessageFormat); err != nil {
 		v1r := buildInvalidConfigResponse(err.Error()).(policy.ImmediateResponse)
 		return policy.ImmediateResponse{StatusCode: v1r.StatusCode, Headers: v1r.Headers, Body: v1r.Body}
 	}
 
-	if p.GatewayHost != "" {
+	if p.GatewayHost != "" || p.GatewayURL != "" {
 		ensureRequestMetadata(reqCtx)
 		reqCtx.Metadata["gatewayHost"] = p.GatewayHost
+		reqCtx.Metadata["gatewayUrl"] = p.GatewayURL
+	}
+
+	// Already decided at the header phase, which runs after the resolver bound the chain.
+	if !shouldParseBody(reqCtx.SharedContext) {
+		return policy.UpstreamRequestModifications{}
 	}
 
 	ds := reqCtx.DownstreamRequest()
 	if isMcpPostRequest(ds.Method, reqCtx.OperationPath) {
+		// The body decides here, in both eras; the mirrored headers are not consulted.
+		//
+		// This route has no resolver, so Mode() asked for the body and it is in hand. The body
+		// is what the server executes, so reading it is the accurate answer and the one v1.2.1
+		// gave — preferring a header over a body already buffered would buy nothing.
 		if reqCtx.Body == nil || !reqCtx.Body.Present {
 			return p.handleAuth(ctx, reqCtx, params, p.RequiredScopes)
 		}
@@ -505,7 +598,20 @@ func (p *McpAuthPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reques
 			"name", mcpReq.Params.Name,
 			"uri", mcpReq.Params.URI)
 
-		if !p.isAuthRequired(mcpReq) {
+		// The capability is named by params.name for tools and prompts and by params.uri for
+		// resources — keyed on the method, so a params.name alongside a resources/read uri
+		// cannot displace it. The resolver's capabilityName keys on the same family, so both
+		// sources feed isAuthRequired the same shape. They did not always: the resolver
+		// took the first non-empty member, and a decoy name on a resources/read escaped a
+		// rule written against the uri on a resolver gateway while being caught here.
+		capabilityName := mcpReq.Params.Name
+		if mcpReq.Method == "resources/read" {
+			capabilityName = mcpReq.Params.URI
+		}
+
+		// A parsed body yields the name literally, so there is nothing that could have
+		// arrived unreadable the way a mirrored header can.
+		if !p.isAuthRequired(mcpRequestFacts{Method: mcpReq.Method, Name: capabilityName}) {
 			slog.Debug("MCP Auth Policy: Skipping authentication for exempt request", "method", mcpReq.Method)
 			return nil
 		}
@@ -514,6 +620,188 @@ func (p *McpAuthPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.Reques
 	}
 
 	return policy.UpstreamRequestModifications{}
+}
+
+// authenticateResolvedRequest authenticates a POST /mcp on a route carrying an MCP operation
+// resolver, dispatching to the branch for this request's era.
+func (p *McpAuthPolicy) authenticateResolvedRequest(
+	ctx context.Context,
+	reqCtx *policy.RequestHeaderContext,
+	params map[string]interface{},
+) policy.RequestHeaderAction {
+	facts := mcpFacts(reqCtx.Headers, reqCtx.SharedContext)
+	if facts.IsModernRequest {
+		return p.authenticateFromMirroredHeaders(ctx, reqCtx, params, facts)
+	}
+	return p.authenticateFromResolvedBody(ctx, reqCtx, params, facts)
+}
+
+// authenticateFromMirroredHeaders decides a modern request from Mcp-Method and Mcp-Name. The
+// body is not read here at all, not even for whether the resolver could read it; that check and
+// the headers-match-body check are both mcp-spec-validation's job.
+func (p *McpAuthPolicy) authenticateFromMirroredHeaders(
+	ctx context.Context,
+	reqCtx *policy.RequestHeaderContext,
+	params map[string]interface{},
+	facts mcpRequestFacts,
+) policy.RequestHeaderAction {
+	// 2026-07-28 requires Mcp-Method, and MRTR removes the method-less JSON-RPC response the
+	// legacy path lets through, so a modern request without one is malformed.
+	if !facts.HasMethod() {
+		slog.Debug("MCP Auth Policy: Rejecting a modern request that mirrored no method")
+		return p.handleMissingMirroredHeader(headerMcpMethod + " header is required")
+	}
+	// Mcp-Name is required on the three capability methods; an undecodable one counts as missing.
+	// Left in, the empty name would match no exception and could be exempted.
+	if facts.MissingRequiredName() {
+		slog.Debug("MCP Auth Policy: Rejecting a modern request that mirrored no capability name",
+			"method", facts.Method)
+		return p.handleMissingMirroredHeader(headerMcpName + " header is required for " + facts.Method)
+	}
+	return p.applyAuthRule(ctx, reqCtx, params, facts)
+}
+
+// authenticateFromResolvedBody decides a legacy request from the body the resolver read.
+func (p *McpAuthPolicy) authenticateFromResolvedBody(
+	ctx context.Context,
+	reqCtx *policy.RequestHeaderContext,
+	params map[string]interface{},
+	facts mcpRequestFacts,
+) policy.RequestHeaderAction {
+	// Bytes the resolver could not read are refused: the gateway and the backend may read them
+	// differently.
+	if reason := unusableBodyReason(reqCtx.SharedContext); reason != "" {
+		slog.Debug("MCP Auth Policy: Rejecting request whose body the resolver could not read",
+			"reason", reason)
+		return p.handleUnusableBody(reason)
+	}
+	// No body, so nothing named an operation. Authenticate rather than exempt, as above.
+	if !facts.IsRequestBodyPresent {
+		slog.Debug("MCP Auth Policy: Authenticating a request that carried no body")
+		return p.authenticateAndKeepClaimedToken(ctx, reqCtx, params, p.RequiredScopes)
+	}
+	return p.applyAuthRule(ctx, reqCtx, params, facts)
+}
+
+// applyAuthRule applies the operator's configuration to an established operation.
+func (p *McpAuthPolicy) applyAuthRule(
+	ctx context.Context,
+	reqCtx *policy.RequestHeaderContext,
+	params map[string]interface{},
+	facts mcpRequestFacts,
+) policy.RequestHeaderAction {
+	if !p.isAuthRequired(facts) {
+		slog.Debug("MCP Auth Policy: Skipping authentication for exempt request", "method", facts.Method)
+		return nil
+	}
+	return p.authenticateAndKeepClaimedToken(ctx, reqCtx, params, p.RequiredScopes)
+}
+
+// authenticateAndKeepClaimedToken delegates to jwt-auth, then leaves the inbound token
+// header as it found it if a peer policy has claimed it.
+//
+// Both phases run this. The header phase calls it directly; handleAuth adapts the body phase
+// onto it by synthesising a header context and restating the result as a body-phase action.
+func (p *McpAuthPolicy) authenticateAndKeepClaimedToken(
+	ctx context.Context,
+	reqCtx *policy.RequestHeaderContext,
+	params map[string]any,
+	scopes []string,
+) policy.RequestHeaderAction {
+	// Delegate exactly once. Calling authenticate again to inspect its result would re-run
+	// the whole JWT validation, which the NoSecondDelegation test guards against.
+	action := p.authenticate(ctx, reqCtx, params, scopes)
+	mods, ok := action.(policy.UpstreamRequestHeaderModifications)
+	if !ok {
+		// An ImmediateResponse (authentication failed) or nil — nothing to preserve.
+		return action
+	}
+
+	tokenHeader := getStringParam(params, "headerName", "Authorization")
+	if !isTokenHeaderClaimed(reqCtx.Downstream, reqCtx.Headers, tokenHeader) {
+		return mods
+	}
+
+	slog.Debug("MCP Auth Policy: Inbound token header claimed by a peer policy, preserving it",
+		"headerName", tokenHeader)
+
+	forwardToken := getBoolParam(params, "forwardToken", false)
+	forwardedTokenHeader := getStringParam(params, "forwardedTokenHeader", "x-forwarded-authorization")
+	if forwardToken && strings.EqualFold(forwardedTokenHeader, tokenHeader) {
+		slog.Warn("MCP Auth Policy: forwardedTokenHeader is claimed by another policy, so the validated token is not forwarded upstream; "+
+			"set forwardedTokenHeader to a header no other policy writes",
+			"forwardedTokenHeader", forwardedTokenHeader,
+			"headerName", tokenHeader)
+	}
+
+	return preserveTokenHeader(mods, tokenHeader)
+}
+
+// handleUnusableBody renders the resolver's reason for being unable to read the body as the
+// JSON-RPC error a local parse failure would have produced, so a client sees one error shape
+// whichever gateway it reached.
+func (p *McpAuthPolicy) handleUnusableBody(reason string) policy.ImmediateResponse {
+	code, message, data := JSONRPCInvalidRequest, "Invalid Request", "Invalid MCP request format"
+	switch reason {
+	case reasonSyntaxError:
+		code, message, data = JSONRPCParseError, "Parse error", "Request body is not valid JSON"
+	case reasonInvalidMemberType:
+		data = "Request body has a member of the wrong type"
+	case reasonNotAnObject:
+		data = "Request body is not a single JSON-RPC request object"
+	case reasonAmbiguous:
+		// The one a backend may not reject on its own: valid JSON it could resolve
+		// differently than the gateway did.
+		data = "Ambiguous MCP request: body names a member more than once"
+	}
+
+	return jsonRPCBadRequest(code, message, data)
+}
+
+// handleMissingMirroredHeader rejects a modern request that left out a required mirrored header.
+func (p *McpAuthPolicy) handleMissingMirroredHeader(detail string) policy.ImmediateResponse {
+	return jsonRPCBadRequest(JSONRPCHeaderMismatch, "Invalid Request", detail)
+}
+
+// jsonRPCBadRequest renders a JSON-RPC error as a 400, with a null id.
+func jsonRPCBadRequest(code int, message, data string) policy.ImmediateResponse {
+	body, _ := json.Marshal(map[string]any{
+		"jsonrpc": JSONRPCVersion,
+		"id":      nil,
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+			"data":    data,
+		},
+	})
+	return policy.ImmediateResponse{
+		StatusCode: 400,
+		Headers:    map[string]string{"content-type": "application/json"},
+		Body:       body,
+	}
+}
+
+// echoSessionID returns the caller's MCP session id, and only if there was one. 2026-07-28
+// removes sessions, so a modern client sends none and must not be handed one back. Echoing
+// what arrived is correct for both eras without the policy knowing which it is in.
+func echoSessionID(headers map[string]string, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	headers[McpSessionHeader] = sessionID
+}
+
+// ensureSharedMetadata prepares the shared metadata map, reporting whether there is one to
+// write into. It reports false rather than attaching a context of its own: a fresh one is not
+// the context the engine gave the chain, so writes would land where nobody looks.
+func ensureSharedMetadata(shared *policy.SharedContext) bool {
+	if shared == nil {
+		return false
+	}
+	if shared.Metadata == nil {
+		shared.Metadata = map[string]any{}
+	}
+	return true
 }
 
 // handleAuthFailure constructs an authentication failure response.
@@ -656,7 +944,7 @@ func (p *McpAuthPolicy) authenticate(ctx context.Context, headerCtx *policy.Requ
 		}
 		wwwAuthHeader := generateWwwAuthenticateHeaderFromFields(ds.Scheme, ds.Authority, headerCtx.Vhost, headerCtx.APIContext, params, scopes, escapedDesc)
 		headers[WWWAuthenticateHeader] = wwwAuthHeader
-		headers[McpSessionHeader] = sessionId
+		echoSessionID(headers, sessionId)
 		return policy.ImmediateResponse{
 			StatusCode: ir.StatusCode,
 			Headers:    headers,
@@ -688,27 +976,12 @@ func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestCo
 		Downstream: reqCtx.Downstream,
 	}
 
-	forwardToken := getBoolParam(params, "forwardToken", false)
-
-	switch a := p.authenticate(ctx, headerCtx, params, scopes).(type) {
+	switch a := p.authenticateAndKeepClaimedToken(ctx, headerCtx, params, scopes).(type) {
 	case policy.ImmediateResponse:
 		return a
 	case policy.UpstreamRequestHeaderModifications:
-		tokenHeader := getStringParam(params, "headerName", "Authorization")
-		if isTokenHeaderClaimed(reqCtx.Downstream, reqCtx.Headers, tokenHeader) {
-			slog.Debug("MCP Auth Policy: Inbound token header claimed by a peer policy, preserving it",
-				"headerName", tokenHeader)
-
-			forwardedTokenHeader := getStringParam(params, "forwardedTokenHeader", "x-forwarded-authorization")
-			if forwardToken && strings.EqualFold(forwardedTokenHeader, tokenHeader) {
-				slog.Warn("MCP Auth Policy: forwardedTokenHeader is claimed by another policy, so the validated token is not forwarded upstream; "+
-					"set forwardedTokenHeader to a header no other policy writes",
-					"forwardedTokenHeader", forwardedTokenHeader,
-					"headerName", tokenHeader)
-			}
-
-			a = preserveTokenHeader(a, tokenHeader)
-		}
+		// Convert the successful header-phase auth result to the equivalent body-phase
+		// action, preserving all upstream request modifications.
 		return policy.UpstreamRequestModifications{
 			HeadersToSet:            a.HeadersToSet,
 			HeadersToRemove:         a.HeadersToRemove,
@@ -728,6 +1001,14 @@ func (p *McpAuthPolicy) handleAuth(ctx context.Context, reqCtx *policy.RequestCo
 // generateResourcePathFromFields builds the resource URL from individual context fields
 // instead of a full RequestContext, enabling use in both header and body phases.
 func generateResourcePathFromFields(scheme, authority, vhost, apiContext string, params map[string]any, resource string) string {
+	// gatewayUrl, when set, is used verbatim and overrides vhost/gatewayHost.
+	if gatewayURL := strings.TrimRight(getStringParam(params, "gatewayUrl", ""), "/"); gatewayURL != "" {
+		if apiContext != "" {
+			return fmt.Sprintf("%s%s/%s", gatewayURL, apiContext, resource)
+		}
+		return fmt.Sprintf("%s/%s", gatewayURL, resource)
+	}
+
 	_, port := parseAuthority(authority)
 
 	var host string

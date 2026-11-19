@@ -570,3 +570,80 @@ func TestDecodeEventStreamFrames_MalformedInput(t *testing.T) {
 		t.Fatal("oversized frames must be rejected")
 	}
 }
+
+// TestBedrockConversePath_EscapesModel: the model is reachable from the request
+// payload, so it must not be able to alter the path structure, while an ordinary
+// Bedrock model id produces the same path as before.
+func TestBedrockConversePath_EscapesModel(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		streaming bool
+		want      string
+	}{
+		{"ordinary model id is unchanged", "us.amazon.nova-lite-v1:0", false, "/model/us.amazon.nova-lite-v1:0/converse"},
+		{"ordinary model id streaming is unchanged", "us.amazon.nova-lite-v1:0", true, "/model/us.amazon.nova-lite-v1:0/converse-stream"},
+		{"path separator cannot add a segment", "../../admin/x", false, "/model/..%2F..%2Fadmin%2Fx/converse"},
+		{"path separator cannot add a segment when streaming", "../../admin/x", true, "/model/..%2F..%2Fadmin%2Fx/converse-stream"},
+		{"query separator cannot add a query", "nova?x=1", false, "/model/nova%3Fx=1/converse"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bedrockConversePath(tc.model, tc.streaming); got != tc.want {
+				t.Errorf("bedrockConversePath(%q, %v) = %q, want %q", tc.model, tc.streaming, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveModel covers every row of the resolution table. Bedrock resolved
+// configuration-first until the payload-first rule was adopted for all five
+// policies; these rows are the contract it now shares with them.
+func TestResolveModel(t *testing.T) {
+	const configured = "us.amazon.nova-lite-v1:0"
+	const requested = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+	cases := []struct {
+		name       string
+		configured string
+		payload    map[string]interface{}
+		wantModel  string // empty means the request must be rejected
+		wantErr    string
+	}{
+		{"request overrides the configured model", configured, map[string]interface{}{"model": requested}, requested, ""},
+		{"configured model is the fallback when the request names none", configured, map[string]interface{}{}, configured, ""},
+		{"empty request model falls back to the configured model", configured, map[string]interface{}{"model": ""}, configured, ""},
+		{"null request model falls back to the configured model", configured, map[string]interface{}{"model": nil}, configured, ""},
+		{"request model used when none is configured", "", map[string]interface{}{"model": requested}, requested, ""},
+		{"padded request model is trimmed, not rejected", "", map[string]interface{}{"model": "  " + requested + "  "}, requested, ""},
+		{"neither source supplies one", "", map[string]interface{}{}, "", "either the policy configuration or request body"},
+		{"whitespace-only request model is malformed", "", map[string]interface{}{"model": "   "}, "", "must not be blank"},
+		{"whitespace-only is malformed even with a configured model", configured, map[string]interface{}{"model": "   "}, "", "must not be blank"},
+		{"non-string request model is a bad request", "", map[string]interface{}{"model": 123}, "", "must be a string"},
+		{"non-string is a bad request even with a configured model", configured, map[string]interface{}{"model": 123}, "", "must be a string"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &TranslatorPolicy{params: PolicyParams{Model: tc.configured}}
+			got, err := p.resolveModel(tc.payload)
+
+			if tc.wantModel == "" {
+				if err == nil {
+					t.Fatalf("expected rejection, got model %q", got)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error = %v, want it to mention %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantModel {
+				t.Errorf("resolved model = %q, want %q", got, tc.wantModel)
+			}
+		})
+	}
+}

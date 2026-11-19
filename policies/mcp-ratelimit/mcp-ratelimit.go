@@ -16,6 +16,14 @@
  * under the License.
  */
 
+// Package mcpratelimit dispatches an MCP request to the rate-limit rules that target it.
+//
+// The operation it dispatches on comes from one source per era, never both:
+//
+//	modern (2026-07-28+)  the mirrored Mcp-Method / Mcp-Name headers; the body is not read
+//	legacy                the body, via the route's resolver or this policy's own parse
+//
+// Checking that a modern request's headers describe its body is mcp-spec-validation's job.
 package mcpratelimit
 
 import (
@@ -48,7 +56,18 @@ const (
 	sectionPrompts   = "prompts"
 	sectionMethods   = "methods"
 
-	jsonRpcErrCodeRateLimited = -32000
+	jsonRpcErrCodeRateLimited    = -32000
+	jsonRpcErrCodeParseError     = -32700
+	jsonRpcErrCodeInvalidRequest = -32600
+	// A required MCP 2026-07-28 mirrored header is missing.
+	jsonRpcErrCodeHeaderMismatch = -32020
+
+	// The values the resolver publishes under mcp.body.unusable. Only syntax-error describes a
+	// document that would not parse; the rest parsed but are not a usable request object.
+	reasonSyntaxError       = "syntax-error"
+	reasonInvalidMemberType = "invalid-member-type"
+	reasonNotAnObject       = "not-an-object"
+	reasonAmbiguous         = "ambiguous"
 )
 
 // limitEntry holds the parsed rule for a single capability rate-limit entry.
@@ -137,40 +156,185 @@ func GetPolicy(metadata policy.PolicyMetadata, params map[string]any) (policy.Po
 	return p, nil
 }
 
+// Both request phases are asked for. Mode is read once at chain-build time and cannot know
+// whether the route carries the MCP resolver, so shouldParseBody settles which phase decides.
+//
+// The response phase is unconditional: delegates invoked during the request replay there to
+// write their RateLimit-* headers.
 func (p *McpRateLimitPolicy) Mode() policy.ProcessingMode {
 	return policy.ProcessingMode{
-		RequestHeaderMode:  policy.HeaderModeSkip,
+		RequestHeaderMode:  policy.HeaderModeProcess,
 		RequestBodyMode:    policy.BodyModeBuffer,
 		ResponseHeaderMode: policy.HeaderModeProcess,
 		ResponseBodyMode:   policy.BodyModeSkip,
 	}
 }
 
+// OnRequestHeaders rate-limits a POST on a route carrying an MCP operation resolver, where the
+// capability arrives in the mirrored headers or the resolver's attributes rather than in a body.
+// Without a resolver the capability is in the body, which has not arrived at this phase, so that
+// case defers to OnRequestBody.
+func (p *McpRateLimitPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]any) policy.RequestHeaderAction {
+	// Match the MCP route on the immutable OperationPath (the API-definition path), consistent
+	// with the MCP authorization and access-control policies. OperationPath is carried on
+	// SharedContext, so fall back to the downstream request path when that is absent.
+	ds := reqCtx.DownstreamRequest()
+	routePath := ds.Path
+	if reqCtx.SharedContext != nil && reqCtx.OperationPath != "" {
+		routePath = reqCtx.OperationPath
+	}
+	if !isPostRequest(ds.Method) || !isMcpPath(routePath) {
+		slog.Debug("MCP RateLimit Policy: not an MCP POST; skipping")
+		return nil
+	}
+
+	// Without a resolver there are no facts at this phase; OnRequestBody parses the body instead.
+	if shouldParseBody(reqCtx.SharedContext) {
+		return nil
+	}
+
+	facts := mcpFacts(reqCtx.Headers, reqCtx.SharedContext)
+	if facts.IsModernRequest {
+		return p.limitFromMirroredHeaders(ctx, reqCtx, params, facts)
+	}
+	return p.limitFromResolvedBody(ctx, reqCtx, params, facts)
+}
+
+// limitFromMirroredHeaders limits a modern request on Mcp-Method and Mcp-Name. The body is not
+// read here at all, not even for whether the resolver could read it; that check and the
+// headers-match-body check are both mcp-spec-validation's job.
+func (p *McpRateLimitPolicy) limitFromMirroredHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext,
+	params map[string]any, facts mcpRequestFacts) policy.RequestHeaderAction {
+
+	// 2026-07-28 requires Mcp-Method, and MRTR removes the method-less JSON-RPC response the
+	// legacy path lets through, so a modern request without one is malformed.
+	if !facts.HasMethod() {
+		slog.Debug("MCP RateLimit Policy: rejecting a modern request that mirrored no method")
+		return p.buildJsonRpcError(reqCtx.DownstreamHeaders(), 400, jsonRpcErrCodeHeaderMismatch,
+			headerMcpMethod+" header is required", nil)
+	}
+	// Mcp-Name is required on the three capability methods; an undecodable one counts as missing.
+	// Left in, the empty name would match no capability rule, "*" included.
+	if facts.MissingRequiredName() {
+		slog.Debug("MCP RateLimit Policy: rejecting a modern request that mirrored no capability name",
+			"method", facts.Method)
+		return p.buildJsonRpcError(reqCtx.DownstreamHeaders(), 400, jsonRpcErrCodeHeaderMismatch,
+			headerMcpName+" header is required for "+facts.Method, nil)
+	}
+	return p.applyLimits(ctx, reqCtx, params, facts)
+}
+
+// limitFromResolvedBody limits a legacy request on the body the resolver read.
+func (p *McpRateLimitPolicy) limitFromResolvedBody(ctx context.Context, reqCtx *policy.RequestHeaderContext,
+	params map[string]any, facts mcpRequestFacts) policy.RequestHeaderAction {
+
+	// Bytes the resolver could not read are refused: the gateway and the MCP server may read them
+	// differently, and limiting on our reading would be limiting a guess.
+	if reason := unusableBodyReason(reqCtx.SharedContext); reason != "" {
+		slog.Debug("MCP RateLimit Policy: rejecting request whose body the resolver could not read",
+			"reason", reason)
+		return p.handleUnusableBody(reqCtx.DownstreamHeaders(), reason)
+	}
+	// A body that read fine but named no operation is conforming here: a JSON-RPC response
+	// answering a server-initiated sampling call carries an id and a result and no method.
+	if !facts.HasMethod() {
+		slog.Debug("MCP RateLimit Policy: MCP capability could not be identified; not limited by this policy")
+		return nil
+	}
+	return p.applyLimits(ctx, reqCtx, params, facts)
+}
+
+// applyLimits dispatches an established operation to its delegates, whichever era established it.
+func (p *McpRateLimitPolicy) applyLimits(ctx context.Context, reqCtx *policy.RequestHeaderContext,
+	params map[string]any, facts mcpRequestFacts) policy.RequestHeaderAction {
+
+	// An empty name matches no tools/resources/prompts rule, "*" included. Only a legacy body
+	// naming none gets here with one, and the server rejects that call itself.
+	capType, capName := capabilityFrom(facts.Method, facts.Name)
+	if resp := p.enforce(ctx, reqCtx, params, facts.Method, capType, capName, facts.RequestID); resp != nil {
+		return *resp
+	}
+	return nil
+}
+
 // OnRequestBody parses the MCP request envelope, finds matching rate-limit
 // entries, and delegates enforcement to a per-(entry, capability) cached
 // advanced-ratelimit instance.
 func (p *McpRateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.RequestContext, params map[string]any) policy.RequestAction {
+	// Already decided at the header phase, where the capability arrived without a body. Mode
+	// asks for both phases, so this guard is what stops a second decision here.
+	if !shouldParseBody(reqCtx.SharedContext) {
+		return policy.UpstreamRequestModifications{}
+	}
+
 	ds := reqCtx.DownstreamRequest()
-	if !isMcpPostRequest(ds.Method) {
+	if !isPostRequest(ds.Method) {
 		return policy.UpstreamRequestModifications{}
 	}
 	if reqCtx.Body == nil || len(reqCtx.Body.Content) == 0 {
 		return policy.UpstreamRequestModifications{}
 	}
 
+	// SharedContext is embedded in RequestContext, so a nil one makes every reqCtx.Metadata
+	// access panic. Synthesizing the header context below copies this same pointer, so the
+	// metadata enforce publishes lands on the real request.
+	if reqCtx.SharedContext == nil {
+		reqCtx.SharedContext = &policy.SharedContext{}
+	}
+
 	method, capType, capName, requestID, err := p.identifyCapability(reqCtx)
 	if err != nil {
 		slog.Debug("MCP RateLimit Policy: failed to parse MCP request", "error", err)
-		jsonRpcCode := -32700
+		reason := reasonSyntaxError
 		if isAmbiguousMemberError(err) {
-			jsonRpcCode = -32600
+			reason = reasonAmbiguous
 		}
-		return p.buildJsonRpcError(reqCtx.DownstreamHeaders(), 400, jsonRpcCode, "Invalid MCP request body", nil)
+		return p.handleUnusableBody(reqCtx.DownstreamHeaders(), reason)
 	}
 	if method == "" {
 		return policy.UpstreamRequestModifications{}
 	}
 
+	if resp := p.enforce(ctx, synthesizeHeaderContext(reqCtx), params, method, capType, capName, requestID); resp != nil {
+		return *resp
+	}
+	return policy.UpstreamRequestModifications{}
+}
+
+// handleUnusableBody renders a reason the body could not be read as a JSON-RPC error. Both
+// request paths call it — the resolver publishes the reason, the body parse derives one from its
+// own error — so identical bytes get an identical error whichever gateway read them.
+//
+// No facts are published alongside a reason, so there is never an id to echo.
+func (p *McpRateLimitPolicy) handleUnusableBody(reqHeaders *policy.Headers, reason string) policy.ImmediateResponse {
+	code, message := jsonRpcErrCodeInvalidRequest, "Invalid MCP request body"
+	switch reason {
+	case reasonSyntaxError:
+		code, message = jsonRpcErrCodeParseError, "Request body is not valid JSON"
+	case reasonInvalidMemberType:
+		message = "Request body has a member of the wrong type"
+	case reasonNotAnObject:
+		message = "Request body is not a single JSON-RPC request object"
+	case reasonAmbiguous:
+		// The one a backend may not reject on its own: valid JSON it could resolve
+		// differently than the gateway did.
+		message = "Ambiguous MCP request: body names a member more than once"
+	}
+	return p.buildJsonRpcError(reqHeaders, 400, code, message, nil)
+}
+
+// enforce publishes the capability metadata other MCP policies read, finds every rule matching
+// this capability, and dispatches to each rule's advanced-ratelimit delegate. Returns the
+// rate-limited response when a delegate blocks, or nil to forward.
+//
+// Both hooks share it, so a request reaches the same delegates whichever phase identified it.
+// advanced-ratelimit is itself a header-phase policy, so only the body path has to synthesize a
+// header context; the header path hands it the real one.
+func (p *McpRateLimitPolicy) enforce(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]any,
+	method, capType, capName string, requestID json.RawMessage) *policy.ImmediateResponse {
+
+	// Metadata is a field of the embedded SharedContext, so this is the same map the response
+	// phase reads back.
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = make(map[string]any)
 	}
@@ -184,16 +348,14 @@ func (p *McpRateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.R
 
 	matches := p.findMatches(method, capType, capName)
 	if len(matches) == 0 {
-		return policy.UpstreamRequestModifications{}
+		return nil
 	}
 
 	type requestHeaderPolicer interface {
 		OnRequestHeaders(context.Context, *policy.RequestHeaderContext, map[string]any) policy.RequestHeaderAction
 	}
 
-	headerCtx := synthesizeHeaderContext(reqCtx)
 	var invoked []string
-
 	for _, m := range matches {
 		delegate, derr := p.resolveDelegate(m.entryIdx, m.capabilityID)
 		if derr != nil || delegate == nil {
@@ -209,7 +371,7 @@ func (p *McpRateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.R
 			continue
 		}
 
-		action := rl.OnRequestHeaders(ctx, headerCtx, params)
+		action := rl.OnRequestHeaders(ctx, reqCtx, params)
 		invoked = append(invoked, delegateKey(m.entryIdx, m.capabilityID))
 
 		if immediate, isImmediate := action.(policy.ImmediateResponse); isImmediate {
@@ -217,18 +379,16 @@ func (p *McpRateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.R
 				"section", p.entries[m.entryIdx].section,
 				"rule", p.entries[m.entryIdx].name,
 				"capabilityID", m.capabilityID)
-			return p.rewriteRateLimitedResponse(reqCtx.DownstreamHeaders(), immediate, requestID)
+			resp := p.rewriteRateLimitedResponse(reqCtx.DownstreamHeaders(), immediate, requestID)
+			return &resp
 		}
 	}
 
 	if len(invoked) > 0 {
-		if reqCtx.SharedContext.Metadata == nil {
-			reqCtx.SharedContext.Metadata = make(map[string]any)
-		}
-		reqCtx.SharedContext.Metadata[metadataInvokedDelegates] = invoked
+		reqCtx.Metadata[metadataInvokedDelegates] = invoked
 	}
 
-	return policy.UpstreamRequestModifications{}
+	return nil
 }
 
 // OnResponseHeaders forwards to every delegate invoked during the request phase
@@ -236,7 +396,13 @@ func (p *McpRateLimitPolicy) OnRequestBody(ctx context.Context, reqCtx *policy.R
 // Retry-After). When multiple delegates set the same header, the later
 // delegate's value wins; this is an accepted simplification.
 func (p *McpRateLimitPolicy) OnResponseHeaders(ctx context.Context, respCtx *policy.ResponseHeaderContext, params map[string]any) policy.ResponseHeaderAction {
-	invoked, _ := respCtx.SharedContext.Metadata[metadataInvokedDelegates].([]string)
+	// SharedContext is embedded in ResponseHeaderContext, so a nil one panics on the read below.
+	// Nothing was invoked if nothing was shared, so there is nothing to replay.
+	if respCtx.SharedContext == nil {
+		return policy.DownstreamResponseHeaderModifications{}
+	}
+
+	invoked, _ := respCtx.Metadata[metadataInvokedDelegates].([]string)
 	if len(invoked) == 0 {
 		return policy.DownstreamResponseHeaderModifications{}
 	}
@@ -300,28 +466,47 @@ func (p *McpRateLimitPolicy) identifyCapability(reqCtx *policy.RequestContext) (
 		return "", "", "", req.ID, nil
 	}
 
-	parts := strings.SplitN(method, "/", 2)
-	if len(parts) == 2 {
-		switch parts[0] {
-		case "tools":
-			capType = "tool"
-			if parts[1] == "call" {
-				capName = req.Params.Name
-			}
-		case "resources":
-			capType = "resource"
-			if parts[1] == "read" {
-				capName = req.Params.URI
-			}
-		case "prompts":
-			capType = "prompt"
-			if parts[1] == "get" {
-				capName = req.Params.Name
-			}
-		}
+	// params.uri for a resource, params.name for everything else — the same family-keyed
+	// choice the resolver's capabilityName makes, so both paths hand capabilityFrom the same
+	// name for the same body.
+	//
+	// Not "name, else uri". MCP defines no name for resources/*, so a params.name there is
+	// client-controlled: taking it would let a decoy displace the uri the server actually
+	// reads, and a rule written against that uri would stop matching.
+	name := req.Params.Name
+	if strings.HasPrefix(method, "resources/") {
+		name = req.Params.URI
 	}
+	capType, capName = capabilityFrom(method, name)
 
 	return method, capType, capName, req.ID, nil
+}
+
+// capabilityFrom maps a JSON-RPC method to the capability type it targets, and takes the
+// capability name only for the three methods that name one.
+func capabilityFrom(method, name string) (capType, capName string) {
+	parts := strings.SplitN(method, "/", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	switch parts[0] {
+	case "tools":
+		capType = "tool"
+		if parts[1] == "call" {
+			capName = name
+		}
+	case "resources":
+		capType = "resource"
+		if parts[1] == "read" {
+			capName = name
+		}
+	case "prompts":
+		capType = "prompt"
+		if parts[1] == "get" {
+			capName = name
+		}
+	}
+	return capType, capName
 }
 
 // findMatches returns the rule entries that apply to this request, in
@@ -433,7 +618,7 @@ func (p *McpRateLimitPolicy) resolveDelegate(entryIdx int, capabilityID string) 
 // rewriteRateLimitedResponse turns an advanced-ratelimit ImmediateResponse into
 // a JSON-RPC error envelope (unless the user provided a custom body) and
 // preserves the rate-limit headers set by the delegate.
-func (p *McpRateLimitPolicy) rewriteRateLimitedResponse(reqHeaders *policy.Headers, immediate policy.ImmediateResponse, requestID json.RawMessage) policy.RequestAction {
+func (p *McpRateLimitPolicy) rewriteRateLimitedResponse(reqHeaders *policy.Headers, immediate policy.ImmediateResponse, requestID json.RawMessage) policy.ImmediateResponse {
 	if p.hasUserDefinedBody() {
 		return immediate
 	}
@@ -477,7 +662,7 @@ func (p *McpRateLimitPolicy) hasUserDefinedBody() bool {
 
 // buildJsonRpcError constructs a JSON-RPC formatted error for malformed
 // request envelopes (analogous to mcp-acl-list.buildRequestErrorResponse).
-func (p *McpRateLimitPolicy) buildJsonRpcError(reqHeaders *policy.Headers, statusCode, jsonRpcCode int, message string, requestID json.RawMessage) policy.RequestAction {
+func (p *McpRateLimitPolicy) buildJsonRpcError(reqHeaders *policy.Headers, statusCode, jsonRpcCode int, message string, requestID json.RawMessage) policy.ImmediateResponse {
 	body, contentType := buildJsonRpcErrorBody(requestID, jsonRpcCode, message, isEventStream(reqHeaders))
 	headers := map[string]string{"content-type": contentType}
 	if sid := getSessionID(reqHeaders); sid != "" {
@@ -508,11 +693,21 @@ func synthesizeHeaderContext(reqCtx *policy.RequestContext) *policy.RequestHeade
 	}
 }
 
-func isMcpPostRequest(method string) bool {
-	if !strings.EqualFold(method, "POST") {
-		return false
+// isMcpPath reports whether path targets the MCP endpoint using segment-exact matching: only
+// "/mcp" itself or a subpath under "/mcp/". This avoids matching unrelated paths such as
+// "/resource/mcp". Mirrors the mcp-authz and mcp-acl-list policies.
+func isMcpPath(path string) bool {
+	cleanPath := strings.TrimSpace(path)
+	if idx := strings.Index(cleanPath, "?"); idx >= 0 {
+		cleanPath = cleanPath[:idx]
 	}
-	return true
+	return cleanPath == "/mcp" || strings.HasPrefix(cleanPath, "/mcp/")
+}
+
+// isPostRequest reports the method only. Whether the request targets the MCP endpoint is
+// isMcpPath's answer, and the two are asked together at every call site.
+func isPostRequest(method string) bool {
+	return strings.EqualFold(method, "POST")
 }
 
 func isEventStream(headers *policy.Headers) bool {

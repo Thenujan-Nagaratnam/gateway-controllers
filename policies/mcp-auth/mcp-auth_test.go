@@ -60,6 +60,39 @@ func TestGetPolicy(t *testing.T) {
 	}
 }
 
+func TestGetPolicy_GatewayUrlValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		gatewayURL string
+		wantErr    bool
+	}{
+		{name: "absent", gatewayURL: "", wantErr: false},
+		{name: "valid https", gatewayURL: "https://mcp1.example.com", wantErr: false},
+		{name: "valid http", gatewayURL: "http://mcp1.example.com:8080", wantErr: false},
+		{name: "unsupported scheme", gatewayURL: "ftp://mcp1.example.com", wantErr: true},
+		{name: "no scheme", gatewayURL: "mcp1.example.com", wantErr: true},
+		{name: "no host", gatewayURL: "https://", wantErr: true},
+		{name: "no host with port only", gatewayURL: "https://:8443", wantErr: true},
+		{name: "has query string", gatewayURL: "https://mcp1.example.com?foo=bar", wantErr: true},
+		{name: "has fragment", gatewayURL: "https://mcp1.example.com#section", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := map[string]any{}
+			if tt.gatewayURL != "" {
+				params["gatewayUrl"] = tt.gatewayURL
+			}
+			_, err := GetPolicy(policy.PolicyMetadata{}, params)
+			if tt.wantErr && err == nil {
+				t.Errorf("GetPolicy(gatewayUrl=%q): expected error, got nil", tt.gatewayURL)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("GetPolicy(gatewayUrl=%q): unexpected error: %v", tt.gatewayURL, err)
+			}
+		})
+	}
+}
+
 func TestOnRequestHeaders_WellKnown_Success(t *testing.T) {
 	p, _ := GetPolicy(policy.PolicyMetadata{}, map[string]any{
 		"requiredScopes": []any{"scope1", "scope2"},
@@ -298,6 +331,51 @@ func TestOnRequestHeaders_WellKnown_WithVhost_StandardPort(t *testing.T) {
 	}
 }
 
+// TestOnRequestHeaders_WellKnown_GatewayUrl covers gatewayUrl on the OTHER call
+// site of generateResourcePathFromFields — the well-known metadata document
+// response built directly in OnRequestHeaders, as opposed to the
+// WWW-Authenticate header built via OnRequestBody's delegated-auth-failure path
+// tested in TestOnRequestBody_Delegation_Failure_GatewayUrlHandling. Both call
+// sites share the same underlying function, but a regression could still land in
+// only one of the two call sites, so both need direct coverage.
+func TestOnRequestHeaders_WellKnown_GatewayUrl(t *testing.T) {
+	p := createTestPolicy()
+	ctx := createMockRequestHeaderContext(nil)
+	ctx.Method = "GET"
+	ctx.OperationPath = "/.well-known/oauth-protected-resource"
+	ctx.Scheme = "https"
+	ctx.Authority = "localhost:8443"
+	ctx.Vhost = "should-be-ignored.example.com" // gatewayUrl must win over this too
+
+	params := map[string]any{
+		"gatewayUrl":  "https://shriek-prescribe-pleading.ngrok-free.dev",
+		"gatewayHost": "should-also-be-ignored.example.com",
+		"keyManagers": []any{
+			map[string]any{
+				"name":   "km1",
+				"issuer": "https://issuer1.com",
+			},
+		},
+	}
+
+	action := p.OnRequestHeaders(context.Background(), ctx, params)
+
+	resp, ok := action.(policy.ImmediateResponse)
+	if !ok {
+		t.Fatalf("Expected ImmediateResponse, got %T", action)
+	}
+
+	var metadata ProtectedResourceMetadata
+	if err := json.Unmarshal(resp.Body, &metadata); err != nil {
+		t.Fatalf("Failed to unmarshal body: %v", err)
+	}
+
+	expectedResource := "https://shriek-prescribe-pleading.ngrok-free.dev/mcp"
+	if metadata.Resource != expectedResource {
+		t.Errorf("Expected resource '%s', got '%s'", expectedResource, metadata.Resource)
+	}
+}
+
 func TestOnRequestHeaders_WellKnown_WithVhost_AndAPIContext(t *testing.T) {
 	p := createTestPolicy()
 	ctx := createMockRequestHeaderContext(nil)
@@ -389,6 +467,177 @@ func TestOnRequestBody_Delegation_Failure(t *testing.T) {
 
 	if resp.Headers[McpSessionHeader] != "session-123" {
 		t.Errorf("Expected session header 'session-123', got %s", resp.Headers[McpSessionHeader])
+	}
+}
+
+// TestOnRequestBody_Delegation_Failure_GatewayUrlHandling covers gatewayUrl, the
+// recommended replacement for gatewayHost: when set, it is used verbatim as the
+// full base URL — no scheme/port inference from the request, and it takes
+// priority over both vhost and gatewayHost.
+func TestOnRequestBody_Delegation_Failure_GatewayUrlHandling(t *testing.T) {
+	tests := []struct {
+		name        string
+		gatewayURL  string
+		omitURLKey  bool // if true, "gatewayUrl" is left out of params entirely instead of set to gatewayURL
+		gatewayHost string // set alongside gatewayURL to prove gatewayURL wins
+		vhost       string // set alongside gatewayURL to prove gatewayURL wins
+		scheme      string
+		authority   string
+		wantPrefix  string
+	}{
+		{
+			name:       "gatewayUrl used verbatim, no port inference at all",
+			gatewayURL: "https://shriek-prescribe-pleading.ngrok-free.dev",
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://shriek-prescribe-pleading.ngrok-free.dev/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:       "gatewayUrl with its own port used verbatim",
+			gatewayURL: "https://gateway.com:9443",
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://gateway.com:9443/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:       "trailing slash on gatewayUrl is trimmed, not doubled",
+			gatewayURL: "https://gateway.com/",
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://gateway.com/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:        "gatewayUrl overrides gatewayHost when both are set",
+			gatewayURL:  "https://gateway.com",
+			gatewayHost: "should-be-ignored.example.com",
+			scheme:      "https",
+			authority:   "localhost:8443",
+			wantPrefix:  `Bearer resource_metadata="https://gateway.com/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:       "gatewayUrl overrides vhost when both are set",
+			gatewayURL: "https://gateway.com",
+			vhost:      "should-be-ignored.example.com",
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://gateway.com/.well-known/oauth-protected-resource"`,
+		},
+		{
+			// The design question this locks in: adding a non-empty schema
+			// default for gatewayUrl would make it win here too, permanently
+			// hiding gatewayHost — so it must stay empty/absent by default.
+			name:        "gatewayUrl overrides both gatewayHost AND vhost when all three are set simultaneously",
+			gatewayURL:  "https://gateway.com",
+			gatewayHost: "should-be-ignored-1.example.com",
+			vhost:       "should-be-ignored-2.example.com",
+			scheme:      "https",
+			authority:   "localhost:8443",
+			wantPrefix:  `Bearer resource_metadata="https://gateway.com/.well-known/oauth-protected-resource"`,
+		},
+		{
+			// gatewayUrl entirely absent from params (the "not migrated yet"
+			// case, and what every deployment looks like today since there is
+			// no schema default) — must fall through to gatewayHost exactly as
+			// it did before gatewayUrl existed. This is the regression this
+			// whole table exists to guard: adding gatewayUrl must not change
+			// any existing gatewayHost-only deployment's behavior.
+			name:        "gatewayUrl key entirely absent falls through to gatewayHost",
+			omitURLKey:  true,
+			gatewayHost: "legacy.example.com",
+			scheme:      "https",
+			authority:   "localhost:8443",
+			wantPrefix:  `Bearer resource_metadata="https://legacy.example.com:8443/.well-known/oauth-protected-resource"`,
+		},
+		{
+			// gatewayUrl present but explicitly "" behaves identically to it
+			// being absent entirely — getStringParam treats both the same way,
+			// and this locks that equivalence in explicitly.
+			name:        "gatewayUrl explicitly empty string behaves identically to absent",
+			gatewayURL:  "",
+			omitURLKey:  false,
+			gatewayHost: "legacy.example.com",
+			scheme:      "https",
+			authority:   "localhost:8443",
+			wantPrefix:  `Bearer resource_metadata="https://legacy.example.com:8443/.well-known/oauth-protected-resource"`,
+		},
+		{
+			// gatewayUrl absent AND gatewayHost absent: falls all the way
+			// through to the original "localhost" default — the pre-gatewayUrl
+			// baseline, unaffected.
+			name:       "gatewayUrl and gatewayHost both absent falls through to localhost default",
+			omitURLKey: true,
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://localhost:8443/.well-known/oauth-protected-resource"`,
+		},
+		{
+			// gatewayUrl absent, vhost set, gatewayHost absent: vhost's
+			// existing priority over gatewayHost is unaffected by gatewayUrl's
+			// mere existence in the schema.
+			name:       "gatewayUrl absent, vhost still takes its existing priority over gatewayHost",
+			omitURLKey: true,
+			vhost:      "api.example.com",
+			scheme:     "https",
+			authority:  "localhost:8443",
+			wantPrefix: `Bearer resource_metadata="https://api.example.com:8443/.well-known/oauth-protected-resource"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, publicKey := generateRSATestKeys(t)
+			jwksServer := createMcpTestJWKSServer(t, publicKey, "test-kid")
+			defer jwksServer.Close()
+
+			p := createTestPolicy()
+			ctx := createMockRequestBodyContext(map[string][]string{
+				McpSessionHeader: {"session-123"},
+			})
+			ctx.Method = "POST"
+			ctx.Path = "/mcp"
+			ctx.OperationPath = "/mcp"
+			ctx.Scheme = tt.scheme
+			ctx.Authority = tt.authority
+			ctx.Vhost = tt.vhost
+
+			params := map[string]any{
+				"keyManagers": []any{
+					map[string]any{
+						"name":   "test-km",
+						"issuer": "https://issuer.example.com",
+						"jwks": map[string]any{
+							"remote": map[string]any{
+								"uri": jwksServer.URL + "/jwks.json",
+							},
+						},
+					},
+				},
+			}
+			if !tt.omitURLKey {
+				params["gatewayUrl"] = tt.gatewayURL
+			}
+			// Mirror the real resolution pipeline: an absent config.toml key with
+			// a schema default gets that default materialized into the params
+			// map (see ConfigResolver.resolveSystemParamMarker), so "gatewayHost
+			// unset" in these tests means "key absent", not "key present as
+			// empty string" — getStringParam's own fallback only fires for the
+			// former.
+			if tt.gatewayHost != "" {
+				params["gatewayHost"] = tt.gatewayHost
+			}
+
+			action := p.OnRequestBody(context.Background(), ctx, params)
+
+			resp, ok := action.(policy.ImmediateResponse)
+			if !ok {
+				t.Fatalf("Expected ImmediateResponse (auth failure), got %T", action)
+			}
+
+			authHeader := resp.Headers[WWWAuthenticateHeader]
+			if !strings.HasPrefix(authHeader, tt.wantPrefix) {
+				t.Errorf("expected prefix %q, got: %s", tt.wantPrefix, authHeader)
+			}
+		})
 	}
 }
 
