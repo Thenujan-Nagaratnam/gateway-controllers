@@ -402,7 +402,7 @@ func (p *PIIMaskingRegexPolicy) recordMapping(reqCtx *policy.RequestContext, map
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = make(map[string]interface{})
 	}
-	reqCtx.Metadata[MetadataKeyPIIEntities] = mapping
+	mergePIIMetadata(reqCtx.Metadata, mapping)
 }
 
 // processRequestBodyByPath handles a jsonPath the in-place resolver does not

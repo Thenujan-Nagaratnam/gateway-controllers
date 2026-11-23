@@ -286,3 +286,18 @@ func TestRequest_ChatToolInputNumbersKeepTheirType(t *testing.T) {
 		t.Fatalf("tool input handled wrongly: %s", out)
 	}
 }
+func TestMetadata_InstancesAddToEachOther(t *testing.T) {
+	email := newPolicy(t, rootParams(map[string]interface{}{"email": true}))
+	phone := newPolicy(t, rootParams(map[string]interface{}{"phone": true}))
+	ctx := piiRequestContext(`{"messages":[{"role":"user","content":"bob@example.org 415-555-0199"}]}`)
+	m1 := email.OnRequestBody(context.Background(), ctx, nil).(policy.UpstreamRequestModifications)
+	ctx.Body.Content = m1.Body
+	m2 := phone.OnRequestBody(context.Background(), ctx, nil).(policy.UpstreamRequestModifications)
+	got := ctx.Metadata[MetadataKeyPIIEntities].(map[string]string)
+	if got["bob@example.org"] == "" || got["415-555-0199"] == "" {
+		t.Fatalf("an instance overwrote the other: %v", got)
+	}
+	if strings.Contains(string(m2.Body), "@example") || strings.Contains(string(m2.Body), "555-0199") {
+		t.Fatalf("not fully masked: %s", m2.Body)
+	}
+}

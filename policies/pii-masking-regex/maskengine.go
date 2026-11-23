@@ -302,3 +302,23 @@ func (p *PIIMaskingRegexPolicy) maskPlainText(text string) (string, map[string]s
 	sb.WriteString(text[pos:])
 	return sb.String(), mapping, true
 }
+
+// mergePIIMetadata records mapping (original→placeholder) for the response phase.
+// Several instances of this policy can sit on one route, each with its own
+// detectors, and they share one metadata map. Each must add to it, never replace
+// it, or the instance that ran last is the only one whose values get restored.
+func mergePIIMetadata(metadata map[string]interface{}, mapping map[string]string) {
+	if len(mapping) == 0 {
+		return
+	}
+	merged := make(map[string]string, len(mapping))
+	if existing, ok := metadata[MetadataKeyPIIEntities].(map[string]string); ok {
+		for k, v := range existing {
+			merged[k] = v
+		}
+	}
+	for k, v := range mapping {
+		merged[k] = v
+	}
+	metadata[MetadataKeyPIIEntities] = merged
+}
