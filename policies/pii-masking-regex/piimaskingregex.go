@@ -473,14 +473,9 @@ func (p *PIIMaskingRegexPolicy) processResponseBody(respCtx *policy.ResponseCont
 		return policy.DownstreamResponseModifications{Body: action.Body}
 	}
 
-	// Plain JSON buffered response: try OpenAI choices[*].message.content first,
-	// then fall back to raw placeholder replacement for generic JSON structures.
-	updatedJSON, changed := restoreInChoices(bodyStr, restoreMap, "message")
-	if changed {
-		return policy.DownstreamResponseModifications{Body: []byte(updatedJSON)}
-	}
-
-	// Fallback: restore placeholders directly in the raw JSON bytes.
+	// Plain JSON buffered response: restore placeholders directly in the raw bytes,
+	// so key order, whitespace and every other byte stay exactly as the upstream sent
+	// them and any provider shape (message content, thinking, tool input) is covered.
 	action := p.restoreJSONChunk(bodyStr, restoreMap)
 	if action.Body != nil {
 		return policy.DownstreamResponseModifications{Body: action.Body}
@@ -572,7 +567,7 @@ func (p *PIIMaskingRegexPolicy) NeedsMoreResponseData(accumulated []byte) bool {
 		return true
 	}
 
-	return couldCompletePlaceholder(extractSSEDeltaContent(s))
+	return anyChannelMayComplete(s)
 }
 
 // endsAtSSEEventBoundary reports whether s ends on a complete SSE event. Both
@@ -581,24 +576,6 @@ func (p *PIIMaskingRegexPolicy) NeedsMoreResponseData(accumulated []byte) bool {
 // response to the kernel's accumulator ceiling.
 func endsAtSSEEventBoundary(s string) bool {
 	return strings.HasSuffix(s, "\n\n") || strings.HasSuffix(s, "\r\n\r\n")
-}
-
-// extractSSEDeltaContent concatenates the assistant text carried by every data
-// event in an SSE buffer, which is the text a client ultimately assembles and so
-// the only thing placeholder detection should look at. Frame boundaries are
-// deliberately not preserved: a placeholder split across events is contiguous
-// here, which is what lets the shape test in couldCompletePlaceholder work
-// regardless of how finely the upstream tokenised it.
-func extractSSEDeltaContent(s string) string {
-	var sb strings.Builder
-	for _, line := range strings.Split(s, "\n") {
-		jsonStr, ok := sseDataPayload(line)
-		if !ok || jsonStr == sseDone {
-			continue
-		}
-		sb.WriteString(extractFirstDeltaContent(jsonStr, DefaultStreamingJSONPaths))
-	}
-	return sb.String()
 }
 
 // OnResponseBodyChunk implements v2alpha.StreamingResponsePolicy.
@@ -720,71 +697,6 @@ func isSSEChunk(s string) bool {
 	return false
 }
 
-// restoreSSEChunk handles SSE streaming format: "data: {...}\n\n" lines.
-//
-// When the accumulator flushes a batch of SSE events (e.g. the placeholder
-// [EMAIL_0000] split across " [", "EMAIL", "_", "0000", "]" in separate events),
-// no single event contains the full placeholder. We therefore concatenate all
-// delta.content values, restore on the full string, then redistribute: the
-// first content-bearing event gets the complete restored text, and all subsequent
-// events whose content has been merged into the first are dropped entirely.
-func (p *PIIMaskingRegexPolicy) restoreSSEChunk(chunkStr string, maskedMap map[string]string) policy.ForwardResponseChunk {
-	lines := strings.Split(chunkStr, "\n")
-
-	// Collect every SSE data line that carries a non-empty delta.content.
-	type contentLine struct {
-		lineIdx int
-		content string
-	}
-	var contentLines []contentLine
-	for i, line := range lines {
-		jsonStr, ok := sseDataPayload(line)
-		if !ok || jsonStr == sseDone {
-			continue
-		}
-		if c := extractFirstDeltaContent(jsonStr, DefaultStreamingJSONPaths); c != "" {
-			contentLines = append(contentLines, contentLine{lineIdx: i, content: c})
-		}
-	}
-
-	if len(contentLines) == 0 {
-		return policy.ForwardResponseChunk{}
-	}
-
-	// Concatenate fragments and restore in one pass.
-	var sb strings.Builder
-	for _, cl := range contentLines {
-		sb.WriteString(cl.content)
-	}
-	fullContent := sb.String()
-	restoredContent := restore(fullContent, maskedMap)
-
-	if restoredContent == fullContent {
-		return policy.ForwardResponseChunk{}
-	}
-
-	// Redistribute: first content-bearing event gets the full restored text;
-	// subsequent events are dropped entirely.
-	lines[contentLines[0].lineIdx] = replaceContentInSSELine(
-		lines[contentLines[0].lineIdx], contentLines[0].content, restoredContent,
-		DefaultStreamingJSONPaths,
-	)
-	removeLines := make(map[int]bool, len(contentLines)-1)
-	for _, cl := range contentLines[1:] {
-		markEventBlockForRemoval(lines, cl.lineIdx, removeLines)
-	}
-
-	filtered := lines[:0:0]
-	for i, line := range lines {
-		if removeLines[i] {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-
-	return policy.ForwardResponseChunk{Body: []byte(strings.Join(filtered, "\n"))}
-}
-
 // extractFirstDeltaContent parses a single SSE JSON line and returns the
 // delta.content value from the first choice, or empty string if absent/empty.
 func extractFirstDeltaContent(jsonStr string, paths []string) string {
@@ -806,67 +718,6 @@ func extractFirstDeltaContentKeyed(jsonStr string, paths []string) (string, stri
 	return "", ""
 }
 
-// jsonPathLeafKey returns the final field name of a JSONPath, e.g. "content"
-// for "$.choices[0].delta.content". Used to locate the value in the raw JSON so
-// a rewrite can preserve the frame's original key order and spacing instead of
-// re-marshaling it.
-func jsonPathLeafKey(path string) string {
-	if i := strings.LastIndex(path, "."); i >= 0 {
-		return path[i+1:]
-	}
-	return ""
-}
-
-// replaceContentInSSELine replaces the delta.content value in a "data: {...}" SSE
-// line in-place, touching only the JSON-encoded content value and leaving all
-// other fields intact. Falls back to a full re-marshal if the in-place
-// replacement cannot locate the expected token.
-func replaceContentInSSELine(line, oldContent, newContent string, paths []string) string {
-	jsonStr, ok := sseDataPayload(line)
-	if !ok {
-		return line
-	}
-	_, matchedPath := extractFirstDeltaContentKeyed(jsonStr, paths)
-	if matchedPath == "" {
-		return line
-	}
-	key := jsonPathLeafKey(matchedPath)
-	oldJSON, err1 := json.Marshal(oldContent)
-	newJSON, err2 := json.Marshal(newContent)
-	if err1 != nil || err2 != nil {
-		return updateDeltaContentInLine(line, newContent, matchedPath)
-	}
-	updated := strings.Replace(jsonStr, `"`+key+`":`+string(oldJSON), `"`+key+`":`+string(newJSON), 1)
-	if updated == jsonStr {
-		// Token not found (e.g. whitespace around colon) — fall back.
-		return updateDeltaContentInLine(line, newContent, matchedPath)
-	}
-	return rebuildSSEDataLine(line, updated)
-}
-
-// updateDeltaContentInLine is the fallback full-remarshal path used when
-// replaceContentInSSELine cannot locate the content token in the raw JSON.
-// It writes through the same JSONPath the text was extracted from, so it stays
-// correct for any provider shape without knowing which one this is.
-func updateDeltaContentInLine(line, newContent, matchedPath string) string {
-	jsonStr, ok := sseDataPayload(line)
-	if !ok {
-		return line
-	}
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-		return line
-	}
-	if err := utils.SetValueAtJSONPath(data, matchedPath, newContent); err != nil {
-		return line
-	}
-	b, err := json.Marshal(data)
-	if err != nil {
-		return line
-	}
-	return rebuildSSEDataLine(line, string(b))
-}
-
 // restoreJSONChunk handles full JSON responses delivered via chunked transfer encoding.
 // Placeholders are replaced directly in the raw JSON bytes so that key order,
 // whitespace, and any trailing newline from the LLM are preserved exactly.
@@ -876,60 +727,6 @@ func (p *PIIMaskingRegexPolicy) restoreJSONChunk(chunkStr string, maskedMap map[
 		return policy.ForwardResponseChunk{}
 	}
 	return policy.ForwardResponseChunk{Body: []byte(result)}
-}
-
-// restoreInChoices parses a JSON string, restores PII placeholders in
-// choices[*].<choiceKey>.content, and returns the updated JSON.
-// choiceKey is "message" for non-streaming or "delta" for streaming.
-func restoreInChoices(jsonStr string, maskedMap map[string]string, choiceKey string) (string, bool) {
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-		return jsonStr, false
-	}
-
-	choicesRaw, ok := data["choices"]
-	if !ok {
-		return jsonStr, false
-	}
-	choices, ok := choicesRaw.([]interface{})
-	if !ok || len(choices) == 0 {
-		return jsonStr, false
-	}
-
-	modified := false
-	for _, choiceRaw := range choices {
-		choice, ok := choiceRaw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		subRaw, ok := choice[choiceKey]
-		if !ok {
-			continue
-		}
-		sub, ok := subRaw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		content, ok := sub["content"].(string)
-		if !ok || content == "" {
-			continue
-		}
-		restored := restore(content, maskedMap)
-		if restored != content {
-			sub["content"] = restored
-			modified = true
-		}
-	}
-
-	if !modified {
-		return jsonStr, false
-	}
-
-	updatedBytes, err := json.Marshal(data)
-	if err != nil {
-		return jsonStr, false
-	}
-	return string(updatedBytes), true
 }
 
 // invertStringMap returns a new map with keys and values swapped.
