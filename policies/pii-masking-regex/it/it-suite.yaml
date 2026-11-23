@@ -44,3 +44,4 @@ blocks:
       - name: pii-masking-regex
         features:
           - features/pii_masking_regex.feature
+          - features/pii_masking_regex_chat_payload.feature
