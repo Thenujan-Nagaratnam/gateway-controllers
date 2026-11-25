@@ -374,6 +374,13 @@ func (n *node) get(key string) *node {
 	if n == nil || n.kind != kindObject {
 		return nil
 	}
+	if len(n.keys) >= 12 {
+		all := n.getAll(key)
+		if len(all) == 0 {
+			return nil
+		}
+		return all[len(all)-1]
+	}
 	var found *node
 	for i, k := range n.keys {
 		if k == key {

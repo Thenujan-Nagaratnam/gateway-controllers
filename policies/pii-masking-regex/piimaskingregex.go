@@ -21,7 +21,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"regexp"
 	"strconv"
@@ -331,6 +333,9 @@ func decodeAny(payload []byte) (any, error) {
 	if err := dec.Decode(&v); err != nil {
 		return nil, err
 	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("unexpected data after the JSON value")
+	}
 	return v, nil
 }
 
@@ -341,6 +346,9 @@ func decodeObject(payload []byte) (map[string]interface{}, error) {
 	var m map[string]interface{}
 	if err := dec.Decode(&m); err != nil {
 		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("unexpected data after the JSON value")
 	}
 	return m, nil
 }
@@ -422,19 +430,49 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext
 // tool-call id into a placeholder.
 func (p *PIIMaskingRegexPolicy) selectedTargets(payload []byte, nodes []*node, explicit bool) []*node {
 	var targets []*node
+	seen := make(map[*node]struct{}, len(nodes))
+	walked := make(map[*node]bool)
+	add := func(n *node) {
+		if _, dup := seen[n]; !dup {
+			seen[n] = struct{}{}
+			targets = append(targets, n)
+		}
+	}
 	for _, n := range nodes {
 		typed := typedContext(payload, n)
+		// The object that holds an array is the one that describes its elements
+		// (a "data" array next to "format"), so look past arrays.
+		parent := n.parent
+		for parent != nil && parent.kind == kindArray {
+			parent = parent.parent
+		}
 		switch n.kind {
 		case kindString:
-			if explicit || !opaqueString(payload, n, n.key, n.parent) {
-				targets = append(targets, n)
+			if explicit || !opaqueString(payload, n, n.key, parent) {
+				add(n)
 			}
 		case kindNumber:
 			if explicit || (!typed && !typedNumberKeys[n.key]) {
-				targets = append(targets, n)
+				add(n)
 			}
 		default:
-			targets = walkValues(payload, n, n.key, n.parent, typed, targets)
+			// A container selected together with something inside it (as "$..*"
+			// does) is already covered when an ancestor was walked: walking it
+			// again would visit the same strings once per ancestor.
+			covered := false
+			for a := n.parent; a != nil; a = a.parent {
+				if walked[a] {
+					covered = true
+					break
+				}
+			}
+			if covered || walked[n] {
+				continue
+			}
+			walked[n] = true
+			for _, t := range walkValues(payload, n, n.key, parent, typed, nil) {
+				add(t)
+			}
 		}
 	}
 	return targets
@@ -442,7 +480,12 @@ func (p *PIIMaskingRegexPolicy) selectedTargets(payload []byte, nodes []*node, e
 
 // maxQueryDepth is how deep a document may nest for a jsonPath query: the query
 // reports the location of each match as a path as long as the nesting is deep.
-const maxQueryDepth = 128
+// maxQueryWork bounds body size times depth, which is what a descendant query over
+// a large, deeply nested body costs in memory.
+const (
+	maxQueryDepth = 128
+	maxQueryWork  = 32_000_000
+)
 
 // processRequestBodyByQuery masks every value an RFC 9535 query selects. A query
 // that can select several values and selects none masks nothing: there is nothing
@@ -454,7 +497,7 @@ func (p *PIIMaskingRegexPolicy) processRequestBodyByQuery(reqCtx *policy.Request
 		// and leave the other unmasked, so such a body is refused.
 		return p.buildErrorResponse("request body repeats a JSON key, which a jsonPath query cannot be applied to safely").(policy.RequestAction)
 	}
-	if root.depth > maxQueryDepth {
+	if root.depth > maxQueryDepth || len(payload)*(root.depth+1) > maxQueryWork {
 		return p.buildErrorResponse("request body is nested too deeply for a jsonPath query").(policy.RequestAction)
 	}
 	doc, err := decodeAny(payload)

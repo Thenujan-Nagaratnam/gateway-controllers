@@ -903,3 +903,80 @@ func TestQueryPath_DeepAndWideBodiesAreCheap(t *testing.T) {
 		t.Errorf("deep and wide bodies took %v", d)
 	}
 }
+
+// ─── regressions found in the final review ──────────────────────────────────
+
+func TestQueryPath_DescendantQueryDoesNotRepeatWorkPerAncestor(t *testing.T) {
+	big := strings.Repeat("x", 250_000) + " bob@example.org"
+	body := strings.Repeat("[", 100) + `"` + big + `"` + strings.Repeat("]", 100)
+	timeIt := func(params map[string]interface{}) (time.Duration, string, map[string]interface{}) {
+		p := newPolicy(t, params)
+		start := time.Now()
+		out, md := maskBody(t, p, body)
+		return time.Since(start), out, md
+	}
+	whole, wOut, _ := timeIt(rootParams(map[string]interface{}{"email": true}))
+	query, qOut, md := timeIt(map[string]interface{}{"email": true, "jsonPath": "$..*"})
+	if strings.Contains(qOut, "bob@example.org") || qOut != wOut {
+		t.Fatalf("the query result must equal the whole-payload result")
+	}
+	// Scanning the string once per ancestor would make this about 100 times slower.
+	if query > 15*whole+300*time.Millisecond {
+		t.Errorf("$..* took %v against %v for $: the string is scanned once per ancestor", query, whole)
+	}
+	if m, _ := md[MetadataKeyPIIEntities].(map[string]string); len(m) != 1 {
+		t.Errorf("one value, one mapping: %v", m)
+	}
+}
+
+func TestQueryPath_LargeDeepBodiesAreRefusedBeforeTheyCostMemory(t *testing.T) {
+	p := newPolicy(t, map[string]interface{}{"email": true, "jsonPath": "$..*"})
+	// ~1 MB of numbers at depth 100: the paths of its 500,000 matches would take gigabytes.
+	flat := "[" + strings.Repeat("1,", 500000) + "1]"
+	body := strings.Repeat("[", 100) + flat + strings.Repeat("]", 100)
+	act := p.OnRequestBody(context.Background(), piiRequestContext(body), nil)
+	if _, ok := act.(policy.UpstreamRequestModifications); ok {
+		t.Fatal("a body this large and this deep must be refused for a descendant query")
+	}
+	// The same body is fine for the whole-payload mode.
+	whole := newPolicy(t, rootParams(map[string]interface{}{"email": true}))
+	if _, ok := whole.OnRequestBody(context.Background(), piiRequestContext(body), nil).(policy.UpstreamRequestModifications); !ok {
+		t.Fatal("$ must still handle it")
+	}
+}
+
+func TestLegacyPath_TrailingDataIsRefusedNotDropped(t *testing.T) {
+	p := newPolicy(t, map[string]interface{}{"email": true, "jsonPath": "a"})
+	for _, body := range []string{`{"a":"bob@example.org"}` + "\n" + `{"b":"cat@example.org"}`, `{"a":"bob@example.org"} trailing`} {
+		act := p.OnRequestBody(context.Background(), piiRequestContext(body), nil)
+		if mods, ok := act.(policy.UpstreamRequestModifications); ok {
+			t.Errorf("trailing data must not be silently dropped: %s -> %s", body, mods.Body)
+		}
+	}
+}
+
+func TestScanner_GetIsFastOnObjectsWithManyRepeatedKeys(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString(`{"type":"x"`)
+	for i := 0; i < 40000; i++ {
+		sb.WriteString(`,"data":"hello"`)
+	}
+	sb.WriteString(`}`)
+	p := newPolicy(t, rootParams(map[string]interface{}{"email": true}))
+	start := time.Now()
+	maskBody(t, p, sb.String())
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("40,000 repeated keys took %v: key lookups are not using the index", d)
+	}
+}
+
+func TestQueryPath_ArrayValuedDataFollowsItsSiblingsLikeTheWholePayloadMode(t *testing.T) {
+	body := `{"format":"wav","data":["AAAAAAAAAAAAAAAA4155550199"]}`
+	whole := newPolicy(t, rootParams(map[string]interface{}{"phone": true}))
+	query := newPolicy(t, map[string]interface{}{"phone": true, "jsonPath": "$..*"})
+	a, _ := maskBody(t, whole, body)
+	b, _ := maskBody(t, query, body)
+	if a != b {
+		t.Errorf("$ and $..* disagree:\n$     %s\n$..*  %s", a, b)
+	}
+}
