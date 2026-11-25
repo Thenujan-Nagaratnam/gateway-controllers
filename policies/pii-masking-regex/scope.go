@@ -19,199 +19,212 @@
 package piimaskingregex
 
 import (
+	"bytes"
 	"strconv"
 	"strings"
 )
 
-// Which parts of a request are user content.
+// What jsonPath "$" masks.
 //
-// With jsonPath "$" the whole payload is in play, but a chat request is two things
-// at once: what people and tools said (messages) and what the application
-// configured (system prompt, tool definitions, model, limits, schemas). Masking the
-// second changes the application's own prompt and breaks tool schemas, so only the
-// first is masked. Keys are never masked: a key is structure, not content.
+// "$" is the whole payload: every string value in it is masked, the system prompt
+// and the tool definitions included. Choosing a subset is the job of a more
+// specific jsonPath, not of "$".
 //
-// A payload with no "messages" array is not a chat request this policy can scope,
-// so every string in it is content, as it always was.
+// What is never touched, because changing it breaks the request rather than
+// protecting anyone:
+//
+//   - Keys. A key is structure, not content.
+//   - Signed or binary strings (opaqueString): a thinking signature, a base64 image
+//     or a tool-call id only validates byte for byte.
+//   - Numbers the API defines as numbers (typedNumber): a schema bound, a token
+//     limit, a tool argument. Turning one into a placeholder string changes its
+//     type and the upstream rejects the request.
+//
+// Any other number is data. When the whole literal is PII, it is replaced by a
+// placeholder string, as it always was, so a numeric phone field does not leak.
 
-// appKeys are top-level request fields that belong to the application, across the
-// Anthropic Messages, OpenAI chat, Bedrock and Azure shapes.
-var appKeys = map[string]bool{
-	"system": true, "tools": true, "tool_choice": true, "metadata": true, "stop_sequences": true,
-	"stop": true, "mcp_servers": true, "container": true, "betas": true, "model": true,
-	"max_tokens": true, "max_completion_tokens": true, "max_output_tokens": true, "temperature": true,
-	"top_p": true, "top_k": true, "seed": true, "n": true, "stream": true, "stream_options": true,
-	"thinking": true, "frequency_penalty": true, "presence_penalty": true, "logprobs": true,
-	"top_logprobs": true, "logit_bias": true, "response_format": true, "functions": true,
-	"function_call": true, "parallel_tool_calls": true, "anthropic_version": true, "anthropic_beta": true,
-	"toolConfig": true, "tool_config": true, "inferenceConfig": true, "output_config": true,
-	"service_tier": true, "store": true, "reasoning_effort": true, "modalities": true,
-	"audio": true, "prediction": true, "web_search_options": true,
-}
-
-// collectTargets returns the string and number nodes to scan for PII.
+// collectTargets returns every string and number node of the document that may
+// hold PII.
 func collectTargets(b []byte, root *node) []*node {
-	var out []*node
-	if root.kind == kindObject {
-		if msgs := root.get("messages"); msgs != nil && msgs.kind == kindArray {
-			for i, k := range root.keys {
-				v := root.kids[i]
-				switch {
-				case k == "messages":
-					out = walkMessages(b, v, out)
-				case appKeys[k]:
-					// application configuration: untouched
-				default:
-					out = walkAll(v, out)
-				}
-			}
-			return out
-		}
-	}
-	return walkAll(root, out)
+	return walkValues(b, root, "", nil, false, nil)
 }
 
-// walkAll adds every string and number value under n. Keys are not nodes, so they
-// are never included.
-func walkAll(n *node, out []*node) []*node {
-	switch n.kind {
-	case kindString, kindNumber:
-		return append(out, n)
-	case kindObject, kindArray:
-		for _, c := range n.kids {
-			out = walkAll(c, out)
-		}
-	}
-	return out
+// typedSubtrees hold values whose types are fixed by the API: no number under
+// these keys is ever replaced.
+var typedSubtrees = map[string]bool{
+	"tools": true, "functions": true, "tool_choice": true, "toolConfig": true, "tool_config": true,
+	"response_format": true, "output_config": true, "inferenceConfig": true, "thinking": true,
+	"input_schema": true, "inputSchema": true, "json_schema": true,
 }
 
-// walkStrings adds every string value under n and no numbers.
-func walkStrings(n *node, out []*node) []*node {
-	switch n.kind {
-	case kindString:
-		return append(out, n)
-	case kindObject, kindArray:
-		for _, c := range n.kids {
-			out = walkStrings(c, out)
-		}
-	}
-	return out
+// typedNumberKeys are numeric request parameters, wherever they appear.
+var typedNumberKeys = map[string]bool{
+	"max_tokens": true, "max_completion_tokens": true, "max_output_tokens": true, "maxTokens": true,
+	"temperature": true, "top_p": true, "topP": true, "top_k": true, "topK": true, "seed": true,
+	"frequency_penalty": true, "presence_penalty": true, "top_logprobs": true, "budget_tokens": true,
 }
 
-func walkMessages(b []byte, arr *node, out []*node) []*node {
-	for _, m := range arr.kids {
-		if m.kind != kindObject {
-			continue
-		}
-		if role, ok := m.get("role").str(b); ok && (role == "system" || role == "developer") {
-			continue // the application's own prompt
-		}
-		for i, k := range m.keys {
-			v := m.kids[i]
-			switch k {
-			case "content":
-				out = walkContent(b, v, out)
-			case "tool_calls":
-				for _, call := range v.kids {
-					if args := call.get("function").get("arguments"); args != nil && args.kind == kindString {
-						out = append(out, args)
-					}
-				}
-			case "function_call":
-				if args := v.get("arguments"); args != nil && args.kind == kindString {
-					out = append(out, args)
-				}
-			case "refusal", "reasoning_content", "reasoning":
-				if v.kind == kindString {
-					out = append(out, v)
-				}
-			}
-		}
-	}
-	return out
+// opaqueKeys hold signed or binary data under any parent.
+var opaqueKeys = map[string]bool{
+	"signature": true, "encrypted_content": true, "encrypted_index": true, "file_data": true, "bytes": true,
 }
 
-// walkContent handles a message's content: a string, or an array of blocks.
-func walkContent(b []byte, n *node, out []*node) []*node {
+// idKeys hold the ids that tie a tool call to its result. The upstream validates
+// their alphabet and compares them, so a placeholder in one breaks the pairing.
+var idKeys = map[string]bool{
+	"tool_use_id": true, "tool_call_id": true, "call_id": true, "toolUseId": true,
+}
+
+// toolTypes are block and call types whose "id" is a protocol identifier.
+var toolTypes = map[string]bool{
+	"tool_use": true, "server_tool_use": true, "mcp_tool_use": true,
+	"function": true, "tool_call": true, "function_call": true,
+}
+
+// walkValues adds every maskable string and number under n. key is the name n sits
+// under in its parent, which is what tells a signature from a sentence; typed says
+// n is inside a subtree whose numbers must stay numbers.
+func walkValues(b []byte, n *node, key string, parent *node, typed bool, out []*node) []*node {
 	switch n.kind {
 	case kindString:
-		return append(out, n)
+		if !opaqueString(b, n, key, parent) {
+			out = append(out, n)
+		}
+	case kindNumber:
+		if !typed && !typedNumberKeys[key] {
+			out = append(out, n)
+		}
+	case kindObject:
+		for i, k := range n.keys {
+			t := typed || typedSubtrees[k]
+			if k == "input" && (key == "toolUse" || toolTypes[typeOf(b, n)]) {
+				t = true // a tool call's arguments keep their types
+			}
+			out = walkValues(b, n.kids[i], k, n, t, out)
+		}
 	case kindArray:
-		for _, blk := range n.kids {
-			if blk.kind == kindObject {
-				out = walkBlock(b, blk, out)
-			} else if blk.kind == kindString {
-				out = append(out, blk)
-			}
+		for _, c := range n.kids {
+			out = walkValues(b, c, key, parent, typed, out)
 		}
 	}
 	return out
 }
 
-func walkBlock(b []byte, blk *node, out []*node) []*node {
-	typ, _ := blk.get("type").str(b)
-	switch typ {
-	case "text", "input_text", "output_text":
-		if t := blk.get("text"); t != nil && t.kind == kindString {
-			out = append(out, t)
+// typeOf returns the "type" string of an object, or "".
+func typeOf(b []byte, n *node) string {
+	t, _ := n.get("type").str(b)
+	return t
+}
+
+// typedContext reports whether n sits inside a subtree whose numbers must stay
+// numbers: tool definitions, schemas, response formats, or a tool call's input.
+func typedContext(b []byte, n *node) bool {
+	for cur := n; cur != nil; cur = cur.parent {
+		if typedSubtrees[cur.key] {
+			return true
 		}
-	case "tool_result":
-		if c := blk.get("content"); c != nil {
-			out = walkContent(b, c, out)
-		}
-	case "tool_use", "server_tool_use", "mcp_tool_use":
-		// Strings only: a number here is a typed argument, and masking it would
-		// turn it into a string.
-		if in := blk.get("input"); in != nil {
-			out = walkStrings(in, out)
-		}
-	case "thinking":
-		if t := blk.get("thinking"); t != nil && t.kind == kindString {
-			out = append(out, t) // the signature is opaque and never touched
-		}
-	case "document":
-		src := blk.get("source")
-		if st, _ := src.get("type").str(b); st == "text" {
-			if d := src.get("data"); d != nil && d.kind == kindString {
-				out = append(out, d)
-			}
-		}
-	case "redacted_thinking", "image", "image_url", "input_audio", "audio", "file":
-		// opaque or binary data
-	case "":
-		// Bedrock Converse blocks have no type: {"text": ...}, {"toolUse": ...}.
-		if t := blk.get("text"); t != nil && t.kind == kindString {
-			out = append(out, t)
-		}
-		if tr := blk.get("toolResult"); tr != nil {
-			if c := tr.get("content"); c != nil {
-				out = walkContent(b, c, out)
-			}
-		}
-		if tu := blk.get("toolUse"); tu != nil {
-			if in := tu.get("input"); in != nil {
-				out = walkStrings(in, out)
-			}
-		}
-	default:
-		if t := blk.get("text"); t != nil && t.kind == kindString {
-			out = append(out, t)
+		if cur.key == "input" && cur.parent != nil && (cur.parent.key == "toolUse" || toolTypes[typeOf(b, cur.parent)]) {
+			return true
 		}
 	}
-	return out
+	return false
+}
+
+// opaqueString reports whether the string n (the value of key in parent) is binary
+// or signed data that must reach the upstream exactly as the client sent it.
+func opaqueString(b []byte, n *node, key string, parent *node) bool {
+	raw := b[n.start:n.end]
+	if idKeys[key] {
+		return identifierLike(raw)
+	}
+	if opaqueKeys[key] {
+		// Signed and encoded values are one unbroken token. Anything that reads as
+		// text or an address under the same key (an email "signature") is masked.
+		return tokenLike(raw)
+	}
+	if key == "id" && parent != nil {
+		if t, _ := parent.get("type").str(b); toolTypes[t] && identifierLike(raw) {
+			return true
+		}
+	}
+	if key == "data" && parent != nil {
+		if t, _ := parent.get("type").str(b); t == "base64" || t == "redacted_thinking" {
+			return true
+		}
+		// Binary payloads that name their media type or format (input_audio,
+		// inline_data, Bedrock sources): opaque when the value is encoded data, not
+		// when the same fields wrap plain text such as a CSV.
+		for _, k := range []string{"format", "mime_type", "mimeType"} {
+			if parent.get(k) != nil {
+				return tokenLike(raw)
+			}
+		}
+	}
+	if key == "url" || key == "data" {
+		// data: URLs (inline images and files)
+		return bytes.HasPrefix(raw, []byte(`"data:`)) && bytes.Contains(raw, []byte(";base64,"))
+	}
+	return false
+}
+
+// identifierLike reports whether a JSON string literal reads as an id: letters,
+// digits, underscore, dash, at least one letter and no spaces or address
+// characters. A bare phone number or an email address is not one.
+func identifierLike(raw []byte) bool {
+	if len(raw) < 8 { // 6 characters and the quotes
+		return false
+	}
+	letter := false
+	for _, c := range raw[1 : len(raw)-1] {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+			letter = true
+		case c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return letter
+}
+
+// tokenLike reports whether a JSON string literal is a long run of base64 or
+// identifier characters, with no spaces, punctuation or address characters: the
+// shape of a signature, an id or encoded data, never of a sentence or a contact.
+func tokenLike(raw []byte) bool {
+	if len(raw) < 18 { // 16 characters and the quotes
+		return false
+	}
+	for _, c := range raw[1 : len(raw)-1] {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '+', c == '/', c == '=', c == '_', c == '-', c == '\\':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ─── jsonPath resolution on the scanned tree ─────────────────────────────────
 
-// resolvePath finds the value a simple JSONPath points at: $, .key, ['key'],
-// ["key"], [n] and [-n]. It returns false for anything else, so the caller can
-// fall back to the general JSONPath library.
-func resolvePath(root *node, path string) (*node, bool) {
+// resolvePath finds the values a simple JSONPath points at: $, .key, ['key'],
+// ["key"], [n] and [-n]. A key written twice in one object yields every copy. It
+// returns false for anything else, so the caller can fall back to the general
+// JSONPath library.
+func resolvePath(root *node, path string) ([]*node, bool) {
 	if !strings.HasPrefix(path, "$") {
 		return nil, false
 	}
-	cur := root
+	cur := []*node{root}
 	rest := path[1:]
+	step := func(key string) bool {
+		var next []*node
+		for _, c := range cur {
+			next = append(next, c.getAll(key)...)
+		}
+		cur = next
+		return len(cur) > 0
+	}
 	for rest != "" {
 		switch {
 		case rest[0] == '.':
@@ -224,43 +237,99 @@ func resolvePath(root *node, path string) (*node, bool) {
 				return nil, false
 			}
 			rest = rest[end:]
-			if cur == nil || cur.kind != kindObject {
-				return nil, false
-			}
-			if cur = cur.get(key); cur == nil {
+			if !step(key) {
 				return nil, false
 			}
 		case rest[0] == '[':
+			// A quoted name may itself contain "]" or an escaped quote, so read it
+			// as a string rather than looking for the next bracket.
+			if len(rest) > 1 && (rest[1] == '\'' || rest[1] == '"') {
+				key, n, ok := readQuotedName(rest[1:])
+				if !ok || len(rest) < 1+n+1 || rest[1+n] != ']' {
+					return nil, false
+				}
+				rest = rest[1+n+1:]
+				if !step(key) {
+					return nil, false
+				}
+				continue
+			}
 			close := strings.Index(rest, "]")
 			if close < 0 {
 				return nil, false
 			}
 			inner := rest[1:close]
 			rest = rest[close+1:]
-			if len(inner) >= 2 && (inner[0] == '\'' || inner[0] == '"') && inner[len(inner)-1] == inner[0] {
-				key := inner[1 : len(inner)-1]
-				if cur == nil || cur.kind != kindObject {
-					return nil, false
-				}
-				if cur = cur.get(key); cur == nil {
-					return nil, false
-				}
-				continue
-			}
 			idx, err := strconv.Atoi(inner)
-			if err != nil || cur == nil || cur.kind != kindArray {
+			if err != nil {
 				return nil, false
 			}
-			if idx < 0 {
-				idx += len(cur.kids)
+			var next []*node
+			for _, c := range cur {
+				if c.kind != kindArray {
+					continue
+				}
+				i := idx
+				if i < 0 {
+					i += len(c.kids)
+				}
+				if i >= 0 && i < len(c.kids) {
+					next = append(next, c.kids[i])
+				}
 			}
-			if idx < 0 || idx >= len(cur.kids) {
+			if len(next) == 0 {
 				return nil, false
 			}
-			cur = cur.kids[idx]
+			cur = next
 		default:
 			return nil, false
 		}
 	}
 	return cur, true
+}
+
+// readQuotedName reads a quoted member name from the start of s (which begins
+// with the quote) and returns the name, and how many bytes of s it used,
+// including both quotes. It understands the escapes RFC 9535 allows.
+func readQuotedName(s string) (string, int, bool) {
+	q := s[0]
+	var b strings.Builder
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == q:
+			return b.String(), i + 1, true
+		case c == '\\' && i+1 < len(s):
+			i++
+			switch s[i] {
+			case 'b':
+				b.WriteByte('\b')
+			case 'f':
+				b.WriteByte('\f')
+			case 'n':
+				b.WriteByte('\n')
+			case 'r':
+				b.WriteByte('\r')
+			case 't':
+				b.WriteByte('\t')
+			case '/', '\\', '\'', '"':
+				b.WriteByte(s[i])
+			case 'u':
+				if i+4 >= len(s) {
+					return "", 0, false
+				}
+				v, err := strconv.ParseUint(s[i+1:i+5], 16, 32)
+				if err != nil {
+					return "", 0, false
+				}
+				b.WriteRune(rune(v))
+				i += 4
+			default:
+				return "", 0, false
+			}
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return "", 0, false
 }

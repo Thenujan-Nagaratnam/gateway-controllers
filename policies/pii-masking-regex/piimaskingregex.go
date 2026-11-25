@@ -18,6 +18,7 @@
 package piimaskingregex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -39,6 +40,7 @@ const (
 	DefaultSSNEntityName      = "SSN"
 	DefaultJSONPath           = "$.messages[-1].content"
 	DefaultEmailRegex         = `(?i)\b[a-z0-9.!#$%&'*+/=?^_{|}~-]+@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])\b`
+	TextCleanRegex            = "^\"|\"$"
 	DefaultPhoneRegex         = `(?:\+?1[-.\s]?)?(?:\([2-9][0-9]{2}\)|[2-9][0-9]{2})[-.\s]?[2-9][0-9]{2}[-.\s]?[0-9]{4}\b`
 	DefaultSSNRegex           = `(?:00[1-9]|0[1-9][0-9]|[1-5][0-9]{2}|6(?:[0-57-9][0-9]|6[0-57-9])|[7-8][0-9]{2})[- ]?(?:0[1-9]|[1-9][0-9])[- ]?(?:000[1-9]|00[1-9][0-9]|0[1-9][0-9]{2}|[1-9][0-9]{3})\b`
 
@@ -293,34 +295,54 @@ func (p *PIIMaskingRegexPolicy) restorePIIInResponse(originalContent string, mas
 }
 
 // updatePayloadWithMaskedContent updates the original payload by replacing the extracted content
-func (p *PIIMaskingRegexPolicy) updatePayloadWithMaskedContent(originalPayload []byte, extractedValue, modifiedContent string, jsonPath string) []byte {
+func (p *PIIMaskingRegexPolicy) updatePayloadWithMaskedContent(originalPayload []byte, extractedValue, modifiedContent string, jsonPath string) ([]byte, bool) {
 	if jsonPath == "" || jsonPath == "$" {
 		// If no JSONPath, the entire payload was processed, return the modified content
-		return []byte(modifiedContent)
+		return []byte(modifiedContent), true
 	}
 
-	// If JSONPath is specified, update only the specific field in the JSON structure
-	var jsonData map[string]interface{}
-	if err := json.Unmarshal(originalPayload, &jsonData); err != nil {
-		// Fallback to returning the modified content as-is
-		return []byte(modifiedContent)
-	}
-
-	// Set the new value at the JSONPath location
-	err := utils.SetValueAtJSONPath(jsonData, jsonPath, modifiedContent)
+	// If JSONPath is specified, update only the specific field in the JSON structure.
+	// Every failure here is reported, never answered with the original payload:
+	// that would forward the values that were just found, unmasked.
+	jsonData, err := decodeObject(originalPayload)
 	if err != nil {
-		// Fallback to returning the original payload
-		return originalPayload
+		return nil, false
+	}
+	if err := utils.SetValueAtJSONPath(jsonData, jsonPath, modifiedContent); err != nil {
+		return nil, false
 	}
 
-	// Marshal back to JSON to get the full modified payload
-	updatedPayload, err := json.Marshal(jsonData)
-	if err != nil {
-		// Fallback to returning the original payload
-		return originalPayload
+	// Numbers were decoded as json.Number and HTML characters are not escaped, so
+	// the rest of the document comes back as it went in.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(jsonData); err != nil {
+		return nil, false
 	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), true
+}
 
-	return updatedPayload
+// decodeAny decodes any JSON document keeping every number as written.
+func decodeAny(payload []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(bytes.TrimPrefix(payload, []byte("\xef\xbb\xbf"))))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// decodeObject decodes a JSON object keeping every number as written.
+func decodeObject(payload []byte) (map[string]interface{}, error) {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
+	var m map[string]interface{}
+	if err := dec.Decode(&m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // OnRequestHeaders implements v2alpha.RequestHeaderPolicy.
@@ -357,7 +379,7 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext
 	// Whole payload: mask the decoded string values the application's users and
 	// tools supplied, and leave every other byte of the request as it was.
 	if p.params.JsonPath == "" || p.params.JsonPath == "$" {
-		root, err := parseJSON(payload)
+		roots, err := parseJSONValues(payload)
 		if err != nil {
 			// Not JSON, so there is no structure to damage: mask it as text rather
 			// than forward it unmasked.
@@ -368,20 +390,93 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext
 			p.recordMapping(reqCtx, mapping)
 			return policy.UpstreamRequestModifications{Body: []byte(masked)}
 		}
-		return p.applyMask(reqCtx, payload, collectTargets(payload, root))
+		var targets []*node
+		for _, root := range roots {
+			targets = append(targets, collectTargets(payload, root)...)
+		}
+		return p.applyMask(reqCtx, payload, targets)
 	}
 
-	// A specific path: replace just that value in place when the path is simple.
+	// A specific path: replace just those values in place.
 	if root, err := parseJSON(payload); err == nil {
-		if n, ok := resolvePath(root, p.params.JsonPath); ok {
-			if n.kind == kindString || n.kind == kindNumber {
-				return p.applyMask(reqCtx, payload, []*node{n})
-			}
-			// Value at path is not a scalar (e.g. multimodal content array); skip masking.
-			return policy.UpstreamRequestModifications{}
+		// A simple path (names and indexes) is resolved on the scanned document.
+		if nodes, ok := resolvePath(root, p.params.JsonPath); ok {
+			return p.applyMask(reqCtx, payload, p.selectedTargets(payload, nodes, true))
+		}
+		// Wildcards, filters, slices and the rest of RFC 9535: the SDK evaluates
+		// the query and reports where each match is, and each location is found
+		// again on the scanned document so only those bytes are rewritten.
+		if q, err := utils.CompileJSONPath(p.params.JsonPath); err == nil {
+			return p.processRequestBodyByQuery(reqCtx, payload, root, q)
 		}
 	}
 	return p.processRequestBodyByPath(reqCtx, payload)
+}
+
+// selectedTargets turns the nodes a path selected into the string and number
+// nodes to mask. An array or an object (a content list of blocks, a tool input)
+// has every string inside it masked, so a multimodal message is not forwarded as
+// it came. A scalar the path names exactly (explicit) is masked as asked; one that
+// a wildcard, filter or descendant segment swept up gets the same protection as in
+// the whole-payload mode, so that "$..*" cannot turn max_tokens, a signature or a
+// tool-call id into a placeholder.
+func (p *PIIMaskingRegexPolicy) selectedTargets(payload []byte, nodes []*node, explicit bool) []*node {
+	var targets []*node
+	for _, n := range nodes {
+		typed := typedContext(payload, n)
+		switch n.kind {
+		case kindString:
+			if explicit || !opaqueString(payload, n, n.key, n.parent) {
+				targets = append(targets, n)
+			}
+		case kindNumber:
+			if explicit || (!typed && !typedNumberKeys[n.key]) {
+				targets = append(targets, n)
+			}
+		default:
+			targets = walkValues(payload, n, n.key, n.parent, typed, targets)
+		}
+	}
+	return targets
+}
+
+// maxQueryDepth is how deep a document may nest for a jsonPath query: the query
+// reports the location of each match as a path as long as the nesting is deep.
+const maxQueryDepth = 128
+
+// processRequestBodyByQuery masks every value an RFC 9535 query selects. A query
+// that can select several values and selects none masks nothing: there is nothing
+// in the request to protect.
+func (p *PIIMaskingRegexPolicy) processRequestBodyByQuery(reqCtx *policy.RequestContext, payload []byte, root *node, q *utils.JSONPathQuery) policy.RequestAction {
+	if root.hasDupKeys {
+		// The query is evaluated on one reading of the document, and parsers disagree
+		// about which copy of a repeated key counts. A filter could select by one copy
+		// and leave the other unmasked, so such a body is refused.
+		return p.buildErrorResponse("request body repeats a JSON key, which a jsonPath query cannot be applied to safely").(policy.RequestAction)
+	}
+	if root.depth > maxQueryDepth {
+		return p.buildErrorResponse("request body is nested too deeply for a jsonPath query").(policy.RequestAction)
+	}
+	doc, err := decodeAny(payload)
+	if err != nil {
+		return p.buildErrorResponse(fmt.Sprintf("request body could not be read for jsonPath: %v", err)).(policy.RequestAction)
+	}
+	matches := q.Select(doc)
+	if len(matches) == 0 && q.IsSingular() {
+		// A path that names one exact place and finds nothing there has always been
+		// reported as an error, and still is.
+		return p.processRequestBodyByPath(reqCtx, payload)
+	}
+	var nodes []*node
+	for _, m := range matches {
+		// A normalized path is only names and indexes, so it resolves exactly.
+		found, ok := resolvePath(root, m.Path)
+		if !ok {
+			return p.buildErrorResponse("jsonPath match could not be located in the request body").(policy.RequestAction)
+		}
+		nodes = append(nodes, found...)
+	}
+	return p.applyMask(reqCtx, payload, p.selectedTargets(payload, nodes, q.IsSingular()))
 }
 
 // applyMask masks the given nodes of payload and turns the result into an action.
@@ -414,17 +509,21 @@ func (p *PIIMaskingRegexPolicy) processRequestBodyByPath(reqCtx *policy.RequestC
 		return p.buildErrorResponse(fmt.Sprintf("error extracting value from JSONPath: %v", err)).(policy.RequestAction)
 	}
 	if !ok {
-		// Value at path is not a scalar (e.g. multimodal content array); skip masking.
-		return policy.UpstreamRequestModifications{}
+		// The path selects an array or object that only the general JSONPath
+		// library could locate. This policy cannot rewrite it in place, and
+		// forwarding it unmasked would leak, so the request is refused.
+		return p.buildErrorResponse("jsonPath selects a value that is not a string and cannot be masked in place").(policy.RequestAction)
 	}
 	masked, mapping, changed := p.maskPlainText(extractedValue)
 	if !changed {
 		return policy.UpstreamRequestModifications{}
 	}
 	p.recordMapping(reqCtx, mapping)
-	return policy.UpstreamRequestModifications{
-		Body: p.updatePayloadWithMaskedContent(payload, extractedValue, masked, p.params.JsonPath),
+	body, ok := p.updatePayloadWithMaskedContent(payload, extractedValue, masked, p.params.JsonPath)
+	if !ok {
+		return p.buildErrorResponse("jsonPath value could not be replaced with its masked form").(policy.RequestAction)
 	}
+	return policy.UpstreamRequestModifications{Body: body}
 }
 
 // OnResponseBody restores PII placeholders in a buffered response body.
@@ -501,20 +600,20 @@ func (p *PIIMaskingRegexPolicy) processResponseBody(respCtx *policy.ResponseCont
 // unclosed "[" before it is released regardless of shape. Entity names are
 // operator-configurable and so unbounded in principle; without a ceiling, prose
 // opening a bracket onto a long uppercase run would buffer to the kernel's
-// accumulator limit before anything reached the client. 64 bytes is far past any
+// accumulator limit before anything reached the client. 128 bytes is far past any
 // real placeholder — "[CREDIT_CARD_NUMBER_0000]" is 25.
-const maxPlaceholderTailBytes = 64
+const maxPlaceholderTailBytes = 128
 
 // placeholderTailPattern matches the text after an unclosed "[" when that text
 // could still become a placeholder.
 //
-// Placeholders are built as "[%s_%04x]" with the entity name uppercased, and the
-// request side validates them with ^\[[A-Z_]+_[0-9a-f]{4}\]$. The two halves draw
+// Placeholders are built as "[%s_%08x]" with the entity name uppercased, and the
+// request side validates them with ^\[[A-Z_]+_[0-9a-f]{8}\]$. The two halves draw
 // on disjoint character sets — the name is [A-Z_], the counter is [0-9a-f] — so a
-// half-emitted placeholder is exactly a run of the first followed by up to four
+// half-emitted placeholder is exactly a run of the first followed by up to eight
 // of the second. Anything else after the bracket (a space, lowercase prose,
 // punctuation) proves no placeholder can complete, so the stream is released now.
-var placeholderTailPattern = regexp.MustCompile(`^[A-Z_]*[0-9a-f]{0,4}$`)
+var placeholderTailPattern = regexp.MustCompile(`^[A-Z_]*[0-9a-f]{0,8}$`)
 
 // couldCompletePlaceholder reports whether content ends in an unclosed "[" whose
 // trailing text is still a viable placeholder prefix — that is, whether waiting
@@ -625,19 +724,24 @@ func sseLineBody(line string) string {
 // line is one at all. CR-tolerant, so "data: [DONE]\r" yields "[DONE]".
 func sseDataPayload(line string) (string, bool) {
 	body := sseLineBody(line)
-	if !strings.HasPrefix(body, sseDataPrefix) {
+	if !strings.HasPrefix(body, "data:") {
 		return "", false
 	}
-	return strings.TrimPrefix(body, sseDataPrefix), true
+	// One optional space follows the colon; "data:{...}" is as valid as "data: {...}".
+	return strings.TrimPrefix(strings.TrimPrefix(body, "data:"), " "), true
 }
 
 // rebuildSSEDataLine reassembles a data line around a rewritten payload,
-// preserving the line's original CR terminator.
+// preserving the line's original spacing and CR terminator.
 func rebuildSSEDataLine(line, payload string) string {
-	if strings.HasSuffix(line, "\r") {
-		return sseDataPrefix + payload + "\r"
+	prefix := sseDataPrefix
+	if !strings.HasPrefix(sseLineBody(line), sseDataPrefix) {
+		prefix = "data:"
 	}
-	return sseDataPrefix + payload
+	if strings.HasSuffix(line, "\r") {
+		return prefix + payload + "\r"
+	}
+	return prefix + payload
 }
 
 // isSSEFieldLine reports whether line is an SSE field that belongs to the event
@@ -667,22 +771,22 @@ func markEventBlockForRemoval(lines []string, dataIdx int, removeLines map[int]b
 	}
 }
 
+// placeholderToken finds a bracketed token that may be a placeholder. Restoring
+// reads the text once and looks each token up, so the result never depends on map
+// order and an original that itself looks like a placeholder is not expanded again.
+var placeholderToken = regexp.MustCompile(`\[[^\[\]\s]+\]`)
+
 // restoreJSONBytes replaces every complete placeholder in s with its
 // JSON-escaped original, preserving all other bytes exactly.
 func restoreJSONBytes(s string, restoreMap map[string]string) string {
-	result := s
-	for placeholder, original := range restoreMap {
-		if !strings.Contains(result, placeholder) {
-			continue
+	return placeholderToken.ReplaceAllStringFunc(s, func(tok string) string {
+		original, ok := restoreMap[tok]
+		if !ok {
+			return tok
 		}
-		encodedBytes, err := json.Marshal(original)
-		if err != nil {
-			continue
-		}
-		escapedOriginal := string(encodedBytes[1 : len(encodedBytes)-1])
-		result = strings.ReplaceAll(result, placeholder, escapedOriginal)
-	}
-	return result
+		enc := encodeJSONString(original)
+		return string(enc[1 : len(enc)-1])
+	})
 }
 
 // ─── SSE / Streaming helpers ─────────────────────────────────────────────────
@@ -690,7 +794,7 @@ func restoreJSONBytes(s string, restoreMap map[string]string) string {
 // isSSEChunk reports whether the chunk looks like SSE data (has at least one "data: " or "event:" line).
 func isSSEChunk(s string) bool {
 	for _, line := range strings.SplitN(s, "\n", 5) {
-		if strings.HasPrefix(line, sseDataPrefix) || strings.HasPrefix(line, sseEventPrefix) {
+		if strings.HasPrefix(line, "data:") || strings.HasPrefix(line, sseEventPrefix) {
 			return true
 		}
 	}
@@ -741,11 +845,12 @@ func invertStringMap(m map[string]string) map[string]string {
 // restore replaces placeholders with their original values.
 // maskedMap is placeholder → original.
 func restore(content string, maskedMap map[string]string) string {
-	result := content
-	for placeholder, original := range maskedMap {
-		result = strings.ReplaceAll(result, placeholder, original)
-	}
-	return result
+	return placeholderToken.ReplaceAllStringFunc(content, func(tok string) string {
+		if original, ok := maskedMap[tok]; ok {
+			return original
+		}
+		return tok
+	})
 }
 
 // extractStringFromPath extracts the value at jsonPath from payload as a string.
@@ -756,8 +861,8 @@ func extractStringFromPath(payload []byte, jsonPath string) (string, bool, error
 	if jsonPath == "" || jsonPath == "$" {
 		return string(payload), true, nil
 	}
-	var jsonData map[string]interface{}
-	if err := json.Unmarshal(payload, &jsonData); err != nil {
+	jsonData, err := decodeObject(payload)
+	if err != nil {
 		return "", false, err
 	}
 	raw, err := utils.ExtractValueFromJsonpath(jsonData, jsonPath)
@@ -767,6 +872,8 @@ func extractStringFromPath(payload []byte, jsonPath string) (string, bool, error
 	switch v := raw.(type) {
 	case string:
 		return v, true, nil
+	case json.Number:
+		return v.String(), true, nil
 	case float64:
 		return strconv.FormatFloat(v, 'f', -1, 64), true, nil
 	case int:

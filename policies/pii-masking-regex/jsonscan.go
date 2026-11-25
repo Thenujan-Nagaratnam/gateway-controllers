@@ -19,6 +19,7 @@
 package piimaskingregex
 
 import (
+	"bytes"
 	"errors"
 	"sort"
 	"strconv"
@@ -37,7 +38,8 @@ import (
 // string to match against it, then splice a replacement over exactly the matched
 // bytes and leave everything else as it was.
 
-const maxJSONDepth = 512
+// maxJSONDepth matches encoding/json, which the policy this replaces relied on.
+const maxJSONDepth = 10000
 
 type nodeKind byte
 
@@ -57,28 +59,74 @@ type node struct {
 	end   int
 	keys  []string
 	kids  []*node
+
+	// key is the member name the node sits under (an array element inherits the
+	// name of its array), and parent is the node that holds it. They tell a
+	// signature from a sentence, and a tool schema from a message.
+	key    string
+	parent *node
+	index  map[string][]*node // built on first lookup in a wide object
+
+	// Set on a document's root only.
+	hasDupKeys bool // an object somewhere writes the same key twice
+	depth      int  // the deepest nesting
 }
 
 var errBadJSON = errors.New("invalid JSON")
 
+// inheritKeys gives every array element the member name its array sits under.
+// An object member already has its own name.
+func inheritKeys(n *node) {
+	for _, c := range n.kids {
+		if n.kind == kindArray {
+			c.key = n.key
+		}
+		inheritKeys(c)
+	}
+}
+
 // parseJSON scans b as exactly one JSON value (surrounding whitespace allowed).
 func parseJSON(b []byte) (*node, error) {
-	s := &scanner{b: b}
-	s.skipWS()
-	n, err := s.value(0)
+	vals, err := parseJSONValues(b)
 	if err != nil {
 		return nil, err
 	}
-	s.skipWS()
-	if s.i != len(b) {
+	if len(vals) != 1 {
 		return nil, errBadJSON
 	}
-	return n, nil
+	return vals[0], nil
+}
+
+// parseJSONValues scans b as one or more JSON values separated by whitespace (a
+// single document, or newline-delimited JSON). Anything else is an error.
+func parseJSONValues(b []byte) ([]*node, error) {
+	s := &scanner{b: b}
+	if bytes.HasPrefix(b, []byte("\xef\xbb\xbf")) {
+		s.i = 3 // a UTF-8 byte order mark is not part of the document
+	}
+	var out []*node
+	for {
+		s.skipWS()
+		if s.i == len(b) && len(out) > 0 {
+			for _, n := range out {
+				n.hasDupKeys, n.depth = s.dup, s.maxDepth
+				inheritKeys(n)
+			}
+			return out, nil
+		}
+		n, err := s.value(0)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
 }
 
 type scanner struct {
-	b []byte
-	i int
+	b        []byte
+	i        int
+	dup      bool
+	maxDepth int
 }
 
 func (s *scanner) skipWS() {
@@ -95,6 +143,9 @@ func (s *scanner) skipWS() {
 func (s *scanner) value(depth int) (*node, error) {
 	if s.i >= len(s.b) || depth > maxJSONDepth {
 		return nil, errBadJSON
+	}
+	if depth > s.maxDepth {
+		s.maxDepth = depth
 	}
 	switch c := s.b[s.i]; {
 	case c == '{':
@@ -150,8 +201,15 @@ func (s *scanner) object(depth int) (*node, error) {
 		if err != nil {
 			return nil, err
 		}
+		if s.seenKey(n, key.text) {
+			s.dup = true
+		}
+		v.key, v.parent = key.text, n
 		n.keys = append(n.keys, key.text)
 		n.kids = append(n.kids, v)
+		if n.index != nil {
+			n.index[key.text] = append(n.index[key.text], v)
+		}
 		s.skipWS()
 		if s.i >= len(s.b) {
 			return nil, errBadJSON
@@ -184,6 +242,7 @@ func (s *scanner) array(depth int) (*node, error) {
 		if err != nil {
 			return nil, err
 		}
+		v.parent = n
 		n.kids = append(n.kids, v)
 		s.skipWS()
 		if s.i >= len(s.b) {
@@ -200,6 +259,26 @@ func (s *scanner) array(depth int) (*node, error) {
 		}
 		return nil, errBadJSON
 	}
+}
+
+// seenKey reports whether key is already a member of n.
+func (s *scanner) seenKey(n *node, key string) bool {
+	if len(n.keys) < 12 {
+		for _, k := range n.keys {
+			if k == key {
+				return true
+			}
+		}
+		return false
+	}
+	if n.index == nil {
+		n.index = make(map[string][]*node, len(n.keys)*2)
+		for i, k := range n.keys {
+			n.index[k] = append(n.index[k], n.kids[i])
+		}
+	}
+	_, dup := n.index[key]
+	return dup
 }
 
 // skipString advances over a string literal, validating escapes and rejecting raw
@@ -289,17 +368,43 @@ func (s *scanner) number() (*node, error) {
 	return &node{kind: kindNumber, start: start, end: s.i}, nil
 }
 
-// get returns the value of key in an object, or nil.
+// get returns the value of key in an object, or nil. A key written twice is read
+// as the last one, as encoding/json does.
 func (n *node) get(key string) *node {
 	if n == nil || n.kind != kindObject {
 		return nil
 	}
+	var found *node
 	for i, k := range n.keys {
 		if k == key {
-			return n.kids[i]
+			found = n.kids[i]
 		}
 	}
-	return nil
+	return found
+}
+
+// getAll returns every value written under key. Parsers disagree on which copy of
+// a repeated key wins, so a path that names it has to cover them all.
+func (n *node) getAll(key string) []*node {
+	if n == nil || n.kind != kindObject {
+		return nil
+	}
+	if len(n.keys) >= 12 {
+		if n.index == nil {
+			n.index = make(map[string][]*node, len(n.keys)*2)
+			for i, k := range n.keys {
+				n.index[k] = append(n.index[k], n.kids[i])
+			}
+		}
+		return n.index[key]
+	}
+	var out []*node
+	for i, k := range n.keys {
+		if k == key {
+			out = append(out, n.kids[i])
+		}
+	}
+	return out
 }
 
 // str returns the decoded text of a string node.

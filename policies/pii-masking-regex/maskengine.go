@@ -33,7 +33,7 @@ const redactedText = "*****"
 // placeholderSpanPattern finds a placeholder token inside text. Anything the policy
 // itself produced (here or in an earlier instance on the same route) is never
 // masked again, and a user's own text that merely looks like one is left alone.
-var placeholderSpanPattern = regexp.MustCompile(`\[[A-Z_]+_[0-9a-f]{4}\]`)
+var placeholderSpanPattern = regexp.MustCompile(`\[[A-Z_]+_[0-9a-f]{8}\]`)
 
 // match is one detected value, as byte offsets into the text it was found in.
 type match struct {
@@ -63,7 +63,19 @@ func (p *PIIMaskingRegexPolicy) findMatches(text string) []match {
 	var all []match
 	for _, name := range names {
 		for _, loc := range p.params.PIIEntities[name].FindAllStringIndex(text, -1) {
-			if loc[1] <= loc[0] || overlapsAny(skip, loc[0], loc[1]) {
+			if loc[1] <= loc[0] {
+				continue
+			}
+			if overlapsAny(skip, loc[0], loc[1]) {
+				if p.params.Builtin[name] {
+					continue
+				}
+				// A broad custom pattern ("pw=\\S+") can run into a placeholder that
+				// is already in the text. Mask what lies outside it rather than
+				// letting trailing placeholder-like text keep the rest in the clear.
+				for _, seg := range clipAround(skip, loc[0], loc[1]) {
+					all = append(all, match{start: seg[0], end: seg[1], entity: name})
+				}
 				continue
 			}
 			if p.params.Builtin[name] && name != DefaultEmailEntityName && !numberBoundaryOK(text, loc[0], loc[1]) {
@@ -94,6 +106,28 @@ func (p *PIIMaskingRegexPolicy) findMatches(text string) []match {
 	return out
 }
 
+// clipAround returns the parts of [s,e) that lie outside every span in skip
+// (spans are sorted and disjoint, as FindAll returns them).
+func clipAround(skip [][]int, s, e int) [][2]int {
+	var out [][2]int
+	pos := s
+	for _, sp := range skip {
+		if sp[1] <= pos || sp[0] >= e {
+			continue
+		}
+		if sp[0] > pos {
+			out = append(out, [2]int{pos, sp[0]})
+		}
+		if sp[1] > pos {
+			pos = sp[1]
+		}
+	}
+	if pos < e {
+		out = append(out, [2]int{pos, e})
+	}
+	return out
+}
+
 func overlapsAny(spans [][]int, s, e int) bool {
 	for _, sp := range spans {
 		if s < sp[1] && sp[0] < e {
@@ -109,12 +143,16 @@ func overlapsAny(spans [][]int, s, e int) bool {
 // a UUID, or the digits of a decimal. Cutting a placeholder into one of those
 // corrupts it, which is worse than leaving it alone.
 func numberBoundaryOK(text string, s, e int) bool {
+	// A formatted number ("415-555-0199", "(415) 555-0199") is a phone number
+	// wherever it stands; only a bare run of digits can be the middle of
+	// something longer, so only that gets the decimal checks.
+	bare := !strings.ContainsAny(text[s:e], "-() .+")
 	if s > 0 {
 		r, _ := utf8.DecodeLastRuneInString(text[:s])
 		if isDigit(r) {
 			return false
 		}
-		if r == '.' && s > 1 {
+		if bare && r == '.' && s > 1 {
 			if r2, _ := utf8.DecodeLastRuneInString(text[:s-1]); isDigit(r2) {
 				return false
 			}
@@ -125,11 +163,25 @@ func numberBoundaryOK(text string, s, e int) bool {
 		if isDigit(r) {
 			return false
 		}
-		if r == '.' && e+w < len(text) {
-			if r2, _ := utf8.DecodeRuneInString(text[e+w:]); isDigit(r2) {
+		// "4155550199.0": a number exported as a float is still that number. A
+		// non-zero fraction means the digits are the integer part of a decimal.
+		if bare && r == '.' && e+w < len(text) {
+			if r2, _ := utf8.DecodeRuneInString(text[e+w:]); isDigit(r2) && !zeroFraction(text[e+w:]) {
 				return false
 			}
 		}
+	}
+	return true
+}
+
+// zeroFraction reports whether s starts with digits that are all zeros, up to a
+// character that is not a digit.
+func zeroFraction(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '0' {
+			continue
+		}
+		return !isDigit(rune(s[i]))
 	}
 	return true
 }
@@ -148,9 +200,9 @@ type pair struct{ entity, value string }
 // byte-identical across the turns of a conversation (prompt caching) and keeps a
 // signed thinking block valid when the client sends it back.
 //
-// The four hex digits are the start of a SHA-256 of the pair. A clash between two
-// different values of one entity inside one request is resolved by stepping to the
-// next free tag, in sorted order, so the outcome is deterministic and no two values
+// The eight hex digits are the start of a SHA-256 of the pair, so a clash between
+// two values is a one-in-four-billion event. When one does happen inside one
+// request it is resolved by stepping to the next free tag, in sorted order, so the outcome is deterministic and no two values
 // of a request ever share a placeholder.
 func assignPlaceholders(pairs []pair) map[pair]string {
 	sorted := append([]pair(nil), pairs...)
@@ -167,9 +219,9 @@ func assignPlaceholders(pairs []pair) map[pair]string {
 			continue
 		}
 		sum := sha256.Sum256([]byte("pii-masking-regex\x00" + pr.entity + "\x00" + pr.value))
-		tag := int(sum[0])<<8 | int(sum[1])
-		for i := 0; i < 0x10000; i++ {
-			ph := fmt.Sprintf("[%s_%04x]", pr.entity, (tag+i)&0xffff)
+		tag := uint32(sum[0])<<24 | uint32(sum[1])<<16 | uint32(sum[2])<<8 | uint32(sum[3])
+		for i := uint32(0); i < 1<<16; i++ {
+			ph := fmt.Sprintf("[%s_%08x]", pr.entity, tag+i)
 			if !used[ph] {
 				used[ph] = true
 				out[pr] = ph
@@ -214,7 +266,7 @@ func (p *PIIMaskingRegexPolicy) maskTargets(b []byte, targets []*node) ([]byte, 
 			ms := p.findMatches(lit)
 			// Only a number that is entirely PII is replaced, and then by a string. A
 			// match inside a longer number is a coincidence of digits, not a value.
-			if len(ms) == 1 && ms[0].start == 0 && ms[0].end == len(lit) {
+			if len(ms) == 1 && ms[0].start == 0 && (ms[0].end == len(lit) || (lit[ms[0].end] == '.' && zeroFraction(lit[ms[0].end+1:]))) {
 				found = append(found, pending{start: n.start, end: n.end, entity: ms[0].entity, value: lit, quote: true})
 				entityHits[ms[0].entity]++
 			}
@@ -228,6 +280,7 @@ func (p *PIIMaskingRegexPolicy) maskTargets(b []byte, targets []*node) ([]byte, 
 	if len(found) == 0 {
 		return b, nil, false
 	}
+	canonicalEntity(found)
 
 	var ph map[pair]string
 	var mapping map[string]string
@@ -270,10 +323,37 @@ func (p *PIIMaskingRegexPolicy) maskTargets(b []byte, targets []*node) ([]byte, 
 
 // maskPlainText masks a body that is not JSON. It is the fail-safe: a payload the
 // scanner cannot read is still masked, as text, rather than forwarded as sent.
+// canonicalEntity makes one value carry one entity inside a request. When two
+// detectors match the same text (a ten-digit run is both PHONE and a custom
+// pattern), the placeholder for it must not depend on which position was looked at
+// first, and the response restore keys values, not positions: one value, one
+// placeholder, the first entity by name.
+func canonicalEntity(found []pending) {
+	canon := make(map[string]string, len(found))
+	for _, f := range found {
+		if e, ok := canon[f.value]; !ok || f.entity < e {
+			canon[f.value] = f.entity
+		}
+	}
+	for i := range found {
+		found[i].entity = canon[found[i].value]
+	}
+}
+
 func (p *PIIMaskingRegexPolicy) maskPlainText(text string) (string, map[string]string, bool) {
 	ms := p.findMatches(text)
 	if len(ms) == 0 {
 		return text, nil, false
+	}
+	canon := make(map[string]string, len(ms))
+	for _, m := range ms {
+		v := text[m.start:m.end]
+		if e, ok := canon[v]; !ok || m.entity < e {
+			canon[v] = m.entity
+		}
+	}
+	for i := range ms {
+		ms[i].entity = canon[text[ms[i].start:ms[i].end]]
 	}
 	pairs := make([]pair, 0, len(ms))
 	for _, m := range ms {

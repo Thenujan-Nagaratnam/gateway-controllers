@@ -19,8 +19,8 @@
 @pii-masking-regex
 Feature: PII masking regex policy on chat and agent payloads
   As an API developer fronting an LLM agent
-  I want the whole-payload mode to mask only what users and tools said
-  So that the request stays valid JSON, the application's own prompt and schemas are untouched,
+  I want the whole-payload mode to mask every string in the request
+  So that the request stays valid JSON, numbers, keys and signed data are untouched,
   and the same value always gets the same placeholder
 
   Background:
@@ -59,7 +59,7 @@ Feature: PII masking regex policy on chat and agent payloads
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 404
 
-  Scenario: The system prompt, tool definitions and parameters are not masked
+  Scenario: The whole payload is masked while numbers and keys are kept
     Given I generate a unique value from "pii-chat-scope" and store it as "apiName"
     And I generate a unique API version from "pii-chat-scope" and store it as "apiVersion"
     And I generate a unique API context from "/pii-chat-scope" and store it as "apiContext"
@@ -94,12 +94,13 @@ Feature: PII masking regex policy on chat and agent payloads
     And the response body should contain "bob@example.org"
     When I send a "GET" request to the "capture" service at "/test/captured?path=/scope"
     Then the response should be valid JSON
-    And the response body should contain "Escalate to ops@corp.example.org"
-    And the response body should contain "Mail ops@corp.example.org or call 415-555-0199"
-    And the response body should contain "4155550199"
-    And the response body should contain "9007199254740991"
+    And the response body should not contain "ops@corp.example.org"
+    And the response body should not contain "415-555-0199"
     And the response body should not contain "bob@example.org"
     And the response body should contain "[EMAIL_"
+    And the response body should contain "[PHONE_"
+    And the response body should contain "4155550199"
+    And the response body should contain "9007199254740991"
 
     When I delete the API "${CTX:apiName}"
     Then the response should be successful
@@ -161,8 +162,8 @@ Feature: PII masking regex policy on chat and agent payloads
     Then the response status code should be 200
     And the response body should contain "bob@example.org"
     When I send a "GET" request to the "capture" service at "/test/captured?path=/stable"
-    Then the response body should contain "[EMAIL_9b71]"
-    And the response body should contain "[PHONE_0ccd]"
+    Then the response body should contain "[EMAIL_9b71a8a4]"
+    And the response body should contain "[PHONE_0ccd993b]"
 
     When I set header "Content-Type" to "application/json"
     And I send a "POST" request to "${CTX:apiContext}/${CTX:apiVersion}/stable" with body:
@@ -172,8 +173,8 @@ Feature: PII masking regex policy on chat and agent payloads
     Then the response status code should be 200
     And the response body should contain "alice@example.com"
     When I send a "GET" request to the "capture" service at "/test/captured?path=/stable"
-    Then the response body should contain "[EMAIL_9b71]"
-    And the response body should contain "[PHONE_0ccd]"
+    Then the response body should contain "[EMAIL_9b71a8a4]"
+    And the response body should contain "[PHONE_0ccd993b]"
     And the response body should not contain "alice@example.com"
 
     When I delete the API "${CTX:apiName}"
@@ -286,7 +287,7 @@ Feature: PII masking regex policy on chat and agent payloads
     Then the response should be successful
     And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 404
 
-  Scenario: Redaction keeps a chat request valid and leaves the application prompt alone
+  Scenario: Redaction keeps a chat request valid
     Given I generate a unique value from "pii-chat-redact" and store it as "apiName"
     And I generate a unique API version from "pii-chat-redact" and store it as "apiVersion"
     And I generate a unique API context from "/pii-chat-redact" and store it as "apiContext"
@@ -310,9 +311,96 @@ Feature: PII masking regex policy on chat and agent payloads
     And the response body should not contain "[EMAIL_"
     When I send a "GET" request to the "capture" service at "/test/captured?path=/redact"
     Then the response should be valid JSON
-    And the response body should contain "ops@corp.example.org"
+    And the response body should not contain "ops@corp.example.org"
     And the response body should contain "*****"
     And the response body should not contain "bob@example.org"
+
+    When I delete the API "${CTX:apiName}"
+    Then the response should be successful
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 404
+
+  Scenario: jsonPath "$.messages" masks the conversation and leaves the system prompt and tools alone
+    Given I generate a unique value from "pii-chat-messages" and store it as "apiName"
+    And I generate a unique API version from "pii-chat-messages" and store it as "apiVersion"
+    And I generate a unique API context from "/pii-chat-messages" and store it as "apiContext"
+    When I create API from "resources/templates/rest-api.yaml" with values:
+      | apiVersion             | ${CTX:gatewaySpecVersion} |
+      | name                   | ${CTX:apiName}                   |
+      | spec.displayName       | ${CTX:apiName}                   |
+      | spec.version           | ${CTX:apiVersion}                |
+      | spec.context           | ${CTX:apiContext}/$version       |
+      | spec.upstream.main.url | ${CTX:captureUpstream}           |
+      | spec.operations        | [{"method":"GET","path":"/get"},{"method":"POST","path":"/convo","policies":[{"name":"pii-masking-regex","version":"v1","params":{"email":true,"phone":true,"jsonPath":"$.messages"}}]}] |
+    Then the resource creation response should indicate successful deployment
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 200
+
+    When I set header "Content-Type" to "application/json"
+    And I send a "POST" request to "${CTX:apiContext}/${CTX:apiVersion}/convo" with body:
+      """
+      {
+        "model": "claude-sonnet",
+        "system": "Escalate to ops@corp.example.org",
+        "tools": [
+          {"name": "lookup", "description": "Mail ops@corp.example.org or call 415-555-0199",
+           "input_schema": {"type": "object", "maximum": 2147483647}}
+        ],
+        "messages": [
+          {"role": "user", "content": "Please mail bob@example.org"},
+          {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_4155550199", "name": "lookup", "input": {"email": "bob@example.org", "limit": 5}}]},
+          {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_4155550199", "content": "found 415-555-0199"}]}
+        ]
+      }
+      """
+    Then the response status code should be 200
+    And the response body should contain "found 415-555-0199"
+    When I send a "GET" request to the "capture" service at "/test/captured?path=/convo"
+    Then the response should be valid JSON
+    And the response body should contain "Escalate to ops@corp.example.org"
+    And the response body should contain "Mail ops@corp.example.org or call 415-555-0199"
+    And the response body should contain "2147483647"
+    And the response body should contain "toolu_4155550199"
+    And the response body should not contain "bob@example.org"
+    And the response body should not contain "found 415-555-0199"
+    And the response body should contain "[EMAIL_"
+    And the response body should contain "[PHONE_"
+
+    When I delete the API "${CTX:apiName}"
+    Then the response should be successful
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 404
+
+  Scenario: An RFC 9535 filter path masks only the messages it selects
+    Given I generate a unique value from "pii-chat-filter" and store it as "apiName"
+    And I generate a unique API version from "pii-chat-filter" and store it as "apiVersion"
+    And I generate a unique API context from "/pii-chat-filter" and store it as "apiContext"
+    When I create API from "resources/templates/rest-api.yaml" with values:
+      | apiVersion             | ${CTX:gatewaySpecVersion} |
+      | name                   | ${CTX:apiName}                   |
+      | spec.displayName       | ${CTX:apiName}                   |
+      | spec.version           | ${CTX:apiVersion}                |
+      | spec.context           | ${CTX:apiContext}/$version       |
+      | spec.upstream.main.url | ${CTX:captureUpstream}           |
+      | spec.operations        | [{"method":"GET","path":"/get"},{"method":"POST","path":"/filter","policies":[{"name":"pii-masking-regex","version":"v1","params":{"email":true,"jsonPath":"$.messages[?@.role=='user'].content"}}]}] |
+    Then the resource creation response should indicate successful deployment
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 200
+
+    When I set header "Content-Type" to "application/json"
+    And I send a "POST" request to "${CTX:apiContext}/${CTX:apiVersion}/filter" with body:
+      """
+      {
+        "system": "Escalate to ops@corp.example.org",
+        "messages": [
+          {"role": "user", "content": "Please mail bob@example.org"},
+          {"role": "assistant", "content": "Sent to amy@example.org"}
+        ]
+      }
+      """
+    Then the response status code should be 200
+    When I send a "GET" request to the "capture" service at "/test/captured?path=/filter"
+    Then the response should be valid JSON
+    And the response body should not contain "bob@example.org"
+    And the response body should contain "[EMAIL_"
+    And the response body should contain "Escalate to ops@corp.example.org"
+    And the response body should contain "Sent to amy@example.org"
 
     When I delete the API "${CTX:apiName}"
     Then the response should be successful

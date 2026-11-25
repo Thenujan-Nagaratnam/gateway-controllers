@@ -122,8 +122,14 @@ func eventChannels(payload []byte) []channelRef {
 	// Every other provider shape this policy already knew, first match wins.
 	typ, _ := root.get("type").str(payload)
 	for _, path := range DefaultStreamingJSONPaths {
-		if n, ok := resolvePath(root, path); ok && n.kind == kindString {
-			add("p:"+path, strings.Contains(typ, "function_call_arguments"), n)
+		if nodes, ok := resolvePath(root, path); ok && nodes[0].kind == kindString {
+			// Responses-API events of different kinds (output text, reasoning
+			// summary, tool arguments) and different items never share a channel.
+			key := "p:" + path + ":" + typ
+			for _, f := range []string{"item_id", "output_index", "content_index", "summary_index"} {
+				key += ":" + raw(root.get(f))
+			}
+			add(key, strings.Contains(typ, "function_call_arguments"), nodes[0])
 			break
 		}
 	}
