@@ -1,0 +1,68 @@
+{
+ "model": "claude",
+ "max_tokens": 1024,
+ "stream": true,
+ "system": "You help. Reach support at help@corp.example.",
+ "tools": [
+  {
+   "name": "lookup",
+   "description": "Looks up a user; contact ops@corp.example",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "limit": {
+      "type": "integer",
+      "maximum": 9007199254740991
+     },
+     "email": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ ],
+ "messages": [
+  {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "line1\nbob@example.org"
+    }
+   ]
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "thinking",
+     "thinking": "I should look up bob@example.org",
+     "signature": "c2ln"
+    },
+    {
+     "type": "tool_use",
+     "id": "tu1",
+     "name": "lookup",
+     "input": {
+      "email": "bob@example.org"
+     }
+    }
+   ]
+  },
+  {
+   "role": "user",
+   "content": [
+    {
+     "type": "tool_result",
+     "tool_use_id": "tu1",
+     "content": [
+      {
+       "type": "text",
+       "text": "build id 2147483647, started 1795104230191, owner alice@example.com"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

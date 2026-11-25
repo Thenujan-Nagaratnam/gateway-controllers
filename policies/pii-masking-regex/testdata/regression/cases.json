@@ -1,0 +1,324 @@
+[
+ {
+  "name": "plain-user-email",
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": "contact me at alice.smith@example.com please"
+    }
+   ]
+  }
+ },
+ {
+  "name": "system-and-user-email",
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "system": "You are support. Escalate to bob@example.org.",
+   "messages": [
+    {
+     "role": "user",
+     "content": "my mail is alice.smith@example.com"
+    }
+   ]
+  }
+ },
+ {
+  "name": "tool-description-email",
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "tools": [
+    {
+     "name": "mail",
+     "description": "Sends mail from bob@example.org",
+     "input_schema": {
+      "type": "object"
+     }
+    }
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ]
+  }
+ },
+ {
+  "name": "tool-result-email",
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "tool_result",
+       "tool_use_id": "t1",
+       "content": [
+        {
+         "type": "text",
+         "text": "owner: carol+tag@sub.example.co.uk"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "name": "phones-formatted",
+  "params": {
+   "phone": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": "call (415) 555-0199 or +1 415-555-0198 or 415.555.0197"
+    }
+   ]
+  }
+ },
+ {
+  "name": "ssn",
+  "params": {
+   "ssn": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": "ssn 123-45-6789"
+    }
+   ]
+  }
+ },
+ {
+  "name": "email-phone-ssn",
+  "params": {
+   "email": true,
+   "phone": true,
+   "ssn": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": "alice.smith@example.com (415) 555-0199 123-45-6789"
+    }
+   ]
+  }
+ },
+ {
+  "name": "standalone-10-digit",
+  "params": {
+   "phone": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": "ids 4155550199 and 2147483647 here"
+    }
+   ]
+  }
+ },
+ {
+  "name": "repeated-value",
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": "alice.smith@example.com and again alice.smith@example.com"
+    },
+    {
+     "role": "assistant",
+     "content": "ok"
+    },
+    {
+     "role": "user",
+     "content": "bob@example.org then alice.smith@example.com"
+    }
+   ]
+  }
+ },
+ {
+  "name": "custom-entity",
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "EMPID",
+     "piiRegex": "EMP-[0-9]{6}"
+    }
+   ],
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": "employee EMP-123456 and EMP-654321"
+    }
+   ]
+  }
+ },
+ {
+  "name": "default-path-last-message",
+  "params": {
+   "email": true
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": "first"
+    },
+    {
+     "role": "user",
+     "content": "mail alice.smith@example.com"
+    }
+   ]
+  }
+ },
+ {
+  "name": "default-path-openai",
+  "params": {
+   "email": true,
+   "phone": true
+  },
+  "body": {
+   "model": "gpt",
+   "messages": [
+    {
+     "role": "system",
+     "content": "keep bob@example.org secret"
+    },
+    {
+     "role": "user",
+     "content": "alice.smith@example.com (415) 555-0199"
+    }
+   ]
+  }
+ },
+ {
+  "name": "email-in-quotes-and-punct",
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": "(\"alice.smith@example.com\"), <bob@example.org>; carol+tag@sub.example.co.uk."
+    }
+   ]
+  }
+ },
+ {
+  "name": "unicode-text",
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "user",
+     "content": "h\u00e9llo w\u00f6rld \u65e5\u672c\u8a9e alice.smith@example.com \u2713"
+    }
+   ]
+  }
+ },
+ {
+  "name": "thinking-block-history",
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "thinking",
+       "thinking": "I should email alice.smith@example.com",
+       "signature": "sig=="
+      },
+      {
+       "type": "text",
+       "text": "done"
+      }
+     ]
+    },
+    {
+     "role": "user",
+     "content": "thanks"
+    }
+   ]
+  }
+ },
+ {
+  "name": "tool-use-input",
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": {
+   "model": "m",
+   "messages": [
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "tool_use",
+       "id": "t1",
+       "name": "lookup",
+       "input": {
+        "email": "alice.smith@example.com"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ }
+]

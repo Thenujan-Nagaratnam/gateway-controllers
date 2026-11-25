@@ -1,0 +1,61 @@
+{
+ "custom-entity": [
+  "EMP-123456",
+  "EMP-654321"
+ ],
+ "default-path-last-message": [
+  "alice.smith@example.com"
+ ],
+ "default-path-openai": [
+  "(415) 555-0199",
+  "alice.smith@example.com"
+ ],
+ "email-in-quotes-and-punct": [
+  "alice.smith@example.com",
+  "bob@example.org",
+  "carol+tag@sub.example.co.uk"
+ ],
+ "email-phone-ssn": [
+  "(415) 555-0199",
+  "123-45-6789",
+  "alice.smith@example.com"
+ ],
+ "phones-formatted": [
+  "(415) 555-0199",
+  "+1 415-555-0198",
+  "415.555.0197"
+ ],
+ "plain-user-email": [
+  "alice.smith@example.com"
+ ],
+ "repeated-value": [
+  "alice.smith@example.com",
+  "bob@example.org"
+ ],
+ "ssn": [
+  "123-45-6789"
+ ],
+ "standalone-10-digit": [
+  "2147483647",
+  "4155550199"
+ ],
+ "system-and-user-email": [
+  "alice.smith@example.com",
+  "bob@example.org"
+ ],
+ "thinking-block-history": [
+  "alice.smith@example.com"
+ ],
+ "tool-description-email": [
+  "bob@example.org"
+ ],
+ "tool-result-email": [
+  "carol+tag@sub.example.co.uk"
+ ],
+ "tool-use-input": [
+  "alice.smith@example.com"
+ ],
+ "unicode-text": [
+  "alice.smith@example.com"
+ ]
+}

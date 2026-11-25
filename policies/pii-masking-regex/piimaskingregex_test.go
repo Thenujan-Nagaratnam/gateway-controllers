@@ -180,7 +180,7 @@ func TestPIIMaskingRegexPolicy_OnRequest_MaskAndStoreMetadata(t *testing.T) {
 
 	out := decodeJSONMapPII(t, mods.Body)
 	msg := mustGetLastMessageContent(t, out)
-	matched, err := regexp.MatchString(`\[EMAIL_[0-9a-f]{4}\]`, msg)
+	matched, err := regexp.MatchString(`\[EMAIL_[0-9a-f]{8}\]`, msg)
 	if err != nil {
 		t.Fatalf("failed regex match: %v", err)
 	}
