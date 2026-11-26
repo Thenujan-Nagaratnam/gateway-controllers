@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -83,8 +82,6 @@ var DefaultStreamingJSONPaths = []string{
 	// steal a match from "$.delta.text".
 	"$.delta",
 }
-
-var textCleanRegexCompiled = regexp.MustCompile(TextCleanRegex)
 
 // PIIMaskingRegexPolicy implements regex-based PII masking
 type PIIMaskingRegexPolicy struct {
@@ -253,85 +250,6 @@ func parseBoolParam(params map[string]interface{}, key string) (bool, error) {
 	return val, nil
 }
 
-// maskPIIFromContent masks PII from content using regex patterns
-func (p *PIIMaskingRegexPolicy) maskPIIFromContent(content string, piiEntities map[string]*regexp.Regexp, metadata map[string]interface{}) (string, error) {
-	if content == "" {
-		return "", nil
-	}
-
-	maskedContent := content
-	maskedPIIEntities := make(map[string]string)
-	// Pre-compile placeholder pattern for efficiency
-	placeholderPattern := regexp.MustCompile(`^\[[A-Z_]+_[0-9a-f]{8}\]$`)
-
-	// First pass: find all matches without replacing to avoid nested replacements
-	allMatches := make(map[string]string) // original -> placeholder
-	entityHits := make(map[string]int)    // entity name -> occurrences, for debug logging
-	for key, pattern := range piiEntities {
-		matches := pattern.FindAllString(maskedContent, -1)
-		for _, match := range matches {
-			if placeholderPattern.MatchString(match) {
-				continue
-			}
-			entityHits[key]++
-			if _, exists := allMatches[match]; !exists {
-				// Placeholder like [EMAIL_3fa91c0b], derived from the value
-				placeholder := placeholderFor(key, match, 0)
-				allMatches[match] = placeholder
-				maskedPIIEntities[match] = placeholder
-			}
-		}
-	}
-
-	// Second pass: replace all matches
-	originals := make([]string, 0, len(allMatches))
-	for original := range allMatches {
-		originals = append(originals, original)
-	}
-	sort.Slice(originals, func(i, j int) bool { return len(originals[i]) > len(originals[j]) })
-	for _, original := range originals {
-		maskedContent = strings.ReplaceAll(maskedContent, original, allMatches[original])
-	}
-
-	p.logPIIDetection("mask", entityHits)
-
-	// Store PII mappings in metadata for response restoration
-	if len(maskedPIIEntities) > 0 {
-		metadata[MetadataKeyPIIEntities] = maskedPIIEntities
-	}
-
-	if len(allMatches) > 0 {
-		return maskedContent, nil
-	}
-
-	return "", nil
-}
-
-// redactPIIFromContent redacts PII from content using regex patterns
-func (p *PIIMaskingRegexPolicy) redactPIIFromContent(content string, piiEntities map[string]*regexp.Regexp) string {
-	if content == "" {
-		return ""
-	}
-
-	maskedContent := content
-	entityHits := make(map[string]int) // entity name -> occurrences, for debug logging
-
-	for key, pattern := range piiEntities {
-		if n := len(pattern.FindAllStringIndex(maskedContent, -1)); n > 0 {
-			entityHits[key] = n
-			maskedContent = pattern.ReplaceAllString(maskedContent, "*****")
-		}
-	}
-
-	p.logPIIDetection("redact", entityHits)
-
-	if len(entityHits) > 0 {
-		return maskedContent
-	}
-
-	return ""
-}
-
 // logPIIDetection emits a debug log describing which PII entities matched.
 // Only entity names (from policy config) and counts are logged — never the
 // matched values, which are the PII this policy exists to keep out of logs.
@@ -373,37 +291,6 @@ func (p *PIIMaskingRegexPolicy) restorePIIInResponse(originalContent string, mas
 	return transformedContent
 }
 
-// updatePayloadWithMaskedContent updates the original payload by replacing the extracted content
-func (p *PIIMaskingRegexPolicy) updatePayloadWithMaskedContent(originalPayload []byte, extractedValue, modifiedContent string, jsonPath string) []byte {
-	if jsonPath == "" || jsonPath == "$" {
-		// If no JSONPath, the entire payload was processed, return the modified content
-		return []byte(modifiedContent)
-	}
-
-	// If JSONPath is specified, update only the specific field in the JSON structure
-	var jsonData map[string]interface{}
-	if err := json.Unmarshal(originalPayload, &jsonData); err != nil {
-		// Fallback to returning the modified content as-is
-		return []byte(modifiedContent)
-	}
-
-	// Set the new value at the JSONPath location
-	err := utils.SetValueAtJSONPath(jsonData, jsonPath, modifiedContent)
-	if err != nil {
-		// Fallback to returning the original payload
-		return originalPayload
-	}
-
-	// Marshal back to JSON to get the full modified payload
-	updatedPayload, err := json.Marshal(jsonData)
-	if err != nil {
-		// Fallback to returning the original payload
-		return originalPayload
-	}
-
-	return updatedPayload
-}
-
 // OnRequestHeaders implements v2alpha.RequestHeaderPolicy.
 // PII masking operates on the body, so headers are passed through unchanged.
 func (p *PIIMaskingRegexPolicy) OnRequestHeaders(ctx context.Context, reqCtx *policy.RequestHeaderContext, params map[string]interface{}) policy.RequestHeaderAction {
@@ -425,6 +312,10 @@ func (p *PIIMaskingRegexPolicy) OnRequestBody(ctx context.Context, reqCtx *polic
 // Placeholders (e.g. [EMAIL_3fa91c0b]) or redaction markers (*****) replace
 // detected PII. Placeholder→original mappings are merged into shared metadata
 // so processResponseBody can restore them.
+//
+// A JSON body is never parsed and re-serialized: the text inside selected
+// string values is masked in place and every other byte is copied unchanged, so
+// the request stays valid JSON with keys, numbers, spacing and key order intact.
 func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
 	if len(p.params.PIIEntities) == 0 {
 		return policy.UpstreamRequestModifications{}
@@ -434,63 +325,83 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext
 		return policy.UpstreamRequestModifications{}
 	}
 	payload := reqCtx.Body.Content
+	jsonPath := p.params.JsonPath
 
-	// Whole-payload masking: JSON string values are masked in place and every other
-	// byte is copied unchanged, so the request stays valid JSON.
-	if jsonPath := p.params.JsonPath; jsonPath == "" || jsonPath == "$" {
-		modified, changed, err := p.maskWholePayload(reqCtx, payload)
-		if err != nil {
-			return p.buildErrorResponse(err.Error()).(policy.RequestAction)
+	var (
+		modified []byte
+		changed  bool
+		err      error
+	)
+	switch {
+	case jsonPath == "" || jsonPath == "$":
+		if json.Valid(payload) {
+			// Every string value is in scope; keys and numbers never are.
+			modified, changed, err = p.maskJSONBody(reqCtx, payload, nil)
+		} else {
+			// Not JSON: treat the payload as one piece of text, as before.
+			modified, changed, err = p.maskPlainText(reqCtx, payload)
 		}
-		if !changed {
-			return policy.UpstreamRequestModifications{}
-		}
-		return policy.UpstreamRequestModifications{Body: modified}
+	default:
+		modified, changed, err = p.maskSelected(reqCtx, payload, jsonPath)
 	}
-
-	extractedValue, ok, err := extractStringFromPath(payload, p.params.JsonPath)
 	if err != nil {
-		return p.buildErrorResponse(fmt.Sprintf("error extracting value from JSONPath: %v", err)).(policy.RequestAction)
+		return p.buildErrorResponse(err.Error()).(policy.RequestAction)
 	}
-	if !ok {
-		// Value at path is not a scalar (e.g. multimodal content array); skip masking.
+	if !changed {
 		return policy.UpstreamRequestModifications{}
 	}
-
-	extractedValue = textCleanRegexCompiled.ReplaceAllString(extractedValue, "")
-	extractedValue = strings.TrimSpace(extractedValue)
-
-	var modifiedContent string
-	if p.params.RedactPII {
-		modifiedContent = p.redactPIIFromContent(extractedValue, p.params.PIIEntities)
-	} else {
-		if reqCtx.Metadata == nil {
-			reqCtx.Metadata = make(map[string]interface{})
-		}
-		modifiedContent, err = p.maskPIIFromContent(extractedValue, p.params.PIIEntities, reqCtx.Metadata)
-		if err != nil {
-			return p.buildErrorResponse(fmt.Sprintf("error masking PII: %v", err)).(policy.RequestAction)
-		}
-	}
-
-	if modifiedContent != "" && modifiedContent != extractedValue {
-		modifiedPayload := p.updatePayloadWithMaskedContent(payload, extractedValue, modifiedContent, p.params.JsonPath)
-		return policy.UpstreamRequestModifications{
-			Body: modifiedPayload,
-		}
-	}
-
-	return policy.UpstreamRequestModifications{}
+	return policy.UpstreamRequestModifications{Body: modified}
 }
 
-// maskJSONBody masks every string value in a valid JSON body. Keys and numbers
-// are never visited, and every byte that does not change is copied as it was.
-func (p *PIIMaskingRegexPolicy) maskJSONBody(reqCtx *policy.RequestContext, payload []byte) ([]byte, bool, error) {
+// maskSelected masks the string values chosen by an RFC 9535 jsonPath.
+func (p *PIIMaskingRegexPolicy) maskSelected(reqCtx *policy.RequestContext, payload []byte, jsonPath string) ([]byte, bool, error) {
+	if isLegacyJSONPath(jsonPath) {
+		// Single-node paths keep their original extraction rules: a missing path is
+		// an error and a non-scalar value (for example a multimodal content array)
+		// is skipped.
+		_, ok, err := extractStringFromPath(payload, jsonPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("error extracting value from JSONPath: %v", err)
+		}
+		if !ok {
+			return nil, false, nil
+		}
+	}
+	if !json.Valid(payload) {
+		return nil, false, fmt.Errorf("error extracting value from JSONPath: request body is not valid JSON")
+	}
+	selected, err := utils.SelectNormalizedPaths(payload, jsonPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("error extracting value from JSONPath: %v", err)
+	}
+	if len(selected) == 0 {
+		return nil, false, nil
+	}
+	set := make(map[string]struct{}, len(selected))
+	for _, path := range selected {
+		set[path] = struct{}{}
+	}
+	return p.maskJSONBody(reqCtx, payload, set)
+}
+
+// maskJSONBody masks string values in a valid JSON body. A nil selection means
+// every string value; otherwise only values whose normalized path is selected.
+func (p *PIIMaskingRegexPolicy) maskJSONBody(reqCtx *policy.RequestContext, payload []byte, selection map[string]struct{}) ([]byte, bool, error) {
 	m := newMasker(p.params.PIIEntities)
+	inScope := func(path string) bool {
+		if selection == nil {
+			return true
+		}
+		_, ok := selection[path]
+		return ok
+	}
+	track := selection != nil
 
 	// Pass 1: collect every value, so placeholders do not depend on visiting order.
-	_, _, err := scanJSONStrings(payload, false, func(_, text string) (string, bool) {
-		m.collect(text)
+	_, _, err := scanJSONStrings(payload, track, func(path, text string) (string, bool) {
+		if inScope(path) {
+			m.collect(text)
+		}
 		return text, false
 	})
 	if err != nil {
@@ -503,7 +414,10 @@ func (p *PIIMaskingRegexPolicy) maskJSONBody(reqCtx *policy.RequestContext, payl
 	m.assign()
 
 	// Pass 2: rewrite only the values that contain PII.
-	out, changed, err := scanJSONStrings(payload, false, func(_, text string) (string, bool) {
+	out, changed, err := scanJSONStrings(payload, track, func(path, text string) (string, bool) {
+		if !inScope(path) {
+			return text, false
+		}
 		var masked string
 		if p.params.RedactPII {
 			masked = m.redact(text)
@@ -524,15 +438,6 @@ func (p *PIIMaskingRegexPolicy) maskJSONBody(reqCtx *policy.RequestContext, payl
 	}
 	p.storeMapping(reqCtx, m)
 	return out, true, nil
-}
-
-// maskWholePayload masks the whole request: JSON string values in place, or the
-// payload as one piece of text when it is not JSON.
-func (p *PIIMaskingRegexPolicy) maskWholePayload(reqCtx *policy.RequestContext, payload []byte) ([]byte, bool, error) {
-	if json.Valid(payload) {
-		return p.maskJSONBody(reqCtx, payload)
-	}
-	return p.maskPlainText(reqCtx, payload)
 }
 
 // maskPlainText masks a payload that is not JSON, treating it as one piece of text.
@@ -578,6 +483,12 @@ func (p *PIIMaskingRegexPolicy) storeMapping(reqCtx *policy.RequestContext, m *m
 		reqCtx.Metadata = make(map[string]interface{})
 	}
 	mergePIIMapping(reqCtx.Metadata, m.mapping())
+}
+
+// isLegacyJSONPath reports whether jsonPath uses only the single-node syntax
+// that earlier releases understood: dotted names and plain indexes.
+func isLegacyJSONPath(jsonPath string) bool {
+	return !strings.ContainsAny(jsonPath, "*?,:@()|&!<>=") && !strings.Contains(jsonPath, "..")
 }
 
 // OnResponseBody restores PII placeholders in a buffered response body.

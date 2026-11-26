@@ -108,6 +108,24 @@ func TestRequest_WholePayloadStillMasksSystemPromptAndToolDescriptions(t *testin
 	}
 }
 
+func TestRequest_ScopedPathLeavesRequestAloneWhenNothingMatches(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "jsonPath": `$.messages[?(@.role=='nobody')].content`})
+	body := `{"messages":[{"role":"user","content":"bob@example.org"}]}`
+	ctx := piiRequestContext(body)
+	mods := mustPIIRequestMods(t, p.OnRequestBody(context.Background(), ctx, nil))
+	if len(mods.Body) != 0 {
+		t.Fatalf("expected no modification, got %s", mods.Body)
+	}
+}
+
+func TestRequest_InvalidScopedPathIsAnError(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "jsonPath": `$.messages[?(@.role==)]`})
+	ctx := piiRequestContext(`{"messages":[]}`)
+	if _, ok := p.OnRequestBody(context.Background(), ctx, nil).(policy.ImmediateResponse); !ok {
+		t.Fatal("an invalid path must produce an error response")
+	}
+}
+
 func TestRequest_NonJSONPayloadIsMaskedAsPlainText(t *testing.T) {
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "jsonPath": "$"})
 	ctx := piiRequestContext("plain text for bob@example.org")
