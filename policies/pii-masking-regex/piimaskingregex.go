@@ -432,6 +432,19 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext
 	}
 	payload := reqCtx.Body.Content
 
+	// Whole-payload masking: JSON string values are masked in place and every other
+	// byte is copied unchanged, so the request stays valid JSON.
+	if jsonPath := p.params.JsonPath; jsonPath == "" || jsonPath == "$" {
+		modified, changed, err := p.maskWholePayload(reqCtx, payload)
+		if err != nil {
+			return p.buildErrorResponse(err.Error()).(policy.RequestAction)
+		}
+		if !changed {
+			return policy.UpstreamRequestModifications{}
+		}
+		return policy.UpstreamRequestModifications{Body: modified}
+	}
+
 	extractedValue, ok, err := extractStringFromPath(payload, p.params.JsonPath)
 	if err != nil {
 		return p.buildErrorResponse(fmt.Sprintf("error extracting value from JSONPath: %v", err)).(policy.RequestAction)
@@ -465,6 +478,103 @@ func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext
 	}
 
 	return policy.UpstreamRequestModifications{}
+}
+
+// maskJSONBody masks every string value in a valid JSON body. Keys and numbers
+// are never visited, and every byte that does not change is copied as it was.
+func (p *PIIMaskingRegexPolicy) maskJSONBody(reqCtx *policy.RequestContext, payload []byte) ([]byte, bool, error) {
+	m := newMasker(p.params.PIIEntities)
+
+	// Pass 1: collect every value, so placeholders do not depend on visiting order.
+	_, _, err := scanJSONStrings(payload, false, func(_, text string) (string, bool) {
+		m.collect(text)
+		return text, false
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("error scanning request body: %v", err)
+	}
+	if len(m.found) == 0 {
+		p.logPIIDetection(p.actionName(), m.hits)
+		return nil, false, nil
+	}
+	m.assign()
+
+	// Pass 2: rewrite only the values that contain PII.
+	out, changed, err := scanJSONStrings(payload, false, func(_, text string) (string, bool) {
+		var masked string
+		if p.params.RedactPII {
+			masked = m.redact(text)
+		} else {
+			masked = m.apply(text)
+		}
+		return masked, masked != text
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("error masking request body: %v", err)
+	}
+	p.logPIIDetection(p.actionName(), m.hits)
+	if !changed {
+		return nil, false, nil
+	}
+	if !json.Valid(out) {
+		return nil, false, fmt.Errorf("masking would produce an invalid JSON body; the request was not forwarded")
+	}
+	p.storeMapping(reqCtx, m)
+	return out, true, nil
+}
+
+// maskWholePayload masks the whole request: JSON string values in place, or the
+// payload as one piece of text when it is not JSON.
+func (p *PIIMaskingRegexPolicy) maskWholePayload(reqCtx *policy.RequestContext, payload []byte) ([]byte, bool, error) {
+	if json.Valid(payload) {
+		return p.maskJSONBody(reqCtx, payload)
+	}
+	return p.maskPlainText(reqCtx, payload)
+}
+
+// maskPlainText masks a payload that is not JSON, treating it as one piece of text.
+func (p *PIIMaskingRegexPolicy) maskPlainText(reqCtx *policy.RequestContext, payload []byte) ([]byte, bool, error) {
+	text := string(payload)
+	if text == "" {
+		return nil, false, nil
+	}
+	m := newMasker(p.params.PIIEntities)
+	m.collect(text)
+	p.logPIIDetection(p.actionName(), m.hits)
+	if len(m.found) == 0 {
+		return nil, false, nil
+	}
+	m.assign()
+	var masked string
+	if p.params.RedactPII {
+		masked = m.redact(text)
+	} else {
+		masked = m.apply(text)
+	}
+	if masked == text {
+		return nil, false, nil
+	}
+	p.storeMapping(reqCtx, m)
+	return []byte(masked), true, nil
+}
+
+func (p *PIIMaskingRegexPolicy) actionName() string {
+	if p.params.RedactPII {
+		return "redact"
+	}
+	return "mask"
+}
+
+// storeMapping keeps this request's placeholders in shared metadata so the
+// response path can restore them. Redaction is one-way and stores nothing.
+func (p *PIIMaskingRegexPolicy) storeMapping(reqCtx *policy.RequestContext, m *masker) {
+	if p.params.RedactPII {
+		return
+	}
+	if reqCtx.Metadata == nil {
+		reqCtx.Metadata = make(map[string]interface{})
+	}
+	reqCtx.Metadata[MetadataKeyPIIEntities] = m.mapping()
 }
 
 // OnResponseBody restores PII placeholders in a buffered response body.
