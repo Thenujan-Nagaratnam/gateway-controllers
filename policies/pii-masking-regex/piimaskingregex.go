@@ -70,6 +70,9 @@ var DefaultStreamingJSONPaths = []string{
 	"$.completion",
 	// OpenAI legacy completions.
 	"$.choices[0].text",
+	// Anthropic Messages — tool-call arguments stream as input_json_delta, whose
+	// partial_json holds a fragment of JSON text.
+	"$.delta.partial_json",
 	// OpenAI Responses API (also Azure OpenAI and Azure AI Foundry /responses)
 	// — response.output_text.delta carries the text as a plain string, not an
 	// object. Last on purpose: it is the most generic shape here, so every
@@ -722,7 +725,7 @@ func (p *PIIMaskingRegexPolicy) NeedsMoreResponseData(accumulated []byte) bool {
 		return true
 	}
 
-	return couldCompletePlaceholder(extractSSEDeltaContent(s))
+	return anyGroupCouldCompletePlaceholder(s)
 }
 
 // endsAtSSEEventBoundary reports whether s ends on a complete SSE event. Both
@@ -731,24 +734,6 @@ func (p *PIIMaskingRegexPolicy) NeedsMoreResponseData(accumulated []byte) bool {
 // response to the kernel's accumulator ceiling.
 func endsAtSSEEventBoundary(s string) bool {
 	return strings.HasSuffix(s, "\n\n") || strings.HasSuffix(s, "\r\n\r\n")
-}
-
-// extractSSEDeltaContent concatenates the assistant text carried by every data
-// event in an SSE buffer, which is the text a client ultimately assembles and so
-// the only thing placeholder detection should look at. Frame boundaries are
-// deliberately not preserved: a placeholder split across events is contiguous
-// here, which is what lets the shape test in couldCompletePlaceholder work
-// regardless of how finely the upstream tokenised it.
-func extractSSEDeltaContent(s string) string {
-	var sb strings.Builder
-	for _, line := range strings.Split(s, "\n") {
-		jsonStr, ok := sseDataPayload(line)
-		if !ok || jsonStr == sseDone {
-			continue
-		}
-		sb.WriteString(extractFirstDeltaContent(jsonStr, DefaultStreamingJSONPaths))
-	}
-	return sb.String()
 }
 
 // OnResponseBodyChunk implements v2alpha.StreamingResponsePolicy.
@@ -868,71 +853,6 @@ func isSSEChunk(s string) bool {
 		}
 	}
 	return false
-}
-
-// restoreSSEChunk handles SSE streaming format: "data: {...}\n\n" lines.
-//
-// When the accumulator flushes a batch of SSE events (e.g. the placeholder
-// [EMAIL_0000] split across " [", "EMAIL", "_", "0000", "]" in separate events),
-// no single event contains the full placeholder. We therefore concatenate all
-// delta.content values, restore on the full string, then redistribute: the
-// first content-bearing event gets the complete restored text, and all subsequent
-// events whose content has been merged into the first are dropped entirely.
-func (p *PIIMaskingRegexPolicy) restoreSSEChunk(chunkStr string, maskedMap map[string]string) policy.ForwardResponseChunk {
-	lines := strings.Split(chunkStr, "\n")
-
-	// Collect every SSE data line that carries a non-empty delta.content.
-	type contentLine struct {
-		lineIdx int
-		content string
-	}
-	var contentLines []contentLine
-	for i, line := range lines {
-		jsonStr, ok := sseDataPayload(line)
-		if !ok || jsonStr == sseDone {
-			continue
-		}
-		if c := extractFirstDeltaContent(jsonStr, DefaultStreamingJSONPaths); c != "" {
-			contentLines = append(contentLines, contentLine{lineIdx: i, content: c})
-		}
-	}
-
-	if len(contentLines) == 0 {
-		return policy.ForwardResponseChunk{}
-	}
-
-	// Concatenate fragments and restore in one pass.
-	var sb strings.Builder
-	for _, cl := range contentLines {
-		sb.WriteString(cl.content)
-	}
-	fullContent := sb.String()
-	restoredContent := restore(fullContent, maskedMap)
-
-	if restoredContent == fullContent {
-		return policy.ForwardResponseChunk{}
-	}
-
-	// Redistribute: first content-bearing event gets the full restored text;
-	// subsequent events are dropped entirely.
-	lines[contentLines[0].lineIdx] = replaceContentInSSELine(
-		lines[contentLines[0].lineIdx], contentLines[0].content, restoredContent,
-		DefaultStreamingJSONPaths,
-	)
-	removeLines := make(map[int]bool, len(contentLines)-1)
-	for _, cl := range contentLines[1:] {
-		markEventBlockForRemoval(lines, cl.lineIdx, removeLines)
-	}
-
-	filtered := lines[:0:0]
-	for i, line := range lines {
-		if removeLines[i] {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-
-	return policy.ForwardResponseChunk{Body: []byte(strings.Join(filtered, "\n"))}
 }
 
 // extractFirstDeltaContent parses a single SSE JSON line and returns the
