@@ -35,12 +35,16 @@ const (
 	// original value lands inside a JSON string of that text, so it must be
 	// JSON-escaped once before the event itself is encoded.
 	kindToolArguments
+	// kindThinking is reasoning text, restored like assistant text.
+	kindThinking
 )
 
 func kindOfPath(path string) fragmentKind {
 	switch path {
 	case "$.delta.partial_json":
 		return kindToolArguments
+	case "$.delta.thinking":
+		return kindThinking
 	default:
 		return kindText
 	}
@@ -53,7 +57,8 @@ type streamFragment struct {
 	path    string
 }
 
-// fragmentGroup is the text of one kind within a flushed batch.
+// fragmentGroup is the text of one content block within a flushed batch. Text
+// from different blocks is never joined, so a later block keeps its own text.
 type fragmentGroup struct {
 	kind      fragmentKind
 	fragments []streamFragment

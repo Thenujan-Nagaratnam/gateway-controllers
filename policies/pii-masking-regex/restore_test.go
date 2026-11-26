@@ -18,6 +18,7 @@
 package piimaskingregex
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -116,6 +117,22 @@ func TestStream_ToolCallArgumentsEscapeTheOriginalForTheInnerJSON(t *testing.T) 
 	}
 }
 
+// Item 5: streamed thinking is restored.
+func TestStream_ThinkingIsRestored(t *testing.T) {
+	p, ctx := restoringPolicy(t)
+	raw := readFixture(t, "testdata/messages/stream_thinking.sse")
+	for _, size := range []int{len(raw), 90, 23} {
+		out := driveResponseStream(t, p, ctx, splitEvery(raw, size))
+		b := assembleBlocks(t, out)[0]
+		if b.thinking != "I should look up bob@example.org now." {
+			t.Fatalf("chunk size %d: thinking not restored, got %q", size, b.thinking)
+		}
+		if b.signature != "c2ln" {
+			t.Fatalf("the signature must be untouched, got %q", b.signature)
+		}
+	}
+}
+
 // A placeholder cut across many events, with a stream that ends cleanly.
 func TestStream_SplitPlaceholderIsHeldAndRestoredWithoutLeakingFragments(t *testing.T) {
 	p, ctx := restoringPolicy(t)
@@ -133,5 +150,28 @@ func TestStream_SplitPlaceholderIsHeldAndRestoredWithoutLeakingFragments(t *test
 	}
 	if strings.Contains(out, "EMAIL_") {
 		t.Fatalf("a placeholder fragment leaked: %s", out)
+	}
+}
+
+// FR-010: the buffered (non-streamed) response restores text, tool arguments and thinking too.
+func TestBufferedResponse_RestoresTextToolArgumentsAndThinking(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "jsonPath": "$"})
+	body := `{"id":"msg_1","type":"message","content":[` +
+		`{"type":"thinking","thinking":"look up [EMAIL_3fa91c0b]","signature":"c2ln"},` +
+		`{"type":"text","text":"Sent to [EMAIL_3fa91c0b]."},` +
+		`{"type":"tool_use","id":"tu","name":"lookup","input":{"email":"[EMAIL_3fa91c0b]"}}]}`
+	respCtx := &policy.ResponseContext{
+		SharedContext: &policy.SharedContext{RequestID: "r", Metadata: map[string]interface{}{MetadataKeyPIIEntities: map[string]string{"bob@example.org": testPlaceholder}}},
+		ResponseBody:  &policy.Body{Content: []byte(body), Present: true},
+	}
+	mods, ok := p.OnResponseBody(context.Background(), respCtx, nil).(policy.DownstreamResponseModifications)
+	if !ok || len(mods.Body) == 0 {
+		t.Fatalf("expected a modified body, got %T", p.OnResponseBody(context.Background(), respCtx, nil))
+	}
+	if strings.Contains(string(mods.Body), "EMAIL_") || strings.Count(string(mods.Body), "bob@example.org") != 3 {
+		t.Fatalf("not fully restored: %s", mods.Body)
+	}
+	if !json.Valid(mods.Body) {
+		t.Fatalf("restored body must stay valid JSON: %s", mods.Body)
 	}
 }

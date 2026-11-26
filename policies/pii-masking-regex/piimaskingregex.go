@@ -73,6 +73,8 @@ var DefaultStreamingJSONPaths = []string{
 	// Anthropic Messages — tool-call arguments stream as input_json_delta, whose
 	// partial_json holds a fragment of JSON text.
 	"$.delta.partial_json",
+	// Anthropic Messages — extended thinking streams as thinking_delta.
+	"$.delta.thinking",
 	// OpenAI Responses API (also Azure OpenAI and Azure AI Foundry /responses)
 	// — response.output_text.delta carries the text as a plain string, not an
 	// object. Last on purpose: it is the most generic shape here, so every
