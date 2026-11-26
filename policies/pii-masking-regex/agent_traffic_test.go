@@ -80,6 +80,19 @@ func TestRequest_EmailAfterEscapeStaysValidJSON(t *testing.T) {
 	}
 }
 
+// Item 2: a number in the body is never rewritten, whatever the phone pattern says.
+func TestRequest_NumbersAreNeverRewritten(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "phone": true, "jsonPath": "$"})
+	body := `{"tools":[{"name":"t","input_schema":{"maximum":9007199254740991,"min":4155550199}}],"messages":[{"role":"user","content":"mail bob@example.org"}]}`
+	out, _ := maskRequest(t, p, body)
+	if !strings.Contains(out, `"maximum":9007199254740991`) || !strings.Contains(out, `"min":4155550199`) {
+		t.Fatalf("numbers were rewritten: %s", out)
+	}
+	if strings.Contains(out, "bob@example.org") {
+		t.Fatalf("string value was not masked: %s", out)
+	}
+}
+
 // FR-003: with the whole-payload setting everything masked today stays masked,
 // system prompt and tool descriptions included.
 func TestRequest_WholePayloadStillMasksSystemPromptAndToolDescriptions(t *testing.T) {
