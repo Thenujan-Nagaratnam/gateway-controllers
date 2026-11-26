@@ -152,6 +152,22 @@ func TestRequest_GrowingConversationKeepsItsMaskedPrefix(t *testing.T) {
 	}
 }
 
+// Item 7: two instances on one route must both be restorable.
+func TestRequest_TwoInstancesMergeTheirMappings(t *testing.T) {
+	emailPolicy := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "jsonPath": "$"})
+	phonePolicy := mustGetPIIPolicy(t, map[string]interface{}{"phone": true, "jsonPath": "$"})
+
+	ctx := piiRequestContext(`{"messages":[{"role":"user","content":"bob@example.org (415) 555-0199"}]}`)
+	mods := mustPIIRequestMods(t, emailPolicy.OnRequestBody(context.Background(), ctx, nil))
+	ctx.Body.Content = mods.Body
+	mustPIIRequestMods(t, phonePolicy.OnRequestBody(context.Background(), ctx, nil))
+
+	mapping, _ := ctx.Metadata[MetadataKeyPIIEntities].(map[string]string)
+	if mapping["bob@example.org"] == "" || mapping["(415) 555-0199"] == "" {
+		t.Fatalf("both instances' values must be restorable, got %v", mapping)
+	}
+}
+
 func TestRequest_RedactModeStoresNothingAndStaysValid(t *testing.T) {
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "redactPII": true, "jsonPath": "$"})
 	out, md := maskRequest(t, p, `{"max":9007199254740991,"messages":[{"role":"user","content":"a\nbob@example.org"}]}`)

@@ -423,7 +423,7 @@ func (p *PIIMaskingRegexPolicy) OnRequestBody(ctx context.Context, reqCtx *polic
 
 // processRequestBody masks PII in the request body before forwarding to upstream.
 // Placeholders (e.g. [EMAIL_3fa91c0b]) or redaction markers (*****) replace
-// detected PII. Placeholder→original mappings are stored in shared metadata
+// detected PII. Placeholder→original mappings are merged into shared metadata
 // so processResponseBody can restore them.
 func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
 	if len(p.params.PIIEntities) == 0 {
@@ -568,7 +568,7 @@ func (p *PIIMaskingRegexPolicy) actionName() string {
 	return "mask"
 }
 
-// storeMapping keeps this request's placeholders in shared metadata so the
+// storeMapping merges this request's placeholders into shared metadata so the
 // response path can restore them. Redaction is one-way and stores nothing.
 func (p *PIIMaskingRegexPolicy) storeMapping(reqCtx *policy.RequestContext, m *masker) {
 	if p.params.RedactPII {
@@ -577,7 +577,7 @@ func (p *PIIMaskingRegexPolicy) storeMapping(reqCtx *policy.RequestContext, m *m
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = make(map[string]interface{})
 	}
-	reqCtx.Metadata[MetadataKeyPIIEntities] = m.mapping()
+	mergePIIMapping(reqCtx.Metadata, m.mapping())
 }
 
 // OnResponseBody restores PII placeholders in a buffered response body.

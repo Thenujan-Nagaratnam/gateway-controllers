@@ -221,3 +221,23 @@ func (m *masker) mapping() map[string]string {
 	}
 	return out
 }
+
+// mergePIIMapping adds newEntries (original to placeholder) to the mapping kept
+// in metadata, so several policy instances on one route do not overwrite each
+// other. An entry already present for the same original is kept.
+func mergePIIMapping(metadata map[string]interface{}, newEntries map[string]string) {
+	if len(newEntries) == 0 {
+		return
+	}
+	existing, _ := metadata[MetadataKeyPIIEntities].(map[string]string)
+	merged := make(map[string]string, len(existing)+len(newEntries))
+	for k, v := range existing {
+		merged[k] = v
+	}
+	for k, v := range newEntries {
+		if _, ok := merged[k]; !ok {
+			merged[k] = v
+		}
+	}
+	metadata[MetadataKeyPIIEntities] = merged
+}

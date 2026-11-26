@@ -191,3 +191,16 @@ func TestMasker_RedactReplacesWithMarker(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestMergePIIMapping_KeepsExistingEntries(t *testing.T) {
+	md := map[string]interface{}{MetadataKeyPIIEntities: map[string]string{"a": "[A_00000001]"}}
+	mergePIIMapping(md, map[string]string{"b": "[B_00000002]", "a": "[Z_ffffffff]"})
+	got := md[MetadataKeyPIIEntities].(map[string]string)
+	if got["a"] != "[A_00000001]" || got["b"] != "[B_00000002]" || len(got) != 2 {
+		t.Fatalf("unexpected merged mapping %v", got)
+	}
+	mergePIIMapping(md, nil)
+	if len(md[MetadataKeyPIIEntities].(map[string]string)) != 2 {
+		t.Fatal("merging nothing must not change the mapping")
+	}
+}
