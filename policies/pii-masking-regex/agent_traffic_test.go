@@ -235,3 +235,37 @@ func TestRequest_RedactModeStoresNothingAndStaysValid(t *testing.T) {
 		t.Fatal("redaction is one-way and must store no mapping")
 	}
 }
+
+// SC-009: everything the previous release validly masked is still masked.
+func TestRegression_EverythingMaskedBeforeStaysMasked(t *testing.T) {
+	var cases []struct {
+		Name   string                 `json:"name"`
+		Params map[string]interface{} `json:"params"`
+		Body   json.RawMessage        `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(readFixture(t, "testdata/regression/cases.json")), &cases); err != nil {
+		t.Fatal(err)
+	}
+	var expected map[string][]string
+	if err := json.Unmarshal([]byte(readFixture(t, "testdata/regression/expected_masked_values.json")), &expected); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) < 15 {
+		t.Fatalf("expected at least 15 regression cases, got %d", len(cases))
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			p := mustGetPIIPolicy(t, c.Params)
+			out, md := maskRequest(t, p, string(c.Body))
+			mapping, _ := md[MetadataKeyPIIEntities].(map[string]string)
+			for _, original := range expected[c.Name] {
+				if mapping[original] == "" {
+					t.Errorf("%q was masked by the previous release and is not masked now", original)
+				}
+				if strings.Contains(out, original) {
+					t.Errorf("%q is still present in the masked body: %s", original, out)
+				}
+			}
+		})
+	}
+}
