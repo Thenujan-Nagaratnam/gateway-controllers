@@ -259,9 +259,8 @@ func (p *PIIMaskingRegexPolicy) maskPIIFromContent(content string, piiEntities m
 
 	maskedContent := content
 	maskedPIIEntities := make(map[string]string)
-	counter := 0
 	// Pre-compile placeholder pattern for efficiency
-	placeholderPattern := regexp.MustCompile(`^\[[A-Z_]+_[0-9a-f]{4}\]$`)
+	placeholderPattern := regexp.MustCompile(`^\[[A-Z_]+_[0-9a-f]{8}\]$`)
 
 	// First pass: find all matches without replacing to avoid nested replacements
 	allMatches := make(map[string]string) // original -> placeholder
@@ -274,11 +273,10 @@ func (p *PIIMaskingRegexPolicy) maskPIIFromContent(content string, piiEntities m
 			}
 			entityHits[key]++
 			if _, exists := allMatches[match]; !exists {
-				// Generate unique placeholder like [EMAIL_0000]
-				placeholder := fmt.Sprintf("[%s_%04x]", key, counter)
+				// Placeholder like [EMAIL_3fa91c0b], derived from the value
+				placeholder := placeholderFor(key, match, 0)
 				allMatches[match] = placeholder
 				maskedPIIEntities[match] = placeholder
-				counter++
 			}
 		}
 	}
@@ -422,7 +420,7 @@ func (p *PIIMaskingRegexPolicy) OnRequestBody(ctx context.Context, reqCtx *polic
 }
 
 // processRequestBody masks PII in the request body before forwarding to upstream.
-// Placeholders (e.g. [EMAIL_0000]) or redaction markers (*****) replace
+// Placeholders (e.g. [EMAIL_3fa91c0b]) or redaction markers (*****) replace
 // detected PII. Placeholder→original mappings are stored in shared metadata
 // so processResponseBody can restore them.
 func (p *PIIMaskingRegexPolicy) processRequestBody(reqCtx *policy.RequestContext, params map[string]interface{}) policy.RequestAction {
@@ -670,9 +668,9 @@ const maxPlaceholderTailBytes = 64
 // request side validates them with ^\[[A-Z_]+_[0-9a-f]{4}\]$. The two halves draw
 // on disjoint character sets — the name is [A-Z_], the counter is [0-9a-f] — so a
 // half-emitted placeholder is exactly a run of the first followed by up to four
-// of the second. Anything else after the bracket (a space, lowercase prose,
+// of the second (up to eight digits). Anything else after the bracket (a space, lowercase prose,
 // punctuation) proves no placeholder can complete, so the stream is released now.
-var placeholderTailPattern = regexp.MustCompile(`^[A-Z_]*[0-9a-f]{0,4}$`)
+var placeholderTailPattern = regexp.MustCompile(`^[A-Z_]*[0-9a-f]{0,8}$`)
 
 // couldCompletePlaceholder reports whether content ends in an unclosed "[" whose
 // trailing text is still a viable placeholder prefix — that is, whether waiting

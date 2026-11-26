@@ -115,3 +115,23 @@ func TestStream_ToolCallArgumentsEscapeTheOriginalForTheInnerJSON(t *testing.T) 
 		t.Fatalf("got %q want %q", parsed["email"], original)
 	}
 }
+
+// A placeholder cut across many events, with a stream that ends cleanly.
+func TestStream_SplitPlaceholderIsHeldAndRestoredWithoutLeakingFragments(t *testing.T) {
+	p, ctx := restoringPolicy(t)
+	mk := func(val string) string {
+		ev, _ := json.Marshal(map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": val}})
+		return "event: content_block_delta\ndata: " + string(ev) + "\n\n"
+	}
+	var events []string
+	for _, piece := range []string{"Hi ", "[", "EMAIL", "_3fa9", "1c0b", "]", "!"} {
+		events = append(events, mk(piece))
+	}
+	out := driveResponseStream(t, p, ctx, events)
+	if got := assembleBlocks(t, out)[0].text; got != "Hi bob@example.org!" {
+		t.Fatalf("got %q", got)
+	}
+	if strings.Contains(out, "EMAIL_") {
+		t.Fatalf("a placeholder fragment leaked: %s", out)
+	}
+}

@@ -18,17 +18,47 @@
 package piimaskingregex
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 )
 
+// placeholderHexDigits is the number of hex digits in a placeholder. The digits
+// are derived from the masked value, so the same value always yields the same
+// placeholder, whatever else is in the request.
+const placeholderHexDigits = 8
+
 // redactionMarker replaces matched text when redactPII is enabled.
 const redactionMarker = "*****"
 
-// placeholderShape matches a complete placeholder: [ENTITY_xxxx].
-var placeholderShape = regexp.MustCompile(`^\[[A-Z_]+_[0-9a-f]{4}\]$`)
+// placeholderShape matches a complete placeholder: [ENTITY_xxxxxxxx].
+var placeholderShape = regexp.MustCompile(`^\[[A-Z_]+_[0-9a-f]{8}\]$`)
+
+// maxCollisionAttempts bounds the re-hash loop used when two different values
+// in one request map to the same placeholder text.
+const maxCollisionAttempts = 255
+
+// placeholderDigest returns the 32 bits a placeholder is built from. It is a
+// variable only so tests can force collisions.
+var placeholderDigest = func(entity, value string, attempt int) uint32 {
+	h := sha256.New()
+	h.Write([]byte(entity))
+	h.Write([]byte{0})
+	h.Write([]byte(value))
+	if attempt > 0 {
+		h.Write([]byte{byte(attempt)})
+	}
+	return binary.BigEndian.Uint32(h.Sum(nil)[:4])
+}
+
+// placeholderFor returns the placeholder for value under entity. attempt is 0
+// unless an earlier attempt collided with a different value.
+func placeholderFor(entity, value string, attempt int) string {
+	return fmt.Sprintf("[%s_%0*x]", entity, placeholderHexDigits, placeholderDigest(entity, value, attempt))
+}
 
 // entityDetector is one PII entity with its compiled pattern.
 type entityDetector struct {
@@ -126,15 +156,26 @@ func (m *masker) collect(text string) {
 }
 
 // assign gives every collected value its placeholder. Values are processed in
-// byte order, so the numbering does not depend on the order text was visited.
+// byte order so the result is the same for any visiting order. A rare collision
+// between two different values is resolved by re-hashing the later value.
 func (m *masker) assign() {
 	originals := make([]string, 0, len(m.found))
 	for original := range m.found {
 		originals = append(originals, original)
 	}
 	sort.Strings(originals)
-	for i, original := range originals {
-		m.assigned[original] = fmt.Sprintf("[%s_%04x]", m.found[original], i)
+	used := make(map[string]string, len(originals))
+	for _, original := range originals {
+		entity := m.found[original]
+		placeholder := placeholderFor(entity, original, 0)
+		for attempt := 1; attempt <= maxCollisionAttempts; attempt++ {
+			if other, taken := used[placeholder]; !taken || other == original {
+				break
+			}
+			placeholder = placeholderFor(entity, original, attempt)
+		}
+		used[placeholder] = original
+		m.assigned[original] = placeholder
 	}
 }
 

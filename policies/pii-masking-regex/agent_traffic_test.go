@@ -131,6 +131,27 @@ func TestRequest_SameBodyGivesOneUpstreamBody(t *testing.T) {
 	}
 }
 
+// Prompt caching needs the unchanged prefix of a growing conversation to stay byte-identical.
+func TestRequest_GrowingConversationKeepsItsMaskedPrefix(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "phone": true, "jsonPath": "$"})
+	turn := func(i int) string {
+		var parts []string
+		for j := 0; j <= i; j++ {
+			parts = append(parts, `{"role":"user","content":"msg `+string(rune('a'+j))+` from user`+string(rune('a'+j))+`@example.org or (415) 555-01`+string(rune('0'+j))+`0"}`)
+		}
+		return `{"messages":[` + strings.Join(parts, ",") + `]}`
+	}
+	prev, _ := maskRequest(t, p, turn(0))
+	prevPrefix := strings.TrimSuffix(prev, `"}]}`)
+	for i := 1; i < 10; i++ {
+		cur, _ := maskRequest(t, p, turn(i))
+		if !strings.HasPrefix(cur, prevPrefix) {
+			t.Fatalf("turn %d changed the masked prefix:\nprev %s\ncur  %s", i, prevPrefix, cur)
+		}
+		prevPrefix = strings.TrimSuffix(cur, `"}]}`)
+	}
+}
+
 func TestRequest_RedactModeStoresNothingAndStaysValid(t *testing.T) {
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "redactPII": true, "jsonPath": "$"})
 	out, md := maskRequest(t, p, `{"max":9007199254740991,"messages":[{"role":"user","content":"a\nbob@example.org"}]}`)
