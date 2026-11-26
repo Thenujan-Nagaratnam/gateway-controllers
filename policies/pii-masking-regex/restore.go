@@ -66,17 +66,30 @@ type fragmentGroup struct {
 }
 
 // groupKey identifies the content block an event belongs to: the delta kind plus
-// the Anthropic content-block "index". Shapes without an index share one group per
-// kind, which is how they were handled before.
+// whichever position fields the provider sends — "index" (Anthropic content
+// block), "output_index" and "content_index" (OpenAI Responses), and the choice
+// "index" (OpenAI chat with several choices). Shapes that have none of them share
+// one group per kind, which is how they were handled before.
 func groupKey(jsonStr, path string) string {
 	var ev struct {
-		Index *int `json:"index"`
+		Index        *int `json:"index"`
+		OutputIndex  *int `json:"output_index"`
+		ContentIndex *int `json:"content_index"`
+		Choices      []struct {
+			Index *int `json:"index"`
+		} `json:"choices"`
 	}
-	idx := "-"
-	if err := json.Unmarshal([]byte(jsonStr), &ev); err == nil && ev.Index != nil {
-		idx = strconv.Itoa(*ev.Index)
+	pos := func(v *int) string {
+		if v == nil {
+			return "-"
+		}
+		return strconv.Itoa(*v)
 	}
-	return strconv.Itoa(int(kindOfPath(path))) + ":" + idx
+	choice := "-"
+	if err := json.Unmarshal([]byte(jsonStr), &ev); err == nil && len(ev.Choices) > 0 {
+		choice = pos(ev.Choices[0].Index)
+	}
+	return strconv.Itoa(int(kindOfPath(path))) + ":" + pos(ev.Index) + ":" + pos(ev.OutputIndex) + ":" + pos(ev.ContentIndex) + ":" + choice
 }
 
 // collectFragmentGroups reads every SSE data line in lines and returns the
@@ -115,10 +128,10 @@ func (g *fragmentGroup) joined() string {
 
 // anyGroupCouldCompletePlaceholder reports whether the joined text of any content
 // block ends in an unclosed "[" that could still become a placeholder.
-func anyGroupCouldCompletePlaceholder(s string) bool {
+func anyGroupCouldCompletePlaceholder(s string, maxTail int) bool {
 	order, groups := collectFragmentGroups(strings.Split(s, "\n"))
 	for _, key := range order {
-		if couldCompletePlaceholder(groups[key].joined()) {
+		if couldCompletePlaceholder(groups[key].joined(), maxTail) {
 			return true
 		}
 	}
@@ -129,7 +142,7 @@ func anyGroupCouldCompletePlaceholder(s string) bool {
 // original is JSON-escaped first, because the text is itself JSON.
 func restoreForKind(kind fragmentKind, text string, placeholderToOriginal map[string]string) string {
 	if kind == kindToolArguments {
-		return restoreJSONBytes(text, placeholderToOriginal)
+		return restorePlaceholders(text, placeholderToOriginal, jsonEscapeString)
 	}
 	return restore(text, placeholderToOriginal)
 }

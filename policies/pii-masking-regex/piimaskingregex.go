@@ -95,6 +95,11 @@ type PIIMaskingRegexPolicyParams struct {
 	DigitBoundary map[string]bool
 	JsonPath      string
 	RedactPII     bool
+	// MaxPlaceholderTail is how many bytes of assistant text a streaming flush may
+	// hold back after an unclosed "[". It is at least maxPlaceholderTailBytes and
+	// always long enough for the longest configured entity name, so a placeholder
+	// built from a long name is still held until it completes.
+	MaxPlaceholderTail int
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
@@ -223,6 +228,13 @@ func parseParams(params map[string]interface{}) (PIIMaskingRegexPolicyParams, er
 	}
 	result.PIIEntities = piiEntities
 	result.DigitBoundary = digitBoundary
+	result.MaxPlaceholderTail = maxPlaceholderTailBytes
+	for name := range piiEntities {
+		// name + "_" + up to eight hex digits is the longest text after the bracket.
+		if need := len(name) + 1 + placeholderHexDigits; need > result.MaxPlaceholderTail {
+			result.MaxPlaceholderTail = need
+		}
+	}
 
 	// Extract optional jsonPath parameter
 	if jsonPathRaw, ok := params["jsonPath"]; ok {
@@ -602,7 +614,7 @@ var placeholderTailPattern = regexp.MustCompile(`^[A-Z_]*[0-9a-f]{0,8}$`)
 // long as one emitted whole. An event-count bound could not express that: any
 // fixed number is both too small for a finely-tokenised placeholder (it leaks)
 // and too large for prose (it stalls).
-func couldCompletePlaceholder(content string) bool {
+func couldCompletePlaceholder(content string, maxTail int) bool {
 	lastOpen := strings.LastIndex(content, "[")
 	if lastOpen == -1 {
 		return false
@@ -611,7 +623,7 @@ func couldCompletePlaceholder(content string) bool {
 	if strings.Contains(tail, "]") {
 		return false // already closed — a whole placeholder is present
 	}
-	if len(tail) > maxPlaceholderTailBytes {
+	if len(tail) > maxTail {
 		return false
 	}
 	return placeholderTailPattern.MatchString(tail)
@@ -643,7 +655,7 @@ func (p *PIIMaskingRegexPolicy) NeedsMoreResponseData(accumulated []byte) bool {
 		return true
 	}
 
-	return anyGroupCouldCompletePlaceholder(s)
+	return anyGroupCouldCompletePlaceholder(s, p.params.MaxPlaceholderTail)
 }
 
 // endsAtSSEEventBoundary reports whether s ends on a complete SSE event. Both
@@ -746,19 +758,16 @@ func markEventBlockForRemoval(lines []string, dataIdx int, removeLines map[int]b
 // restoreJSONBytes replaces every complete placeholder in s with its
 // JSON-escaped original, preserving all other bytes exactly.
 func restoreJSONBytes(s string, restoreMap map[string]string) string {
-	result := s
-	for placeholder, original := range restoreMap {
-		if !strings.Contains(result, placeholder) {
-			continue
-		}
-		encodedBytes, err := json.Marshal(original)
-		if err != nil {
-			continue
-		}
-		escapedOriginal := string(encodedBytes[1 : len(encodedBytes)-1])
-		result = strings.ReplaceAll(result, placeholder, escapedOriginal)
+	return restorePlaceholders(s, restoreMap, jsonEscapeString)
+}
+
+// jsonEscapeString escapes v for use inside a JSON string, without the quotes.
+func jsonEscapeString(v string) string {
+	encoded, err := json.Marshal(v)
+	if err != nil || len(encoded) < 2 {
+		return v
 	}
-	return result
+	return string(encoded[1 : len(encoded)-1])
 }
 
 // ─── SSE / Streaming helpers ─────────────────────────────────────────────────
@@ -932,11 +941,56 @@ func invertStringMap(m map[string]string) map[string]string {
 // restore replaces placeholders with their original values.
 // maskedMap is placeholder → original.
 func restore(content string, maskedMap map[string]string) string {
-	result := content
-	for placeholder, original := range maskedMap {
-		result = strings.ReplaceAll(result, placeholder, original)
+	return restorePlaceholders(content, maskedMap, nil)
+}
+
+// placeholderCandidate matches the bracketed tokens a placeholder can be.
+var placeholderCandidate = regexp.MustCompile(`\[[A-Za-z0-9_]+\]`)
+
+// restorePlaceholders replaces each placeholder in text with its original value,
+// in a single pass over the text. The result does not depend on map order, and a
+// restored value that happens to look like another placeholder is left as it is
+// instead of being replaced again. escape, when set, is applied to every original.
+func restorePlaceholders(text string, placeholderToOriginal map[string]string, escape func(string) string) string {
+	if len(placeholderToOriginal) == 0 || !strings.Contains(text, "[") {
+		return text
 	}
-	return result
+	if !allTokenShaped(placeholderToOriginal) {
+		// Keys this policy never produces: keep the plain replacement loop.
+		result := text
+		for placeholder, original := range placeholderToOriginal {
+			if escape != nil {
+				original = escape(original)
+			}
+			result = strings.ReplaceAll(result, placeholder, original)
+		}
+		return result
+	}
+	return placeholderCandidate.ReplaceAllStringFunc(text, func(token string) string {
+		original, ok := placeholderToOriginal[token]
+		if !ok {
+			return token
+		}
+		if escape != nil {
+			return escape(original)
+		}
+		return original
+	})
+}
+
+func allTokenShaped(m map[string]string) bool {
+	for key := range m {
+		if len(key) < 3 || key[0] != '[' || key[len(key)-1] != ']' {
+			return false
+		}
+		for i := 1; i < len(key)-1; i++ {
+			c := key[i]
+			if !(c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // extractStringFromPath extracts the value at jsonPath from payload as a string.

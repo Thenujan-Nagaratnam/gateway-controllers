@@ -230,3 +230,28 @@ func TestBufferedResponse_RestoresTextToolArgumentsAndThinking(t *testing.T) {
 		t.Fatalf("restored body must stay valid JSON: %s", mods.Body)
 	}
 }
+
+// Restore parity: the same content gives the same restored values streamed and buffered.
+func TestRestoreParity_StreamedAndBufferedAgree(t *testing.T) {
+	p, ctx := restoringPolicy(t)
+	out := driveResponseStream(t, p, ctx, splitEvery(readFixture(t, "testdata/messages/stream_thinking.sse"), 31))
+	streamed := assembleBlocks(t, out)[0].thinking
+
+	body := `{"content":[{"type":"thinking","thinking":"I should look up ` + testPlaceholder + ` now."}]}`
+	respCtx := &policy.ResponseContext{
+		SharedContext: &policy.SharedContext{RequestID: "r", Metadata: map[string]interface{}{MetadataKeyPIIEntities: map[string]string{"bob@example.org": testPlaceholder}}},
+		ResponseBody:  &policy.Body{Content: []byte(body), Present: true},
+	}
+	mods := p.OnResponseBody(context.Background(), respCtx, nil).(policy.DownstreamResponseModifications)
+	var doc struct {
+		Content []struct {
+			Thinking string `json:"thinking"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(mods.Body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Content[0].Thinking != streamed {
+		t.Fatalf("buffered %q != streamed %q", doc.Content[0].Thinking, streamed)
+	}
+}
