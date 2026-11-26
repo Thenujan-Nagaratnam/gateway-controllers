@@ -29,7 +29,7 @@ func builtinMasker(t *testing.T, params map[string]interface{}) *masker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newMasker(parsed.PIIEntities)
+	return newMasker(parsed.PIIEntities, parsed.DigitBoundary)
 }
 
 func maskText(m *masker, text string) string {
@@ -171,6 +171,47 @@ func TestMasker_ManyValuesNeverShareAPlaceholder(t *testing.T) {
 	}
 	if len(seen) != 5000 {
 		t.Fatalf("expected 5000 distinct placeholders, got %d", len(seen))
+	}
+}
+
+// Item 9: nothing is masked inside a longer run of digits.
+func TestMasker_DigitBoundary(t *testing.T) {
+	for _, text := range []string{
+		"started 1795104230191", // 13-digit millisecond timestamp
+		"id 9007199254740991",   // long integer
+		"12345678901234567890",  // long run
+		"ref 1234155550199 end", // phone-shaped tail of a longer run
+		"order 99123-45-6789",   // ssn-shaped tail after digits
+	} {
+		m := builtinMasker(t, map[string]interface{}{"phone": true, "ssn": true})
+		if got := maskText(m, text); got != text {
+			t.Errorf("text %q must stay untouched, got %q", text, got)
+		}
+	}
+}
+
+// Anything masked today that is a standalone phone-shaped number stays masked.
+func TestMasker_StandalonePhoneShapedNumbersStayMasked(t *testing.T) {
+	for _, number := range []string{"4155550199", "2147483647", "(415) 555-0199", "+1 415-555-0198", "415.555.0197", "415-555-0196"} {
+		m := builtinMasker(t, map[string]interface{}{"phone": true})
+		out := maskText(m, "call "+number+" now")
+		if strings.Contains(out, number) {
+			t.Errorf("%q must still be masked, got %q", number, out)
+		}
+	}
+	m := builtinMasker(t, map[string]interface{}{"ssn": true})
+	if out := maskText(m, "ssn 123-45-6789."); strings.Contains(out, "123-45-6789") {
+		t.Errorf("a standalone SSN must still be masked, got %q", out)
+	}
+}
+
+func TestMasker_DigitBoundaryDoesNotApplyToCustomEntities(t *testing.T) {
+	m := builtinMasker(t, map[string]interface{}{
+		"customPIIEntities": []interface{}{map[string]interface{}{"piiEntity": "CODE", "piiRegex": `[0-9]{4}`}},
+	})
+	out := maskText(m, "12345678")
+	if out == "12345678" {
+		t.Fatalf("a custom pattern behaves as the operator defined it, got %q", out)
 	}
 }
 

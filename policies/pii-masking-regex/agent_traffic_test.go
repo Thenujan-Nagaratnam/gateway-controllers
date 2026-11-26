@@ -108,6 +108,45 @@ func TestRequest_WholePayloadStillMasksSystemPromptAndToolDescriptions(t *testin
 	}
 }
 
+// FR-004 / item 8: the selection path masks user and tool content only.
+func TestRequest_ScopedPathMasksOnlyUserAndToolContent(t *testing.T) {
+	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "phone": true, "jsonPath": userAndToolContentPath})
+	in := readFixture(t, "testdata/messages/request.json")
+	out, _ := maskRequest(t, p, in)
+
+	for _, kept := range []string{"help@corp.example", "ops@corp.example"} {
+		if !strings.Contains(out, kept) {
+			t.Errorf("%s is outside the selection and must reach the model unchanged", kept)
+		}
+	}
+	// The assistant turn is outside the selection too.
+	var doc map[string]interface{}
+	_ = json.Unmarshal([]byte(out), &doc)
+	assistant := doc["messages"].([]interface{})[1].(map[string]interface{})["content"].([]interface{})
+	if !strings.Contains(assistant[0].(map[string]interface{})["thinking"].(string), "bob@example.org") {
+		t.Errorf("assistant thinking is outside the selection and must be unchanged")
+	}
+	// User text and the tool result are masked.
+	user := doc["messages"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})["text"].(string)
+	if strings.Contains(user, "bob@example.org") || !strings.HasPrefix(user, "line1\n[EMAIL_") {
+		t.Errorf("user text not masked correctly: %q", user)
+	}
+	result := doc["messages"].([]interface{})[2].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})["text"].(string)
+	if strings.Contains(result, "alice@example.com") || strings.Contains(result, "2147483647") {
+		t.Errorf("tool result not masked: %q", result)
+	}
+	if !strings.Contains(result, "1795104230191") {
+		t.Errorf("the millisecond timestamp must not be cut: %q", result)
+	}
+	// Every byte outside the masked strings is identical to the input.
+	if !maximumIntact.MatchString(out) {
+		t.Errorf("number rewritten")
+	}
+	if strings.Index(out, `"system"`) != strings.Index(in, `"system"`) {
+		t.Errorf("bytes before the first masked value moved")
+	}
+}
+
 func TestRequest_ScopedPathLeavesRequestAloneWhenNothingMatches(t *testing.T) {
 	p := mustGetPIIPolicy(t, map[string]interface{}{"email": true, "jsonPath": `$.messages[?(@.role=='nobody')].content`})
 	body := `{"messages":[{"role":"user","content":"bob@example.org"}]}`

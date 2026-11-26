@@ -90,8 +90,11 @@ type PIIMaskingRegexPolicy struct {
 
 type PIIMaskingRegexPolicyParams struct {
 	PIIEntities map[string]*regexp.Regexp
-	JsonPath    string
-	RedactPII   bool
+	// DigitBoundary marks the built-in number-shaped entities (PHONE, SSN). A
+	// match of these is discarded when it starts inside a longer run of digits.
+	DigitBoundary map[string]bool
+	JsonPath      string
+	RedactPII     bool
 }
 
 // GetPolicy is the v1alpha2 factory entry point (loaded by v1alpha2 kernels).
@@ -126,6 +129,7 @@ func parseParams(params map[string]interface{}) (PIIMaskingRegexPolicyParams, er
 	var result PIIMaskingRegexPolicyParams
 	result.JsonPath = DefaultJSONPath
 	piiEntities := make(map[string]*regexp.Regexp)
+	digitBoundary := make(map[string]bool)
 
 	// Extract customPIIEntities parameter if provided.
 	piiEntitiesRaw, ok := params["customPIIEntities"]
@@ -204,18 +208,21 @@ func parseParams(params map[string]interface{}) (PIIMaskingRegexPolicyParams, er
 			return result, fmt.Errorf("duplicate piiEntity: %q", DefaultPhoneEntityName)
 		}
 		piiEntities[DefaultPhoneEntityName] = regexp.MustCompile(DefaultPhoneRegex)
+		digitBoundary[DefaultPhoneEntityName] = true
 	}
 	if enableSSN {
 		if _, exists := piiEntities[DefaultSSNEntityName]; exists {
 			return result, fmt.Errorf("duplicate piiEntity: %q", DefaultSSNEntityName)
 		}
 		piiEntities[DefaultSSNEntityName] = regexp.MustCompile(DefaultSSNRegex)
+		digitBoundary[DefaultSSNEntityName] = true
 	}
 
 	if len(piiEntities) == 0 {
 		return result, fmt.Errorf("at least one PII detector must be configured using 'customPIIEntities' or one of 'email', 'phone', 'ssn'")
 	}
 	result.PIIEntities = piiEntities
+	result.DigitBoundary = digitBoundary
 
 	// Extract optional jsonPath parameter
 	if jsonPathRaw, ok := params["jsonPath"]; ok {
@@ -387,7 +394,7 @@ func (p *PIIMaskingRegexPolicy) maskSelected(reqCtx *policy.RequestContext, payl
 // maskJSONBody masks string values in a valid JSON body. A nil selection means
 // every string value; otherwise only values whose normalized path is selected.
 func (p *PIIMaskingRegexPolicy) maskJSONBody(reqCtx *policy.RequestContext, payload []byte, selection map[string]struct{}) ([]byte, bool, error) {
-	m := newMasker(p.params.PIIEntities)
+	m := newMasker(p.params.PIIEntities, p.params.DigitBoundary)
 	inScope := func(path string) bool {
 		if selection == nil {
 			return true
@@ -446,7 +453,7 @@ func (p *PIIMaskingRegexPolicy) maskPlainText(reqCtx *policy.RequestContext, pay
 	if text == "" {
 		return nil, false, nil
 	}
-	m := newMasker(p.params.PIIEntities)
+	m := newMasker(p.params.PIIEntities, p.params.DigitBoundary)
 	m.collect(text)
 	p.logPIIDetection(p.actionName(), m.hits)
 	if len(m.found) == 0 {

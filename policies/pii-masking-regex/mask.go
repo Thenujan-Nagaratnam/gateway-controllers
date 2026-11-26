@@ -64,6 +64,9 @@ func placeholderFor(entity, value string, attempt int) string {
 type entityDetector struct {
 	name string
 	re   *regexp.Regexp
+	// digitBoundary discards a match whose preceding byte is an ASCII digit, so a
+	// number-shaped pattern never matches inside a longer run of digits.
+	digitBoundary bool
 }
 
 // match is one detected span of PII.
@@ -89,7 +92,7 @@ type masker struct {
 
 // newMasker builds a masker from the configured entities. Detectors are kept in
 // name order so results never depend on map iteration order.
-func newMasker(entities map[string]*regexp.Regexp) *masker {
+func newMasker(entities map[string]*regexp.Regexp, digitBoundary map[string]bool) *masker {
 	names := make([]string, 0, len(entities))
 	for name := range entities {
 		names = append(names, name)
@@ -97,7 +100,7 @@ func newMasker(entities map[string]*regexp.Regexp) *masker {
 	sort.Strings(names)
 	detectors := make([]entityDetector, 0, len(names))
 	for _, name := range names {
-		detectors = append(detectors, entityDetector{name: name, re: entities[name]})
+		detectors = append(detectors, entityDetector{name: name, re: entities[name], digitBoundary: digitBoundary[name]})
 	}
 	return &masker{
 		detectors: detectors,
@@ -107,12 +110,17 @@ func newMasker(entities map[string]*regexp.Regexp) *masker {
 	}
 }
 
+func isASCIIDigit(b byte) bool { return b >= '0' && b <= '9' }
+
 // findMatches returns the non-overlapping PII spans in text, left to right.
 func (m *masker) findMatches(text string) []match {
 	var all []match
 	for _, d := range m.detectors {
 		for _, loc := range d.re.FindAllStringIndex(text, -1) {
 			if loc[0] == loc[1] {
+				continue
+			}
+			if d.digitBoundary && loc[0] > 0 && isASCIIDigit(text[loc[0]-1]) {
 				continue
 			}
 			original := text[loc[0]:loc[1]]
