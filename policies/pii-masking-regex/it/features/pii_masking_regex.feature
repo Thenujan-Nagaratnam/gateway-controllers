@@ -565,3 +565,127 @@ Feature: PII masking regex policy
 
     When I delete the API "${CTX:apiName}"
     Then the response should be successful
+
+  Scenario: An email right after a JSON escape is masked and the request stays valid JSON
+    Given I generate a unique value from "pii-mask-after-escape" and store it as "apiName"
+    And I generate a unique API version from "pii-mask-after-escape" and store it as "apiVersion"
+    And I generate a unique API context from "/pii-mask-after-escape" and store it as "apiContext"
+    When I create API from "resources/templates/rest-api.yaml" with values:
+      | apiVersion             | ${CTX:gatewaySpecVersion} |
+      | name                   | ${CTX:apiName}                   |
+      | spec.displayName       | ${CTX:apiName}                   |
+      | spec.version           | ${CTX:apiVersion}                |
+      | spec.context           | ${CTX:apiContext}/$version       |
+      | spec.upstream.main.url | ${CTX:captureUpstream}           |
+      | spec.operations        | [{"method":"GET","path":"/get"},{"method":"POST","path":"/after-escape","policies":[{"name":"pii-masking-regex","version":"v1","params":{"customPIIEntities":[{"piiEntity":"EMAIL","piiRegex":"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\\\.[a-zA-Z]{2,}"}],"jsonPath":"$","redactPII":false}}]}] |
+    Then the resource creation response should indicate successful deployment
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 200
+
+    When I set header "Content-Type" to "application/json"
+    And I send a "POST" request to "${CTX:apiContext}/${CTX:apiVersion}/after-escape" with body:
+      """
+      {"messages":[{"role":"user","content":"line1\nbob@example.org"}]}
+      """
+    Then the response status code should be 200
+
+    When I send a "GET" request to the "capture" service at "/test/captured?path=/after-escape"
+    Then the response body should contain "[EMAIL_"
+    And the response body should not contain "bob@example.org"
+
+    When I delete the API "${CTX:apiName}"
+    Then the response should be successful
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 404
+
+  Scenario: Numbers in the body are never rewritten when the whole payload is masked
+    Given I generate a unique value from "pii-mask-keeps-numbers" and store it as "apiName"
+    And I generate a unique API version from "pii-mask-keeps-numbers" and store it as "apiVersion"
+    And I generate a unique API context from "/pii-mask-keeps-numbers" and store it as "apiContext"
+    When I create API from "resources/templates/rest-api.yaml" with values:
+      | apiVersion             | ${CTX:gatewaySpecVersion} |
+      | name                   | ${CTX:apiName}                   |
+      | spec.displayName       | ${CTX:apiName}                   |
+      | spec.version           | ${CTX:apiVersion}                |
+      | spec.context           | ${CTX:apiContext}/$version       |
+      | spec.upstream.main.url | ${CTX:captureUpstream}           |
+      | spec.operations        | [{"method":"GET","path":"/get"},{"method":"POST","path":"/keeps-numbers","policies":[{"name":"pii-masking-regex","version":"v1","params":{"phone":true,"email":true,"jsonPath":"$","redactPII":false}}]}] |
+    Then the resource creation response should indicate successful deployment
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 200
+
+    When I set header "Content-Type" to "application/json"
+    And I send a "POST" request to "${CTX:apiContext}/${CTX:apiVersion}/keeps-numbers" with body:
+      """
+      {"tools":[{"name":"t","input_schema":{"maximum":9007199254740991}}],"messages":[{"role":"user","content":"mail bob@example.org"}]}
+      """
+    Then the response status code should be 200
+
+    When I send a "GET" request to the "capture" service at "/test/captured?path=/keeps-numbers"
+    Then the response body should contain "9007199254740991"
+    And the response body should contain "[EMAIL_"
+    And the response body should not contain "bob@example.org"
+
+    When I delete the API "${CTX:apiName}"
+    Then the response should be successful
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 404
+
+  Scenario: Digits inside a longer number are not cut out as a phone number
+    Given I generate a unique value from "pii-mask-long-number" and store it as "apiName"
+    And I generate a unique API version from "pii-mask-long-number" and store it as "apiVersion"
+    And I generate a unique API context from "/pii-mask-long-number" and store it as "apiContext"
+    When I create API from "resources/templates/rest-api.yaml" with values:
+      | apiVersion             | ${CTX:gatewaySpecVersion} |
+      | name                   | ${CTX:apiName}                   |
+      | spec.displayName       | ${CTX:apiName}                   |
+      | spec.version           | ${CTX:apiVersion}                |
+      | spec.context           | ${CTX:apiContext}/$version       |
+      | spec.upstream.main.url | ${CTX:captureUpstream}           |
+      | spec.operations        | [{"method":"GET","path":"/get"},{"method":"POST","path":"/long-number","policies":[{"name":"pii-masking-regex","version":"v1","params":{"phone":true,"jsonPath":"$","redactPII":false}}]}] |
+    Then the resource creation response should indicate successful deployment
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 200
+
+    When I set header "Content-Type" to "application/json"
+    And I send a "POST" request to "${CTX:apiContext}/${CTX:apiVersion}/long-number" with body:
+      """
+      {"messages":[{"role":"user","content":"started 1795104230191, call (415) 555-0199"}]}
+      """
+    Then the response status code should be 200
+
+    When I send a "GET" request to the "capture" service at "/test/captured?path=/long-number"
+    Then the response body should contain "1795104230191"
+    And the response body should contain "[PHONE_"
+    And the response body should not contain "(415) 555-0199"
+
+    When I delete the API "${CTX:apiName}"
+    Then the response should be successful
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 404
+
+  Scenario: A selection path masks only user content and leaves the system prompt and tool definitions alone
+    Given I generate a unique value from "pii-mask-user-only" and store it as "apiName"
+    And I generate a unique API version from "pii-mask-user-only" and store it as "apiVersion"
+    And I generate a unique API context from "/pii-mask-user-only" and store it as "apiContext"
+    When I create API from "resources/templates/rest-api.yaml" with values:
+      | apiVersion             | ${CTX:gatewaySpecVersion} |
+      | name                   | ${CTX:apiName}                   |
+      | spec.displayName       | ${CTX:apiName}                   |
+      | spec.version           | ${CTX:apiVersion}                |
+      | spec.context           | ${CTX:apiContext}/$version       |
+      | spec.upstream.main.url | ${CTX:captureUpstream}           |
+      | spec.operations        | [{"method":"GET","path":"/get"},{"method":"POST","path":"/user-only","policies":[{"name":"pii-masking-regex","version":"v1","params":{"email":true,"jsonPath":"$.messages[?(@.role=='user')]..['text','content']","redactPII":false}}]}] |
+    Then the resource creation response should indicate successful deployment
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 200
+
+    When I set header "Content-Type" to "application/json"
+    And I send a "POST" request to "${CTX:apiContext}/${CTX:apiVersion}/user-only" with body:
+      """
+      {"system":"Escalate to help@corp.example","tools":[{"name":"t","description":"owner ops@corp.example"}],"messages":[{"role":"user","content":"mail bob@example.org"}]}
+      """
+    Then the response status code should be 200
+
+    When I send a "GET" request to the "capture" service at "/test/captured?path=/user-only"
+    Then the response body should contain "help@corp.example"
+    And the response body should contain "ops@corp.example"
+    And the response body should contain "[EMAIL_"
+    And the response body should not contain "bob@example.org"
+
+    When I delete the API "${CTX:apiName}"
+    Then the response should be successful
+    And I send a "GET" request to "${CTX:apiContext}/${CTX:apiVersion}/get" until status 404
