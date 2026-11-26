@@ -18,6 +18,7 @@
 package piimaskingregex
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -64,10 +65,18 @@ type fragmentGroup struct {
 	fragments []streamFragment
 }
 
-// groupKey identifies the group an event belongs to: its delta kind, so assistant
-// text, tool-call arguments and reasoning are never joined with one another.
-func groupKey(_, path string) string {
-	return strconv.Itoa(int(kindOfPath(path)))
+// groupKey identifies the content block an event belongs to: the delta kind plus
+// the Anthropic content-block "index". Shapes without an index share one group per
+// kind, which is how they were handled before.
+func groupKey(jsonStr, path string) string {
+	var ev struct {
+		Index *int `json:"index"`
+	}
+	idx := "-"
+	if err := json.Unmarshal([]byte(jsonStr), &ev); err == nil && ev.Index != nil {
+		idx = strconv.Itoa(*ev.Index)
+	}
+	return strconv.Itoa(int(kindOfPath(path))) + ":" + idx
 }
 
 // collectFragmentGroups reads every SSE data line in lines and returns the

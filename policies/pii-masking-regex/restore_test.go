@@ -133,6 +133,37 @@ func TestStream_ThinkingIsRestored(t *testing.T) {
 	}
 }
 
+// Item 6: two text blocks in one flush keep their own text.
+func TestStream_TwoTextBlocksInOneFlushKeepTheirOwnText(t *testing.T) {
+	p, ctx := restoringPolicy(t)
+	raw := readFixture(t, "testdata/messages/stream_two_text_blocks.sse")
+	out := driveResponseStream(t, p, ctx, []string{raw})
+	blocks := assembleBlocks(t, out)
+	if blocks[0].text != "First block: bob@example.org" {
+		t.Fatalf("block 0 = %q", blocks[0].text)
+	}
+	if blocks[1].text != "Second block text." {
+		t.Fatalf("block 1 must keep its own text and not be empty, got %q", blocks[1].text)
+	}
+}
+
+// Two blocks that both carry a placeholder, with the second one split across events.
+func TestStream_EachBlockIsRestoredIndependently(t *testing.T) {
+	p, ctx := restoringPolicy(t)
+	mk := func(index int, kind, key, val string) string {
+		ev, _ := json.Marshal(map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": kind, key: val}})
+		return "event: content_block_delta\ndata: " + string(ev) + "\n\n"
+	}
+	raw := mk(0, "text_delta", "text", "A ") + mk(0, "text_delta", "text", testPlaceholder) +
+		mk(1, "thinking_delta", "thinking", "T [EMAIL_") + mk(1, "thinking_delta", "thinking", "3fa91c0b]") +
+		mk(2, "text_delta", "text", "C")
+	out := driveResponseStream(t, p, ctx, []string{raw})
+	blocks := assembleBlocks(t, out)
+	if blocks[0].text != "A bob@example.org" || blocks[1].thinking != "T bob@example.org" || blocks[2].text != "C" {
+		t.Fatalf("got %+v %+v %+v", blocks[0], blocks[1], blocks[2])
+	}
+}
+
 // A placeholder cut across many events, with a stream that ends cleanly.
 func TestStream_SplitPlaceholderIsHeldAndRestoredWithoutLeakingFragments(t *testing.T) {
 	p, ctx := restoringPolicy(t)
@@ -150,6 +181,30 @@ func TestStream_SplitPlaceholderIsHeldAndRestoredWithoutLeakingFragments(t *test
 	}
 	if strings.Contains(out, "EMAIL_") {
 		t.Fatalf("a placeholder fragment leaked: %s", out)
+	}
+}
+
+func TestNeedsMoreResponseData_HoldsWhileAnyBlockMayStillCompleteAPlaceholder(t *testing.T) {
+	p, _ := restoringPolicy(t)
+	mk := func(index int, kind, key, val string) string {
+		ev, _ := json.Marshal(map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": kind, key: val}})
+		return "data: " + string(ev) + "\n\n"
+	}
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"thinking ends in open bracket", mk(0, "thinking_delta", "thinking", "see [EMAIL_3f"), true},
+		{"tool arguments end in open bracket", mk(0, "input_json_delta", "partial_json", `{"a": "[EMAIL_`), true},
+		{"text block closed, other block open", mk(0, "text_delta", "text", "done") + mk(1, "thinking_delta", "thinking", "[EMA"), true},
+		{"all blocks closed", mk(0, "text_delta", "text", "done") + mk(1, "thinking_delta", "thinking", "[EMAIL_3fa91c0b]"), false},
+		{"prose bracket releases", mk(0, "text_delta", "text", "list [a b"), false},
+	}
+	for _, c := range cases {
+		if got := p.NeedsMoreResponseData([]byte(c.raw)); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
 	}
 }
 
