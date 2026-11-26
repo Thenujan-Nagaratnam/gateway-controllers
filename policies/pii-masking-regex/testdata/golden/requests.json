@@ -1,0 +1,1225 @@
+{
+ "e2e/JSON text inside a string": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"{\\\"to\\\":\\\"bob@example.org\\\",\\\"n\\\":1}\"}]}",
+  "upstream": "{\"messages\":[{\"role\":\"user\",\"content\":\"{\\\"to\\\":\\\"[EMAIL_b5f05236]\\\",\\\"n\\\":1}\"}]}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "e2e/all built-in entities": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"bob@example.org (415) 555-0199 +1 650-555-0142 212.555.0173 ssn 123-45-6789\"}]}",
+  "upstream": "{\"messages\":[{\"role\":\"user\",\"content\":\"[EMAIL_b5f05236] [PHONE_0812f734] [PHONE_960afeeb] [PHONE_a9a649f7] ssn [SSN_81da1ad8]\"}]}",
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0812f734]",
+   "+1 650-555-0142": "[PHONE_960afeeb]",
+   "123-45-6789": "[SSN_81da1ad8]",
+   "212.555.0173": "[PHONE_a9a649f7]",
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "e2e/built-in plus custom entity": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "EMPID",
+     "piiRegex": "EMP-[0-9]{6}"
+    }
+   ],
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"bob@example.org EMP-123456 EMP-654321\"}]}",
+  "upstream": "{\"messages\":[{\"role\":\"user\",\"content\":\"[EMAIL_b5f05236] [EMPID_17c12321] [EMPID_ca98351e]\"}]}",
+  "mapping": {
+   "EMP-123456": "[EMPID_17c12321]",
+   "EMP-654321": "[EMPID_ca98351e]",
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "e2e/deeply nested tool_use input and tool_result": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"n\",\"input\":{\"a\":{\"b\":[{\"c\":\"bob@example.org\"}]}}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":[{\"type\":\"text\",\"text\":\"carol@example.org\"}]}]}]}",
+  "upstream": "{\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"n\",\"input\":{\"a\":{\"b\":[{\"c\":\"[EMAIL_b5f05236]\"}]}}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":[{\"type\":\"text\",\"text\":\"[EMAIL_6fdcde7a]\"}]}]}]}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]",
+   "carol@example.org": "[EMAIL_6fdcde7a]"
+  }
+ },
+ "e2e/default path masks the last message only": {
+  "params": {
+   "email": true
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"first bob@example.org\"},{\"role\":\"user\",\"content\":\"last carol@example.org\"}]}",
+  "upstream": "{\"messages\":[{\"role\":\"user\",\"content\":\"first bob@example.org\"},{\"role\":\"user\",\"content\":\"last [EMAIL_6fdcde7a]\"}]}",
+  "mapping": {
+   "carol@example.org": "[EMAIL_6fdcde7a]"
+  }
+ },
+ "e2e/digits inside longer runs are left alone": {
+  "params": {
+   "jsonPath": "$",
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"ref 99123-45-6789 and 1234155550199 and 1795104230191\"}]}"
+ },
+ "e2e/emails after every JSON escape": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"a\\nbob@example.org \\tcarol@example.org \\rdave@example.org \u003ceve@example.org \\\\frank@example.org \\\"gina@example.org\"}]}",
+  "upstream": "{\"messages\":[{\"role\":\"user\",\"content\":\"a\\n[EMAIL_b5f05236] \\t[EMAIL_6fdcde7a] \\r[EMAIL_b1e78239] \u003c[EMAIL_d2e98b7f] \\\\[EMAIL_7b10c207] \\\"[EMAIL_21eefcfd]\"}]}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]",
+   "carol@example.org": "[EMAIL_6fdcde7a]",
+   "dave@example.org": "[EMAIL_b1e78239]",
+   "eve@example.org": "[EMAIL_d2e98b7f]",
+   "frank@example.org": "[EMAIL_7b10c207]",
+   "gina@example.org": "[EMAIL_21eefcfd]"
+  }
+ },
+ "e2e/empty strings and empty arrays": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{\"system\":\"\",\"messages\":[],\"tools\":[],\"x\":{\"a\":\"\"},\"y\":[\"\"]}"
+ },
+ "e2e/invalid selection path is rejected": {
+  "params": {
+   "email": true,
+   "jsonPath": "$.messages[?(@.role==)]"
+  },
+  "body": "{\"messages\":[]}",
+  "rejected": true
+ },
+ "e2e/keys that look like values are never masked": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"bob@example.org\":\"value\",\"messages\":[{\"role\":\"user\",\"content\":\"carol@example.org\"}]}",
+  "upstream": "{\"bob@example.org\":\"value\",\"messages\":[{\"role\":\"user\",\"content\":\"[EMAIL_6fdcde7a]\"}]}",
+  "mapping": {
+   "carol@example.org": "[EMAIL_6fdcde7a]"
+  }
+ },
+ "e2e/missing single-value path is rejected": {
+  "params": {
+   "email": true,
+   "jsonPath": "$.missing.field"
+  },
+  "body": "{\"messages\":[]}",
+  "rejected": true
+ },
+ "e2e/multimodal content array with the default path is skipped": {
+  "params": {
+   "email": true
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"bob@example.org\"}]}]}"
+ },
+ "e2e/no PII leaves the body byte-identical": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{ \"model\" : \"m\",  \"messages\":[ {\"role\":\"user\",\"content\":\"hello there\"} ] }\n"
+ },
+ "e2e/non-JSON body is masked as plain text": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "plain text for bob@example.org",
+  "upstream": "plain text for [EMAIL_b5f05236]",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "e2e/numbers and timestamps are untouched": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "phone": true
+  },
+  "body": "{\"tools\":[{\"name\":\"t\",\"input_schema\":{\"maximum\":9007199254740991,\"neg\":-0.5e+10,\"ts\":1795104230191}}],\"messages\":[{\"role\":\"user\",\"content\":\"bob@example.org started 1795104230191 id 9007199254740991\"}]}",
+  "upstream": "{\"tools\":[{\"name\":\"t\",\"input_schema\":{\"maximum\":9007199254740991,\"neg\":-0.5e+10,\"ts\":1795104230191}}],\"messages\":[{\"role\":\"user\",\"content\":\"[EMAIL_b5f05236] started 1795104230191 id 9007199254740991\"}]}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "e2e/original value with a quote and a backslash": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "NOTE",
+     "piiRegex": "code \"[A-Z]+\" \\\\ end"
+    }
+   ],
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"my code \\\"ABC\\\" \\\\ end ok\"}]}",
+  "upstream": "{\"messages\":[{\"role\":\"user\",\"content\":\"my [NOTE_b442d24c] ok\"}]}",
+  "mapping": {
+   "code \"ABC\" \\ end": "[NOTE_b442d24c]"
+  }
+ },
+ "e2e/placeholder-looking text typed by the user is left alone": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"keep [EMAIL_deadbeef] but hide bob@example.org\"}]}",
+  "upstream": "{\"messages\":[{\"role\":\"user\",\"content\":\"keep [EMAIL_deadbeef] but hide [EMAIL_b5f05236]\"}]}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "e2e/punctuation around emails": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"(\\\"bob@example.org\\\"), \u003ccarol@example.org\u003e; dave@example.org.\"}]}",
+  "upstream": "{\"messages\":[{\"role\":\"user\",\"content\":\"(\\\"[EMAIL_b5f05236]\\\"), \u003c[EMAIL_6fdcde7a]\u003e; [EMAIL_b1e78239].\"}]}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]",
+   "carol@example.org": "[EMAIL_6fdcde7a]",
+   "dave@example.org": "[EMAIL_b1e78239]"
+  }
+ },
+ "e2e/redaction is one-way": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "redactPII": true
+  },
+  "body": "{\"max\":9007199254740991,\"messages\":[{\"role\":\"user\",\"content\":\"a\\nbob@example.org\"}]}",
+  "upstream": "{\"max\":9007199254740991,\"messages\":[{\"role\":\"user\",\"content\":\"a\\n*****\"}]}"
+ },
+ "e2e/same value repeated across turns": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"content\":\"bob@example.org\",\"role\":\"user\"},{\"content\":\"noted bob@example.org\",\"role\":\"assistant\"},{\"content\":\"again bob@example.org and carol@example.org\",\"role\":\"user\"}]}",
+  "upstream": "{\"messages\":[{\"content\":\"[EMAIL_b5f05236]\",\"role\":\"user\"},{\"content\":\"noted [EMAIL_b5f05236]\",\"role\":\"assistant\"},{\"content\":\"again [EMAIL_b5f05236] and [EMAIL_6fdcde7a]\",\"role\":\"user\"}]}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]",
+   "carol@example.org": "[EMAIL_6fdcde7a]"
+  }
+ },
+ "e2e/scoped path keeps system prompt, tool definitions and assistant turns": {
+  "params": {
+   "email": true,
+   "jsonPath": "$.messages[?(@.role=='user')]..['text','content']"
+  },
+  "body": "{\"system\":\"Escalate to help@corp.example\",\"tools\":[{\"name\":\"t\",\"description\":\"owner ops@corp.example\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"line1\\nbob@example.org\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"I saw carol@example.org\",\"signature\":\"c2ln\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":[{\"type\":\"text\",\"text\":\"owner alice@example.com\"}]}]}]}",
+  "upstream": "{\"system\":\"Escalate to help@corp.example\",\"tools\":[{\"name\":\"t\",\"description\":\"owner ops@corp.example\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"line1\\n[EMAIL_b5f05236]\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"I saw carol@example.org\",\"signature\":\"c2ln\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":[{\"type\":\"text\",\"text\":\"owner [EMAIL_1c9da2ad]\"}]}]}]}",
+  "mapping": {
+   "alice@example.com": "[EMAIL_1c9da2ad]",
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "e2e/scoped path that matches nothing": {
+  "params": {
+   "email": true,
+   "jsonPath": "$.messages[?(@.role=='nobody')].content"
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"bob@example.org\"}]}"
+ },
+ "e2e/simple email": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"mail bob@example.org please\"}]}",
+  "upstream": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"mail [EMAIL_b5f05236] please\"}]}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "e2e/standalone 10-digit numbers are still masked": {
+  "params": {
+   "jsonPath": "$",
+   "phone": true
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"ids 4155550199 and 2147483647 here\"}]}",
+  "upstream": "{\"messages\":[{\"role\":\"user\",\"content\":\"ids [PHONE_814ee69b] and [PHONE_5c6bff0b] here\"}]}",
+  "mapping": {
+   "2147483647": "[PHONE_5c6bff0b]",
+   "4155550199": "[PHONE_814ee69b]"
+  }
+ },
+ "e2e/unicode and emoji around values": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"role\":\"user\",\"content\":\"héllo 日本語 😀 bob@example.org ✓ 😀carol@example.org 😀dave@example.org\"}]}",
+  "upstream": "{\"messages\":[{\"role\":\"user\",\"content\":\"héllo 日本語 😀 [EMAIL_b5f05236] ✓ 😀[EMAIL_6fdcde7a] 😀[EMAIL_b1e78239]\"}]}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]",
+   "carol@example.org": "[EMAIL_6fdcde7a]",
+   "dave@example.org": "[EMAIL_b1e78239]"
+  }
+ },
+ "e2e/whole payload masks system prompt and tool descriptions": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"system\":\"Escalate to help@corp.example\",\"tools\":[{\"name\":\"t\",\"description\":\"owner ops@corp.example\",\"input_schema\":{\"type\":\"object\"}}],\"messages\":[{\"role\":\"user\",\"content\":\"mail bob@example.org\"}]}",
+  "upstream": "{\"system\":\"Escalate to [EMAIL_519014c2]\",\"tools\":[{\"name\":\"t\",\"description\":\"owner [EMAIL_73555f34]\",\"input_schema\":{\"type\":\"object\"}}],\"messages\":[{\"role\":\"user\",\"content\":\"mail [EMAIL_b5f05236]\"}]}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]",
+   "help@corp.example": "[EMAIL_519014c2]",
+   "ops@corp.example": "[EMAIL_73555f34]"
+  }
+ },
+ "generated/000-responses-api-root-a": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"input\":\"(1795104230191, =fox. 212.555.0173 \\u003ccarol+tag@sub.example.co.uk\\n [ quick fox\",\"model\":\"gpt\"}",
+  "upstream": "{\"input\":\"(1795104230191, =fox. 212.555.0173 \u003c[EMAIL_e8a585c2]\\n [ quick fox\",\"model\":\"gpt\"}",
+  "mapping": {
+   "carol+tag@sub.example.co.uk": "[EMAIL_e8a585c2]"
+  }
+ },
+ "generated/001-bedrock-converse-\u003cdefault\u003e-b": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true
+  },
+  "body": "{\"messages\":[{\"content\":[{\"text\":\"CODE-XyZ id:bob@example.org\\\" (321-54-9876\\\" \\\"2147483647,\"}],\"role\":\"user\"}]}"
+ },
+ "generated/002-anthropic-messages-\u003cdefault\u003e-c": {
+  "params": {
+   "ssn": true
+  },
+  "body": "{\"max_tokens\":64,\"messages\":[{\"content\":\"\\tid😀 \\t1795104230191! 'bob@example.org. dave_1@example.io \\r\\u0026\\u003e code-abc\",\"role\":\"user\"}],\"model\":\"claude\"}"
+ },
+ "generated/003-generic-object-\u003cdefault\u003e-d": {
+  "params": {
+   "ssn": true
+  },
+  "body": "{\"id\":12345,\"user\":{\"name\":\"Sam\",\"note\":\"321-54-9876 321-54-9876 alice.smith@example.com\"}}",
+  "rejected": true
+ },
+ "generated/004-legacy-completions-root_prompt-e": {
+  "params": {
+   "jsonPath": "$.prompt",
+   "ssn": true
+  },
+  "body": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"\\\\the\\n (415) 555-0199 (code-abc =alice.smith@example.com. \\\"quick\\n 321-54-9876 carol+tag@sub.example.co.uk\"}",
+  "upstream": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"\\\\the\\n (415) 555-0199 (code-abc =alice.smith@example.com. \\\"quick\\n [SSN_31c735b7] carol+tag@sub.example.co.uk\"}",
+  "mapping": {
+   "321-54-9876": "[SSN_31c735b7]"
+  }
+ },
+ "generated/005-anthropic-messages-root_messages_-1__content-f": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "jsonPath": "$.messages[-1].content"
+  },
+  "body": "{\"max_tokens\":64,\"messages\":[{\"content\":\"321-54-9876 \\\"alice.smith@example.com;\",\"role\":\"user\"}],\"model\":\"claude\"}",
+  "upstream": "{\"max_tokens\":64,\"messages\":[{\"content\":\"321-54-9876 \\\"[EMAIL_f1a91121];\",\"role\":\"user\"}],\"model\":\"claude\"}",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]"
+  }
+ },
+ "generated/006-legacy-completions-\u003cdefault\u003e-g": {
+  "params": {
+   "email": true,
+   "phone": true,
+   "redactPII": true,
+   "ssn": true
+  },
+  "body": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"99123-45-6789 2147483647 x+1 650-555-0142)\"}",
+  "rejected": true
+ },
+ "generated/007-bedrock-converse-\u003cdefault\u003e-h": {
+  "params": {
+   "phone": true,
+   "redactPII": true
+  },
+  "body": "{\"messages\":[{\"content\":[{\"text\":\"ok \\u2028123-45-6789, 303-555-0188 \\tdave_1@example.io\\\"\"}],\"role\":\"user\"}]}"
+ },
+ "generated/008-legacy-completions--i": {
+  "params": {
+   "jsonPath": "",
+   "ssn": true
+  },
+  "body": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"carol+tag@sub.example.co.uk é\"}"
+ },
+ "generated/009-legacy-completions-root_prompt-j": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "jsonPath": "$.prompt",
+   "redactPII": true
+  },
+  "body": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"carol+tag@sub.example.co.uk\\nalice.smith@example.com\\nid:dave_1@example.io!\\n\\re.f@g.hk\\nbrown\\n42\"}",
+  "upstream": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"*****\\n*****\\nid:*****!\\n\\r*****\\nbrown\\n42\"}"
+ },
+ "generated/010-responses-api-root_input-k": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "jsonPath": "$.input"
+  },
+  "body": "{\"input\":\"(_,\",\"model\":\"gpt\"}"
+ },
+ "generated/011-gemini-root_contents_0__parts_0__text-l": {
+  "params": {
+   "email": true,
+   "jsonPath": "$.contents[0].parts[0].text",
+   "phone": true,
+   "redactPII": true,
+   "ssn": true
+  },
+  "body": "{\"contents\":[{\"parts\":[{\"text\":\"'hello! \\u2028quick\\\" \\nok. bob@example.org (e.f@g.hk\\n 321-54-9876 303-555-0188\"}],\"role\":\"user\"}]}",
+  "upstream": "{\"contents\":[{\"parts\":[{\"text\":\"'hello! \\u2028quick\\\" \\nok. ***** (*****\\n ***** *****\"}],\"role\":\"user\"}]}"
+ },
+ "generated/012-openai-chat-root_messages_1__content-m": {
+  "params": {
+   "email": true,
+   "jsonPath": "$.messages[1].content",
+   "redactPII": true
+  },
+  "body": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"bob@example.org (2147483647. 42 alice.smith@example.com 123-45-6789\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "upstream": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"***** (2147483647. 42 ***** 123-45-6789\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}"
+ },
+ "generated/013-responses-api--n": {
+  "params": {
+   "email": true,
+   "jsonPath": "",
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{\"input\":\"'code-abc! \\u202899123-45-6789\\n (alice.smith@example.com id:(415) 555-0199. \\u2028e.f@g.hk\\\"\",\"model\":\"gpt\"}",
+  "upstream": "{\"input\":\"'code-abc! \\u202899123-45-6789\\n ([EMAIL_f1a91121] id:[PHONE_0812f734]. \\u2028[EMAIL_ed6b6f0b]\\\"\",\"model\":\"gpt\"}",
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0812f734]",
+   "alice.smith@example.com": "[EMAIL_f1a91121]",
+   "e.f@g.hk": "[EMAIL_ed6b6f0b]"
+  }
+ },
+ "generated/014-openai-chat--o": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "EMPID",
+     "piiRegex": "EMP-[0-9]{6}"
+    }
+   ],
+   "jsonPath": ""
+  },
+  "body": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"carol+tag@sub.example.co.uk \\u2028+1 650-555-0142\\\" \\n1795104230191\\\" \\\\2147483647. CODE-XyZ (415) 555-0199 \\\"1795104230191!\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}"
+ },
+ "generated/015-anthropic-messages-root-p": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"max_tokens\":64,\"messages\":[{\"content\":\"321-54-9876 321-54-9876 \\u2028\\n) 1795104230191 dave_1@example.io id:212.555.0173,\",\"role\":\"user\"}],\"model\":\"claude\"}",
+  "upstream": "{\"max_tokens\":64,\"messages\":[{\"content\":\"321-54-9876 321-54-9876 \\u2028\\n) 1795104230191 [EMAIL_ff691b03] id:212.555.0173,\",\"role\":\"user\"}],\"model\":\"claude\"}",
+  "mapping": {
+   "dave_1@example.io": "[EMAIL_ff691b03]"
+  }
+ },
+ "generated/016-generic-object-root_user_note-q": {
+  "params": {
+   "jsonPath": "$.user.note",
+   "phone": true
+  },
+  "body": "{\"id\":12345,\"user\":{\"name\":\"Sam\",\"note\":\"bob@example.org \\\"CODE-XyZ e.f@g.hk\"}}"
+ },
+ "generated/017-generic-object-root_user_note-r": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "EMPID",
+     "piiRegex": "EMP-[0-9]{6}"
+    }
+   ],
+   "jsonPath": "$.user.note"
+  },
+  "body": "{\"id\":12345,\"user\":{\"name\":\"Sam\",\"note\":\"e.f@g.hk\"}}"
+ },
+ "generated/018-openai-chat-array-content--s": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "jsonPath": ""
+  },
+  "body": "{\"messages\":[{\"content\":[{\"text\":\"result\",\"type\":\"text\"}],\"role\":\"user\"}],\"model\":\"gpt\"}"
+ },
+ "generated/019-plain-text-root-t": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "\re.f@g.hk,\n(]",
+  "upstream": "\r[EMAIL_ed6b6f0b],\n(]",
+  "mapping": {
+   "e.f@g.hk": "[EMAIL_ed6b6f0b]"
+  }
+ },
+ "generated/020-openai-chat-array-content--u": {
+  "params": {
+   "email": true,
+   "jsonPath": "",
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{\"messages\":[{\"content\":[{\"text\":\"\\tresult,\\n\\rhello\\u003e\\ndave_1@example.io\\n99123-45-6789\\n\\u2028123-45-6789,\",\"type\":\"text\"}],\"role\":\"user\"}],\"model\":\"gpt\"}",
+  "upstream": "{\"messages\":[{\"content\":[{\"text\":\"\\tresult,\\n\\rhello\u003e\\n[EMAIL_ff691b03]\\n99123-45-6789\\n\\u2028[SSN_81da1ad8],\",\"type\":\"text\"}],\"role\":\"user\"}],\"model\":\"gpt\"}",
+  "mapping": {
+   "123-45-6789": "[SSN_81da1ad8]",
+   "dave_1@example.io": "[EMAIL_ff691b03]"
+  }
+ },
+ "generated/021-openai-chat-root_messages_-1__content-v": {
+  "params": {
+   "email": true,
+   "jsonPath": "$.messages[-1].content",
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"\\t \\n (321-54-9876😀 carol+tag@sub.example.co.uk\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "upstream": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"\\t \\n ([SSN_31c735b7]😀 [EMAIL_e8a585c2]\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "mapping": {
+   "321-54-9876": "[SSN_31c735b7]",
+   "carol+tag@sub.example.co.uk": "[EMAIL_e8a585c2]"
+  }
+ },
+ "generated/022-plain-text-\u003cdefault\u003e-w": {
+  "params": {
+   "redactPII": true,
+   "ssn": true
+  },
+  "body": "=😀😀 \u2028123-45-6789 code-abc",
+  "rejected": true
+ },
+ "generated/023-gemini-root_contents_0__parts_0__text-x": {
+  "params": {
+   "email": true,
+   "jsonPath": "$.contents[0].parts[0].text"
+  },
+  "body": "{\"contents\":[{\"parts\":[{\"text\":\"id:321-54-9876\\n x321-54-9876\\n xalice.smith@example.com; (carol+tag@sub.example.co.uk\\\" dave_1@example.io\"}],\"role\":\"user\"}]}",
+  "upstream": "{\"contents\":[{\"parts\":[{\"text\":\"id:321-54-9876\\n x321-54-9876\\n [EMAIL_5e300b20]; ([EMAIL_e8a585c2]\\\" [EMAIL_ff691b03]\"}],\"role\":\"user\"}]}",
+  "mapping": {
+   "carol+tag@sub.example.co.uk": "[EMAIL_e8a585c2]",
+   "dave_1@example.io": "[EMAIL_ff691b03]",
+   "xalice.smith@example.com": "[EMAIL_5e300b20]"
+  }
+ },
+ "generated/024-gemini-\u003cdefault\u003e-y": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true
+  },
+  "body": "{\"contents\":[{\"parts\":[{\"text\":\"xe.f@g.hk\\\"\\n'ref,\\n123-45-6789\\n\\n4155550199😀\\ntool\\nhello\\n\\\"hello\"}],\"role\":\"user\"}]}",
+  "rejected": true
+ },
+ "generated/025-responses-api-\u003cdefault\u003e-z": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true
+  },
+  "body": "{\"input\":\"\\\\321-54-9876, bob@example.org [EMAIL_ \\tdave_1@example.io😀\",\"model\":\"gpt\"}",
+  "rejected": true
+ },
+ "generated/026-openai-chat--a": {
+  "params": {
+   "email": true,
+   "jsonPath": "",
+   "phone": true,
+   "redactPII": true,
+   "ssn": true
+  },
+  "body": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"brown bob@example.org hello\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "upstream": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"brown ***** hello\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}"
+ },
+ "generated/027-openai-chat--b": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "jsonPath": ""
+  },
+  "body": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"\\rEMP-123456; \\ralice.smith@example.com\\\" 123-45-6789 \\u2028\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "upstream": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"\\rEMP-123456; \\r[EMAIL_f1a91121]\\\" 123-45-6789 \\u2028\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]"
+  }
+ },
+ "generated/028-plain-text-\u003cdefault\u003e-c": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true
+  },
+  "body": "e.f@g.hk '123-45-6789! 321-54-9876 CODE-XyZ (e.f@g.hk,",
+  "rejected": true
+ },
+ "generated/029-plain-text--d": {
+  "params": {
+   "jsonPath": "",
+   "redactPII": true,
+   "ssn": true
+  },
+  "body": "212.555.0173 result \u2028(415) 555-0199😀 \u003cCODE-XyZ; id:e.f@g.hk; brown 123-45-6789",
+  "upstream": "212.555.0173 result \u2028(415) 555-0199😀 \u003cCODE-XyZ; id:e.f@g.hk; brown *****"
+ },
+ "generated/030-legacy-completions-\u003cdefault\u003e-e": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true
+  },
+  "body": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"dave_1@example.io \\ntool😀 quick 1795104230191 😀\"}",
+  "rejected": true
+ },
+ "generated/031-openai-chat--f": {
+  "params": {
+   "jsonPath": "",
+   "ssn": true
+  },
+  "body": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"dave_1@example.io 123-45-6789 \\n\\\"\\n id:303-555-0188) (415) 555-0199 alice.smith@example.com\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "upstream": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"dave_1@example.io [SSN_81da1ad8] \\n\\\"\\n id:303-555-0188) (415) 555-0199 alice.smith@example.com\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "mapping": {
+   "123-45-6789": "[SSN_81da1ad8]"
+  }
+ },
+ "generated/032-legacy-completions-root-g": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "phone": true,
+   "redactPII": true,
+   "ssn": true
+  },
+  "body": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"😀dave_1@example.io\\n日本語\"}",
+  "upstream": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"😀*****\\n日本語\"}"
+ },
+ "generated/033-legacy-completions-\u003cdefault\u003e-h": {
+  "params": {
+   "email": true,
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"\\\\(415) 555-0199) \\u2028123-45-6789!\"}",
+  "rejected": true
+ },
+ "generated/034-anthropic-messages-\u003cdefault\u003e-i": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "EMPID",
+     "piiRegex": "EMP-[0-9]{6}"
+    }
+   ]
+  },
+  "body": "{\"max_tokens\":64,\"messages\":[{\"content\":\"(hello\",\"role\":\"user\"}],\"model\":\"claude\"}"
+ },
+ "generated/035-plain-text-root-j": {
+  "params": {
+   "jsonPath": "$",
+   "ssn": true
+  },
+  "body": "'4155550199 \u003ce.f@g.hk) 123-45-6789 \n123-45-6789\n =321-54-9876; 123-45-6789 _",
+  "upstream": "'4155550199 \u003ce.f@g.hk) [SSN_81da1ad8] \n[SSN_81da1ad8]\n =[SSN_31c735b7]; [SSN_81da1ad8] _",
+  "mapping": {
+   "123-45-6789": "[SSN_81da1ad8]",
+   "321-54-9876": "[SSN_31c735b7]"
+  }
+ },
+ "generated/036-openai-chat-array-content-root-k": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"content\":[{\"text\":\"alice.smith@example.com bob@example.org \\t\\n!\",\"type\":\"text\"}],\"role\":\"user\"}],\"model\":\"gpt\"}",
+  "upstream": "{\"messages\":[{\"content\":[{\"text\":\"[EMAIL_f1a91121] [EMAIL_b5f05236] \\t\\n!\",\"type\":\"text\"}],\"role\":\"user\"}],\"model\":\"gpt\"}",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]",
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "generated/037-openai-chat-\u003cdefault\u003e-l": {
+  "params": {
+   "ssn": true
+  },
+  "body": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"\\nresult\\u003e xid😀 =\\u2028) \\u003cbrown\\\" \\r\\r\\\" dave_1@example.io \\rdave_1@example.io!\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}"
+ },
+ "generated/038-bedrock-converse-root-m": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{\"messages\":[{\"content\":[{\"text\":\"'result😀 code-abc 212.555.0173 \\u003cbrown! 😀ref) \\\\+1 650-555-0142\\u003e (bob@example.org,\"}],\"role\":\"user\"}]}",
+  "upstream": "{\"messages\":[{\"content\":[{\"text\":\"'result😀 code-abc [PHONE_a9a649f7] \u003cbrown! 😀ref) \\\\[PHONE_960afeeb]\u003e ([EMAIL_b5f05236],\"}],\"role\":\"user\"}]}",
+  "mapping": {
+   "+1 650-555-0142": "[PHONE_960afeeb]",
+   "212.555.0173": "[PHONE_a9a649f7]",
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "generated/039-generic-object--n": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "EMPID",
+     "piiRegex": "EMP-[0-9]{6}"
+    }
+   ],
+   "jsonPath": ""
+  },
+  "body": "{\"id\":12345,\"user\":{\"name\":\"Sam\",\"note\":\"42 \\tref; +1 650-555-0142 bob@example.org \\u003cdave_1@example.io)\"}}"
+ },
+ "generated/040-anthropic-messages-\u003cdefault\u003e-o": {
+  "params": {
+   "email": true
+  },
+  "body": "{\"max_tokens\":64,\"messages\":[{\"content\":\"303-555-0188\\n\\r42!\\nfox\\n\\tcarol+tag@sub.example.co.uk;\\n212.555.0173\\ndave_1@example.io\",\"role\":\"user\"}],\"model\":\"claude\"}",
+  "upstream": "{\"max_tokens\":64,\"messages\":[{\"content\":\"303-555-0188\\n\\r42!\\nfox\\n\\t[EMAIL_e8a585c2];\\n212.555.0173\\n[EMAIL_ff691b03]\",\"role\":\"user\"}],\"model\":\"claude\"}",
+  "mapping": {
+   "carol+tag@sub.example.co.uk": "[EMAIL_e8a585c2]",
+   "dave_1@example.io": "[EMAIL_ff691b03]"
+  }
+ },
+ "generated/041-legacy-completions--p": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "jsonPath": "",
+   "redactPII": true
+  },
+  "body": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"\\ne.f@g.hk; (dave_1@example.io. result \\\\ref\\\" \\tbob@example.org\"}",
+  "upstream": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"\\n*****; (*****. result \\\\ref\\\" \\t*****\"}"
+ },
+ "generated/042-generic-object-root-q": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"id\":12345,\"user\":{\"name\":\"Sam\",\"note\":\"(\\r\\u003e fox bob@example.org quick =hello😀 \\u003cbob@example.org\\\"\"}}",
+  "upstream": "{\"id\":12345,\"user\":{\"name\":\"Sam\",\"note\":\"(\\r\u003e fox [EMAIL_b5f05236] quick =hello😀 \u003c[EMAIL_b5f05236]\\\"\"}}",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "generated/043-anthropic-messages--r": {
+  "params": {
+   "email": true,
+   "jsonPath": ""
+  },
+  "body": "{\"max_tokens\":64,\"messages\":[{\"content\":\"\\\"carol+tag@sub.example.co.uk\",\"role\":\"user\"}],\"model\":\"claude\"}",
+  "upstream": "{\"max_tokens\":64,\"messages\":[{\"content\":\"\\\"[EMAIL_e8a585c2]\",\"role\":\"user\"}],\"model\":\"claude\"}",
+  "mapping": {
+   "carol+tag@sub.example.co.uk": "[EMAIL_e8a585c2]"
+  }
+ },
+ "generated/044-bedrock-converse-root-s": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{\"messages\":[{\"content\":[{\"text\":\"321-54-9876 321-54-9876 bob@example.org EMP-123456\"}],\"role\":\"user\"}]}",
+  "upstream": "{\"messages\":[{\"content\":[{\"text\":\"[SSN_31c735b7] [SSN_31c735b7] [EMAIL_b5f05236] EMP-123456\"}],\"role\":\"user\"}]}",
+  "mapping": {
+   "321-54-9876": "[SSN_31c735b7]",
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "generated/045-plain-text--t": {
+  "params": {
+   "email": true,
+   "jsonPath": ""
+  },
+  "body": "303-555-0188 code-abc 😀\u003c! 1795104230191 id:123-45-6789\n carol+tag@sub.example.co.uk id:bob@example.org😀",
+  "upstream": "303-555-0188 code-abc 😀\u003c! 1795104230191 id:123-45-6789\n [EMAIL_e8a585c2] id:[EMAIL_b5f05236]😀",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]",
+   "carol+tag@sub.example.co.uk": "[EMAIL_e8a585c2]"
+  }
+ },
+ "generated/046-generic-object-root-u": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "EMPID",
+     "piiRegex": "EMP-[0-9]{6}"
+    }
+   ],
+   "jsonPath": "$"
+  },
+  "body": "{\"id\":12345,\"user\":{\"name\":\"Sam\",\"note\":\"carol+tag@sub.example.co.uk\\n99123-45-6789\"}}"
+ },
+ "generated/047-legacy-completions-root_prompt-v": {
+  "params": {
+   "jsonPath": "$.prompt",
+   "phone": true,
+   "redactPII": true
+  },
+  "body": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"(415) 555-0199\"}",
+  "upstream": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"*****\"}"
+ },
+ "generated/048-gemini-\u003cdefault\u003e-w": {
+  "params": {
+   "phone": true,
+   "redactPII": true
+  },
+  "body": "{\"contents\":[{\"parts\":[{\"text\":\"\\u003cdave_1@example.io! [EMAIL_ \\ncarol+tag@sub.example.co.uk! tool fox \\u003c303-555-0188\\\"\"}],\"role\":\"user\"}]}",
+  "rejected": true
+ },
+ "generated/049-anthropic-messages-root-x": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "redactPII": true
+  },
+  "body": "{\"max_tokens\":64,\"messages\":[{\"content\":\"result bob@example.org \\u003cEMP-123456\\\" (😀 日本語 \\\\1795104230191\\\" 'ok!\",\"role\":\"user\"}],\"model\":\"claude\"}",
+  "upstream": "{\"max_tokens\":64,\"messages\":[{\"content\":\"result ***** \u003cEMP-123456\\\" (😀 日本語 \\\\1795104230191\\\" 'ok!\",\"role\":\"user\"}],\"model\":\"claude\"}"
+ },
+ "generated/050-gemini--y": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "jsonPath": ""
+  },
+  "body": "{\"contents\":[{\"parts\":[{\"text\":\"303-555-0188\"}],\"role\":\"user\"}]}"
+ },
+ "generated/051-bedrock-converse-\u003cdefault\u003e-z": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true
+  },
+  "body": "{\"messages\":[{\"content\":[{\"text\":\"=bob@example.org\\n \\nbob@example.org; \\tid😀 \\t2147483647!\"}],\"role\":\"user\"}]}"
+ },
+ "generated/052-openai-chat-\u003cdefault\u003e-a": {
+  "params": {
+   "phone": true
+  },
+  "body": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"the carol+tag@sub.example.co.uk \\n+1 650-555-0142😀 (\\\\! e.f@g.hk\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "upstream": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"the carol+tag@sub.example.co.uk \\n[PHONE_960afeeb]😀 (\\\\! e.f@g.hk\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "mapping": {
+   "+1 650-555-0142": "[PHONE_960afeeb]"
+  }
+ },
+ "generated/053-openai-chat-\u003cdefault\u003e-b": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "redactPII": true
+  },
+  "body": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"=4155550199😀 321-54-9876 alice.smith@example.com \\u003c x321-54-9876 ref \\\"303-555-0188\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}",
+  "upstream": "{\"messages\":[{\"content\":\"be brief\",\"role\":\"system\"},{\"content\":\"=4155550199😀 321-54-9876 ***** \u003c x321-54-9876 ref \\\"303-555-0188\",\"role\":\"user\"}],\"model\":\"gpt\",\"temperature\":0.2}"
+ },
+ "generated/054-anthropic-messages-\u003cdefault\u003e-c": {
+  "params": {
+   "email": true,
+   "phone": true,
+   "redactPII": true,
+   "ssn": true
+  },
+  "body": "{\"max_tokens\":64,\"messages\":[{\"content\":\"99123-45-6789 (415) 555-0199 result \\u003c321-54-9876 \\\"1795104230191. 303-555-0188 carol+tag@sub.example.co.uk\",\"role\":\"user\"}],\"model\":\"claude\"}",
+  "upstream": "{\"max_tokens\":64,\"messages\":[{\"content\":\"99123-45-6789 ***** result \u003c***** \\\"1795104230191. ***** *****\",\"role\":\"user\"}],\"model\":\"claude\"}"
+ },
+ "generated/055-generic-object--d": {
+  "params": {
+   "email": true,
+   "jsonPath": "",
+   "redactPII": true
+  },
+  "body": "{\"id\":12345,\"user\":{\"name\":\"Sam\",\"note\":\"\\u202842!\\nfox\\n'carol+tag@sub.example.co.uk,\\nok\\nref\\n=ok,\\nxalice.smith@example.com\"}}",
+  "upstream": "{\"id\":12345,\"user\":{\"name\":\"Sam\",\"note\":\"\\u202842!\\nfox\\n'*****,\\nok\\nref\\n=ok,\\n*****\"}}"
+ },
+ "generated/056-responses-api-root-e": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "EMPID",
+     "piiRegex": "EMP-[0-9]{6}"
+    }
+   ],
+   "jsonPath": "$"
+  },
+  "body": "{\"input\":\"e.f@g.hk '123-45-6789\\u003e 123-45-6789 carol+tag@sub.example.co.uk\",\"model\":\"gpt\"}"
+ },
+ "generated/057-openai-chat-array-content-root-f": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "EMPID",
+     "piiRegex": "EMP-[0-9]{6}"
+    }
+   ],
+   "jsonPath": "$"
+  },
+  "body": "{\"messages\":[{\"content\":[{\"text\":\"\\tid! alice.smith@example.com id:4155550199😀 \\u2028code-abc\\n\",\"type\":\"text\"}],\"role\":\"user\"}],\"model\":\"gpt\"}"
+ },
+ "generated/058-legacy-completions-root-g": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "CODE",
+     "piiRegex": "(?i)code-[a-z]{3}"
+    }
+   ],
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"(id\\n e.f@g.hk \\u0026\"}",
+  "upstream": "{\"max_tokens\":16,\"model\":\"m\",\"prompt\":\"(id\\n [EMAIL_ed6b6f0b] \u0026\"}",
+  "mapping": {
+   "e.f@g.hk": "[EMAIL_ed6b6f0b]"
+  }
+ },
+ "generated/059-plain-text-root-h": {
+  "params": {
+   "jsonPath": "$",
+   "phone": true
+  },
+  "body": "\r42;\n\u2028\\\n\nbrown\n\n=carol+tag@sub.example.co.uk"
+ },
+ "messages/redact": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "phone": true,
+   "redactPII": true
+  },
+  "body": "{\n \"model\": \"claude\",\n \"max_tokens\": 1024,\n \"stream\": true,\n \"system\": \"You help. Reach support at help@corp.example.\",\n \"tools\": [\n  {\n   \"name\": \"lookup\",\n   \"description\": \"Looks up a user; contact ops@corp.example\",\n   \"input_schema\": {\n    \"type\": \"object\",\n    \"properties\": {\n     \"limit\": {\n      \"type\": \"integer\",\n      \"maximum\": 9007199254740991\n     },\n     \"email\": {\n      \"type\": \"string\"\n     }\n    }\n   }\n  }\n ],\n \"messages\": [\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"text\",\n     \"text\": \"line1\\nbob@example.org\"\n    }\n   ]\n  },\n  {\n   \"role\": \"assistant\",\n   \"content\": [\n    {\n     \"type\": \"thinking\",\n     \"thinking\": \"I should look up bob@example.org\",\n     \"signature\": \"c2ln\"\n    },\n    {\n     \"type\": \"tool_use\",\n     \"id\": \"tu1\",\n     \"name\": \"lookup\",\n     \"input\": {\n      \"email\": \"bob@example.org\"\n     }\n    }\n   ]\n  },\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"tool_result\",\n     \"tool_use_id\": \"tu1\",\n     \"content\": [\n      {\n       \"type\": \"text\",\n       \"text\": \"build id 2147483647, started 1795104230191, owner alice@example.com\"\n      }\n     ]\n    }\n   ]\n  }\n ]\n}",
+  "upstream": "{\n \"model\": \"claude\",\n \"max_tokens\": 1024,\n \"stream\": true,\n \"system\": \"You help. Reach support at *****.\",\n \"tools\": [\n  {\n   \"name\": \"lookup\",\n   \"description\": \"Looks up a user; contact *****\",\n   \"input_schema\": {\n    \"type\": \"object\",\n    \"properties\": {\n     \"limit\": {\n      \"type\": \"integer\",\n      \"maximum\": 9007199254740991\n     },\n     \"email\": {\n      \"type\": \"string\"\n     }\n    }\n   }\n  }\n ],\n \"messages\": [\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"text\",\n     \"text\": \"line1\\n*****\"\n    }\n   ]\n  },\n  {\n   \"role\": \"assistant\",\n   \"content\": [\n    {\n     \"type\": \"thinking\",\n     \"thinking\": \"I should look up *****\",\n     \"signature\": \"c2ln\"\n    },\n    {\n     \"type\": \"tool_use\",\n     \"id\": \"tu1\",\n     \"name\": \"lookup\",\n     \"input\": {\n      \"email\": \"*****\"\n     }\n    }\n   ]\n  },\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"tool_result\",\n     \"tool_use_id\": \"tu1\",\n     \"content\": [\n      {\n       \"type\": \"text\",\n       \"text\": \"build id *****, started 1795104230191, owner *****\"\n      }\n     ]\n    }\n   ]\n  }\n ]\n}"
+ },
+ "messages/user-and-tool-content": {
+  "params": {
+   "email": true,
+   "jsonPath": "$.messages[?(@.role=='user')]..['text','content']",
+   "phone": true
+  },
+  "body": "{\n \"model\": \"claude\",\n \"max_tokens\": 1024,\n \"stream\": true,\n \"system\": \"You help. Reach support at help@corp.example.\",\n \"tools\": [\n  {\n   \"name\": \"lookup\",\n   \"description\": \"Looks up a user; contact ops@corp.example\",\n   \"input_schema\": {\n    \"type\": \"object\",\n    \"properties\": {\n     \"limit\": {\n      \"type\": \"integer\",\n      \"maximum\": 9007199254740991\n     },\n     \"email\": {\n      \"type\": \"string\"\n     }\n    }\n   }\n  }\n ],\n \"messages\": [\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"text\",\n     \"text\": \"line1\\nbob@example.org\"\n    }\n   ]\n  },\n  {\n   \"role\": \"assistant\",\n   \"content\": [\n    {\n     \"type\": \"thinking\",\n     \"thinking\": \"I should look up bob@example.org\",\n     \"signature\": \"c2ln\"\n    },\n    {\n     \"type\": \"tool_use\",\n     \"id\": \"tu1\",\n     \"name\": \"lookup\",\n     \"input\": {\n      \"email\": \"bob@example.org\"\n     }\n    }\n   ]\n  },\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"tool_result\",\n     \"tool_use_id\": \"tu1\",\n     \"content\": [\n      {\n       \"type\": \"text\",\n       \"text\": \"build id 2147483647, started 1795104230191, owner alice@example.com\"\n      }\n     ]\n    }\n   ]\n  }\n ]\n}",
+  "upstream": "{\n \"model\": \"claude\",\n \"max_tokens\": 1024,\n \"stream\": true,\n \"system\": \"You help. Reach support at help@corp.example.\",\n \"tools\": [\n  {\n   \"name\": \"lookup\",\n   \"description\": \"Looks up a user; contact ops@corp.example\",\n   \"input_schema\": {\n    \"type\": \"object\",\n    \"properties\": {\n     \"limit\": {\n      \"type\": \"integer\",\n      \"maximum\": 9007199254740991\n     },\n     \"email\": {\n      \"type\": \"string\"\n     }\n    }\n   }\n  }\n ],\n \"messages\": [\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"text\",\n     \"text\": \"line1\\n[EMAIL_b5f05236]\"\n    }\n   ]\n  },\n  {\n   \"role\": \"assistant\",\n   \"content\": [\n    {\n     \"type\": \"thinking\",\n     \"thinking\": \"I should look up bob@example.org\",\n     \"signature\": \"c2ln\"\n    },\n    {\n     \"type\": \"tool_use\",\n     \"id\": \"tu1\",\n     \"name\": \"lookup\",\n     \"input\": {\n      \"email\": \"bob@example.org\"\n     }\n    }\n   ]\n  },\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"tool_result\",\n     \"tool_use_id\": \"tu1\",\n     \"content\": [\n      {\n       \"type\": \"text\",\n       \"text\": \"build id [PHONE_5c6bff0b], started 1795104230191, owner [EMAIL_1c9da2ad]\"\n      }\n     ]\n    }\n   ]\n  }\n ]\n}",
+  "mapping": {
+   "2147483647": "[PHONE_5c6bff0b]",
+   "alice@example.com": "[EMAIL_1c9da2ad]",
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "messages/whole-payload": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "phone": true
+  },
+  "body": "{\n \"model\": \"claude\",\n \"max_tokens\": 1024,\n \"stream\": true,\n \"system\": \"You help. Reach support at help@corp.example.\",\n \"tools\": [\n  {\n   \"name\": \"lookup\",\n   \"description\": \"Looks up a user; contact ops@corp.example\",\n   \"input_schema\": {\n    \"type\": \"object\",\n    \"properties\": {\n     \"limit\": {\n      \"type\": \"integer\",\n      \"maximum\": 9007199254740991\n     },\n     \"email\": {\n      \"type\": \"string\"\n     }\n    }\n   }\n  }\n ],\n \"messages\": [\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"text\",\n     \"text\": \"line1\\nbob@example.org\"\n    }\n   ]\n  },\n  {\n   \"role\": \"assistant\",\n   \"content\": [\n    {\n     \"type\": \"thinking\",\n     \"thinking\": \"I should look up bob@example.org\",\n     \"signature\": \"c2ln\"\n    },\n    {\n     \"type\": \"tool_use\",\n     \"id\": \"tu1\",\n     \"name\": \"lookup\",\n     \"input\": {\n      \"email\": \"bob@example.org\"\n     }\n    }\n   ]\n  },\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"tool_result\",\n     \"tool_use_id\": \"tu1\",\n     \"content\": [\n      {\n       \"type\": \"text\",\n       \"text\": \"build id 2147483647, started 1795104230191, owner alice@example.com\"\n      }\n     ]\n    }\n   ]\n  }\n ]\n}",
+  "upstream": "{\n \"model\": \"claude\",\n \"max_tokens\": 1024,\n \"stream\": true,\n \"system\": \"You help. Reach support at [EMAIL_519014c2].\",\n \"tools\": [\n  {\n   \"name\": \"lookup\",\n   \"description\": \"Looks up a user; contact [EMAIL_73555f34]\",\n   \"input_schema\": {\n    \"type\": \"object\",\n    \"properties\": {\n     \"limit\": {\n      \"type\": \"integer\",\n      \"maximum\": 9007199254740991\n     },\n     \"email\": {\n      \"type\": \"string\"\n     }\n    }\n   }\n  }\n ],\n \"messages\": [\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"text\",\n     \"text\": \"line1\\n[EMAIL_b5f05236]\"\n    }\n   ]\n  },\n  {\n   \"role\": \"assistant\",\n   \"content\": [\n    {\n     \"type\": \"thinking\",\n     \"thinking\": \"I should look up [EMAIL_b5f05236]\",\n     \"signature\": \"c2ln\"\n    },\n    {\n     \"type\": \"tool_use\",\n     \"id\": \"tu1\",\n     \"name\": \"lookup\",\n     \"input\": {\n      \"email\": \"[EMAIL_b5f05236]\"\n     }\n    }\n   ]\n  },\n  {\n   \"role\": \"user\",\n   \"content\": [\n    {\n     \"type\": \"tool_result\",\n     \"tool_use_id\": \"tu1\",\n     \"content\": [\n      {\n       \"type\": \"text\",\n       \"text\": \"build id [PHONE_5c6bff0b], started 1795104230191, owner [EMAIL_1c9da2ad]\"\n      }\n     ]\n    }\n   ]\n  }\n ]\n}",
+  "mapping": {
+   "2147483647": "[PHONE_5c6bff0b]",
+   "alice@example.com": "[EMAIL_1c9da2ad]",
+   "bob@example.org": "[EMAIL_b5f05236]",
+   "help@corp.example": "[EMAIL_519014c2]",
+   "ops@corp.example": "[EMAIL_73555f34]"
+  }
+ },
+ "regression/custom-entity": {
+  "params": {
+   "customPIIEntities": [
+    {
+     "piiEntity": "EMPID",
+     "piiRegex": "EMP-[0-9]{6}"
+    }
+   ],
+   "jsonPath": "$"
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"employee EMP-123456 and EMP-654321\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"employee [EMPID_17c12321] and [EMPID_ca98351e]\"\n    }\n   ]\n  }",
+  "mapping": {
+   "EMP-123456": "[EMPID_17c12321]",
+   "EMP-654321": "[EMPID_ca98351e]"
+  }
+ },
+ "regression/default-path-last-message": {
+  "params": {
+   "email": true
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"first\"\n    },\n    {\n     \"role\": \"user\",\n     \"content\": \"mail alice.smith@example.com\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"first\"\n    },\n    {\n     \"role\": \"user\",\n     \"content\": \"mail [EMAIL_f1a91121]\"\n    }\n   ]\n  }",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]"
+  }
+ },
+ "regression/default-path-openai": {
+  "params": {
+   "email": true,
+   "phone": true
+  },
+  "body": "{\n   \"model\": \"gpt\",\n   \"messages\": [\n    {\n     \"role\": \"system\",\n     \"content\": \"keep bob@example.org secret\"\n    },\n    {\n     \"role\": \"user\",\n     \"content\": \"alice.smith@example.com (415) 555-0199\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"gpt\",\n   \"messages\": [\n    {\n     \"role\": \"system\",\n     \"content\": \"keep bob@example.org secret\"\n    },\n    {\n     \"role\": \"user\",\n     \"content\": \"[EMAIL_f1a91121] [PHONE_0812f734]\"\n    }\n   ]\n  }",
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0812f734]",
+   "alice.smith@example.com": "[EMAIL_f1a91121]"
+  }
+ },
+ "regression/email-in-quotes-and-punct": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"(\\\"alice.smith@example.com\\\"), \u003cbob@example.org\u003e; carol+tag@sub.example.co.uk.\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"(\\\"[EMAIL_f1a91121]\\\"), \u003c[EMAIL_b5f05236]\u003e; [EMAIL_e8a585c2].\"\n    }\n   ]\n  }",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]",
+   "bob@example.org": "[EMAIL_b5f05236]",
+   "carol+tag@sub.example.co.uk": "[EMAIL_e8a585c2]"
+  }
+ },
+ "regression/email-phone-ssn": {
+  "params": {
+   "email": true,
+   "jsonPath": "$",
+   "phone": true,
+   "ssn": true
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"alice.smith@example.com (415) 555-0199 123-45-6789\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"[EMAIL_f1a91121] [PHONE_0812f734] [SSN_81da1ad8]\"\n    }\n   ]\n  }",
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0812f734]",
+   "123-45-6789": "[SSN_81da1ad8]",
+   "alice.smith@example.com": "[EMAIL_f1a91121]"
+  }
+ },
+ "regression/phones-formatted": {
+  "params": {
+   "jsonPath": "$",
+   "phone": true
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"call (415) 555-0199 or +1 415-555-0198 or 415.555.0197\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"call [PHONE_0812f734] or [PHONE_96498d2f] or [PHONE_609a405d]\"\n    }\n   ]\n  }",
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0812f734]",
+   "+1 415-555-0198": "[PHONE_96498d2f]",
+   "415.555.0197": "[PHONE_609a405d]"
+  }
+ },
+ "regression/plain-user-email": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"contact me at alice.smith@example.com please\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"contact me at [EMAIL_f1a91121] please\"\n    }\n   ]\n  }",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]"
+  }
+ },
+ "regression/repeated-value": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"alice.smith@example.com and again alice.smith@example.com\"\n    },\n    {\n     \"role\": \"assistant\",\n     \"content\": \"ok\"\n    },\n    {\n     \"role\": \"user\",\n     \"content\": \"bob@example.org then alice.smith@example.com\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"[EMAIL_f1a91121] and again [EMAIL_f1a91121]\"\n    },\n    {\n     \"role\": \"assistant\",\n     \"content\": \"ok\"\n    },\n    {\n     \"role\": \"user\",\n     \"content\": \"[EMAIL_b5f05236] then [EMAIL_f1a91121]\"\n    }\n   ]\n  }",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]",
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "regression/ssn": {
+  "params": {
+   "jsonPath": "$",
+   "ssn": true
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"ssn 123-45-6789\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"ssn [SSN_81da1ad8]\"\n    }\n   ]\n  }",
+  "mapping": {
+   "123-45-6789": "[SSN_81da1ad8]"
+  }
+ },
+ "regression/standalone-10-digit": {
+  "params": {
+   "jsonPath": "$",
+   "phone": true
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"ids 4155550199 and 2147483647 here\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"ids [PHONE_814ee69b] and [PHONE_5c6bff0b] here\"\n    }\n   ]\n  }",
+  "mapping": {
+   "2147483647": "[PHONE_5c6bff0b]",
+   "4155550199": "[PHONE_814ee69b]"
+  }
+ },
+ "regression/system-and-user-email": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"system\": \"You are support. Escalate to bob@example.org.\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"my mail is alice.smith@example.com\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"system\": \"You are support. Escalate to [EMAIL_b5f05236].\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"my mail is [EMAIL_f1a91121]\"\n    }\n   ]\n  }",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]",
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "regression/thinking-block-history": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"assistant\",\n     \"content\": [\n      {\n       \"type\": \"thinking\",\n       \"thinking\": \"I should email alice.smith@example.com\",\n       \"signature\": \"sig==\"\n      },\n      {\n       \"type\": \"text\",\n       \"text\": \"done\"\n      }\n     ]\n    },\n    {\n     \"role\": \"user\",\n     \"content\": \"thanks\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"assistant\",\n     \"content\": [\n      {\n       \"type\": \"thinking\",\n       \"thinking\": \"I should email [EMAIL_f1a91121]\",\n       \"signature\": \"sig==\"\n      },\n      {\n       \"type\": \"text\",\n       \"text\": \"done\"\n      }\n     ]\n    },\n    {\n     \"role\": \"user\",\n     \"content\": \"thanks\"\n    }\n   ]\n  }",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]"
+  }
+ },
+ "regression/tool-description-email": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"tools\": [\n    {\n     \"name\": \"mail\",\n     \"description\": \"Sends mail from bob@example.org\",\n     \"input_schema\": {\n      \"type\": \"object\"\n     }\n    }\n   ],\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"hi\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"tools\": [\n    {\n     \"name\": \"mail\",\n     \"description\": \"Sends mail from [EMAIL_b5f05236]\",\n     \"input_schema\": {\n      \"type\": \"object\"\n     }\n    }\n   ],\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"hi\"\n    }\n   ]\n  }",
+  "mapping": {
+   "bob@example.org": "[EMAIL_b5f05236]"
+  }
+ },
+ "regression/tool-result-email": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": [\n      {\n       \"type\": \"tool_result\",\n       \"tool_use_id\": \"t1\",\n       \"content\": [\n        {\n         \"type\": \"text\",\n         \"text\": \"owner: carol+tag@sub.example.co.uk\"\n        }\n       ]\n      }\n     ]\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": [\n      {\n       \"type\": \"tool_result\",\n       \"tool_use_id\": \"t1\",\n       \"content\": [\n        {\n         \"type\": \"text\",\n         \"text\": \"owner: [EMAIL_e8a585c2]\"\n        }\n       ]\n      }\n     ]\n    }\n   ]\n  }",
+  "mapping": {
+   "carol+tag@sub.example.co.uk": "[EMAIL_e8a585c2]"
+  }
+ },
+ "regression/tool-use-input": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"assistant\",\n     \"content\": [\n      {\n       \"type\": \"tool_use\",\n       \"id\": \"t1\",\n       \"name\": \"lookup\",\n       \"input\": {\n        \"email\": \"alice.smith@example.com\"\n       }\n      }\n     ]\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"assistant\",\n     \"content\": [\n      {\n       \"type\": \"tool_use\",\n       \"id\": \"t1\",\n       \"name\": \"lookup\",\n       \"input\": {\n        \"email\": \"[EMAIL_f1a91121]\"\n       }\n      }\n     ]\n    }\n   ]\n  }",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]"
+  }
+ },
+ "regression/unicode-text": {
+  "params": {
+   "email": true,
+   "jsonPath": "$"
+  },
+  "body": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"h\\u00e9llo w\\u00f6rld \\u65e5\\u672c\\u8a9e alice.smith@example.com \\u2713\"\n    }\n   ]\n  }",
+  "upstream": "{\n   \"model\": \"m\",\n   \"messages\": [\n    {\n     \"role\": \"user\",\n     \"content\": \"héllo wörld 日本語 [EMAIL_f1a91121] ✓\"\n    }\n   ]\n  }",
+  "mapping": {
+   "alice.smith@example.com": "[EMAIL_f1a91121]"
+  }
+ }
+}

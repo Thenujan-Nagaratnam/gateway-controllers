@@ -1,0 +1,785 @@
+{
+ "anthropic-blocks/stream_thinking.sse": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"I should look up \"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"[EMAIL_3fa91c0b]\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" now.\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"c2ln\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+  "output": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"I should look up bob@example.org now.\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"c2ln\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+ },
+ "anthropic-blocks/stream_tool_args.sse": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu2\",\"name\":\"lookup\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"email\\\": \\\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"[EMAIL_\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"3fa91c0b]\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+  "output": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu2\",\"name\":\"lookup\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"email\\\": \\\"bob@example.org\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+ },
+ "anthropic-blocks/stream_two_text_blocks.sse": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"First block: [EMAIL_3fa91c0b]\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Second block text.\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+  "output": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"First block: bob@example.org\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Second block text.\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n"
+ },
+ "anthropic-json/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"content\":[{\"text\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}",
+  "output": "{\"content\":[{\"text\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}"
+ },
+ "anthropic-json/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"content\":[{\"text\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}",
+  "output": "{\"content\":[{\"text\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}"
+ },
+ "anthropic-json/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"content\":[{\"text\":\"plain answer without placeholders\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}",
+  "output": "{\"content\":[{\"text\":\"plain answer without placeholders\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}"
+ },
+ "anthropic-json/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"content\":[{\"text\":\"plain answer without placeholders\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}",
+  "output": "{\"content\":[{\"text\":\"plain answer without placeholders\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}"
+ },
+ "anthropic-json/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"content\":[{\"text\":\"split ends here [EMAIL_3fa9\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}",
+  "output": "{\"content\":[{\"text\":\"split ends here [EMAIL_3fa9\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}"
+ },
+ "anthropic-json/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"content\":[{\"text\":\"split ends here [EMAIL_3fa9\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}",
+  "output": "{\"content\":[{\"text\":\"split ends here [EMAIL_3fa9\",\"type\":\"text\"}],\"id\":\"m1\",\"type\":\"message\"}"
+ },
+ "anthropic-legacy-completion-sse/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"completion\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\"}\n\n",
+  "output": "data: {\"completion\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}\n\n"
+ },
+ "anthropic-legacy-completion-sse/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"completion\":\"Hi [E\"}\n\ndata: {\"completion\":\"M\"}\n\ndata: {\"completion\":\"A\"}\n\ndata: {\"completion\":\"IL_\"}\n\ndata: {\"completion\":\"3fa\"}\n\ndata: {\"completion\":\"91c\"}\n\ndata: {\"completion\":\"0b], \"}\n\ndata: {\"completion\":\"c\"}\n\ndata: {\"completion\":\"al\"}\n\ndata: {\"completion\":\"l\"}\n\ndata: {\"completion\":\" [P\"}\n\ndata: {\"completion\":\"HONE\"}\n\ndata: {\"completion\":\"_0a1\"}\n\ndata: {\"completion\":\"b2c3d\"}\n\ndata: {\"completion\":\"] a\"}\n\ndata: {\"completion\":\"bout [\"}\n\ndata: {\"completion\":\"SS\"}\n\ndata: {\"completion\":\"N\"}\n\ndata: {\"completion\":\"_d\"}\n\ndata: {\"completion\":\"ea\"}\n\ndata: {\"completion\":\"dbe\"}\n\ndata: {\"completion\":\"e\"}\n\ndata: {\"completion\":\"f]; [n\"}\n\ndata: {\"completion\":\"ot] o\"}\n\ndata: {\"completion\":\"n\"}\n\ndata: {\"completion\":\"e.\"}\n\n",
+  "output": "data: {\"completion\":\"Hi bob@example.org, call (415) 555-0199 a\"}\n\ndata: {\"completion\":\"bout 123-45-6789; [not] one.\"}\n\n"
+ },
+ "anthropic-legacy-completion-sse/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"completion\":\"plain answer without placeholders\"}\n\n",
+  "output": "data: {\"completion\":\"plain answer without placeholders\"}\n\n"
+ },
+ "anthropic-legacy-completion-sse/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"completion\":\"plain\"}\n\ndata: {\"completion\":\" answe\"}\n\ndata: {\"completion\":\"r\"}\n\ndata: {\"completion\":\" \"}\n\ndata: {\"completion\":\"withou\"}\n\ndata: {\"completion\":\"t pl\"}\n\ndata: {\"completion\":\"a\"}\n\ndata: {\"completion\":\"ceho\"}\n\ndata: {\"completion\":\"l\"}\n\ndata: {\"completion\":\"ders\"}\n\n",
+  "output": "data: {\"completion\":\"plain\"}\n\ndata: {\"completion\":\" answe\"}\n\ndata: {\"completion\":\"r\"}\n\ndata: {\"completion\":\" \"}\n\ndata: {\"completion\":\"withou\"}\n\ndata: {\"completion\":\"t pl\"}\n\ndata: {\"completion\":\"a\"}\n\ndata: {\"completion\":\"ceho\"}\n\ndata: {\"completion\":\"l\"}\n\ndata: {\"completion\":\"ders\"}\n\n"
+ },
+ "anthropic-legacy-completion-sse/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"completion\":\"split ends here [EMAIL_3fa9\"}\n\n",
+  "output": "data: {\"completion\":\"split ends here [EMAIL_3fa9\"}\n\n"
+ },
+ "anthropic-legacy-completion-sse/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"completion\":\"sp\"}\n\ndata: {\"completion\":\"lit e\"}\n\ndata: {\"completion\":\"nd\"}\n\ndata: {\"completion\":\"s here\"}\n\ndata: {\"completion\":\" [EM\"}\n\ndata: {\"completion\":\"AI\"}\n\ndata: {\"completion\":\"L_3fa\"}\n\ndata: {\"completion\":\"9\"}\n\n",
+  "output": "data: {\"completion\":\"sp\"}\n\ndata: {\"completion\":\"lit e\"}\n\ndata: {\"completion\":\"nd\"}\n\ndata: {\"completion\":\"s here\"}\n\ndata: {\"completion\":\" [EM\"}\n\ndata: {\"completion\":\"AI\"}\n\ndata: {\"completion\":\"L_3fa\"}\n\ndata: {\"completion\":\"9\"}\n\n"
+ },
+ "anthropic-text-sse/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+  "output": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+ },
+ "anthropic-text-sse/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"Hi [E\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"M\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"A\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"IL_\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"3fa\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"91c\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"0b], \",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"c\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"al\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"l\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\" [P\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"HONE\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"_0a1\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"b2c3d\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"] a\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"bout [\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"SS\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"N\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"_d\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"ea\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"dbe\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"e\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"f]; [n\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"ot] o\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"n\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"e.\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+  "output": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+ },
+ "anthropic-text-sse/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"plain answer without placeholders\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+  "output": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"plain answer without placeholders\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+ },
+ "anthropic-text-sse/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"plain\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\" answe\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"r\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\" \",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"withou\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"t pl\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"a\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"ceho\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"l\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"ders\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+  "output": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"plain\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\" answe\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"r\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\" \",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"withou\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"t pl\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"a\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"ceho\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"l\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"ders\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+ },
+ "anthropic-text-sse/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"split ends here [EMAIL_3fa9\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+  "output": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"split ends here [EMAIL_3fa9\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+ },
+ "anthropic-text-sse/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"sp\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"lit e\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"nd\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"s here\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\" [EM\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"AI\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"L_3fa\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"9\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+  "output": "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"sp\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"lit e\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"nd\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"s here\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\" [EM\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"AI\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"L_3fa\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"9\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+ },
+ "bedrock-converse-sse/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\"}}}\n\n",
+  "output": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}}}\n\n"
+ },
+ "bedrock-converse-sse/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Hi [E\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"M\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"A\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"IL_\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"3fa\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"91c\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"0b], \"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"c\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"al\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"l\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\" [P\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"HONE\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"_0a1\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"b2c3d\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"] a\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"bout [\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"SS\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"N\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"_d\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"ea\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"dbe\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"e\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"f]; [n\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"ot] o\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"n\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"e.\"}}}\n\n",
+  "output": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}}}\n\n"
+ },
+ "bedrock-converse-sse/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"plain answer without placeholders\"}}}\n\n",
+  "output": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"plain answer without placeholders\"}}}\n\n"
+ },
+ "bedrock-converse-sse/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"plain\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\" answe\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"r\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\" \"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"withou\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"t pl\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"a\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"ceho\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"l\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"ders\"}}}\n\n",
+  "output": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"plain\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\" answe\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"r\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\" \"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"withou\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"t pl\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"a\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"ceho\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"l\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"ders\"}}}\n\n"
+ },
+ "bedrock-converse-sse/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"split ends here [EMAIL_3fa9\"}}}\n\n",
+  "output": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"split ends here [EMAIL_3fa9\"}}}\n\n"
+ },
+ "bedrock-converse-sse/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"sp\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"lit e\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"nd\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"s here\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\" [EM\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"AI\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"L_3fa\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"9\"}}}\n\n",
+  "output": "data: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"sp\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"lit e\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"nd\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"s here\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\" [EM\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"AI\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"L_3fa\"}}}\n\ndata: {\"contentBlockDelta\":{\"contentBlockIndex\":0,\"delta\":{\"text\":\"9\"}}}\n\n"
+ },
+ "bedrock-titan-sse/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"outputText\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\"}\n\n",
+  "output": "data: {\"outputText\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}\n\n"
+ },
+ "bedrock-titan-sse/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"outputText\":\"Hi [E\"}\n\ndata: {\"outputText\":\"M\"}\n\ndata: {\"outputText\":\"A\"}\n\ndata: {\"outputText\":\"IL_\"}\n\ndata: {\"outputText\":\"3fa\"}\n\ndata: {\"outputText\":\"91c\"}\n\ndata: {\"outputText\":\"0b], \"}\n\ndata: {\"outputText\":\"c\"}\n\ndata: {\"outputText\":\"al\"}\n\ndata: {\"outputText\":\"l\"}\n\ndata: {\"outputText\":\" [P\"}\n\ndata: {\"outputText\":\"HONE\"}\n\ndata: {\"outputText\":\"_0a1\"}\n\ndata: {\"outputText\":\"b2c3d\"}\n\ndata: {\"outputText\":\"] a\"}\n\ndata: {\"outputText\":\"bout [\"}\n\ndata: {\"outputText\":\"SS\"}\n\ndata: {\"outputText\":\"N\"}\n\ndata: {\"outputText\":\"_d\"}\n\ndata: {\"outputText\":\"ea\"}\n\ndata: {\"outputText\":\"dbe\"}\n\ndata: {\"outputText\":\"e\"}\n\ndata: {\"outputText\":\"f]; [n\"}\n\ndata: {\"outputText\":\"ot] o\"}\n\ndata: {\"outputText\":\"n\"}\n\ndata: {\"outputText\":\"e.\"}\n\n",
+  "output": "data: {\"outputText\":\"Hi bob@example.org, call (415) 555-0199 a\"}\n\ndata: {\"outputText\":\"bout 123-45-6789; [not] one.\"}\n\n"
+ },
+ "bedrock-titan-sse/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"outputText\":\"plain answer without placeholders\"}\n\n",
+  "output": "data: {\"outputText\":\"plain answer without placeholders\"}\n\n"
+ },
+ "bedrock-titan-sse/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"outputText\":\"plain\"}\n\ndata: {\"outputText\":\" answe\"}\n\ndata: {\"outputText\":\"r\"}\n\ndata: {\"outputText\":\" \"}\n\ndata: {\"outputText\":\"withou\"}\n\ndata: {\"outputText\":\"t pl\"}\n\ndata: {\"outputText\":\"a\"}\n\ndata: {\"outputText\":\"ceho\"}\n\ndata: {\"outputText\":\"l\"}\n\ndata: {\"outputText\":\"ders\"}\n\n",
+  "output": "data: {\"outputText\":\"plain\"}\n\ndata: {\"outputText\":\" answe\"}\n\ndata: {\"outputText\":\"r\"}\n\ndata: {\"outputText\":\" \"}\n\ndata: {\"outputText\":\"withou\"}\n\ndata: {\"outputText\":\"t pl\"}\n\ndata: {\"outputText\":\"a\"}\n\ndata: {\"outputText\":\"ceho\"}\n\ndata: {\"outputText\":\"l\"}\n\ndata: {\"outputText\":\"ders\"}\n\n"
+ },
+ "bedrock-titan-sse/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"outputText\":\"split ends here [EMAIL_3fa9\"}\n\n",
+  "output": "data: {\"outputText\":\"split ends here [EMAIL_3fa9\"}\n\n"
+ },
+ "bedrock-titan-sse/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"outputText\":\"sp\"}\n\ndata: {\"outputText\":\"lit e\"}\n\ndata: {\"outputText\":\"nd\"}\n\ndata: {\"outputText\":\"s here\"}\n\ndata: {\"outputText\":\" [EM\"}\n\ndata: {\"outputText\":\"AI\"}\n\ndata: {\"outputText\":\"L_3fa\"}\n\ndata: {\"outputText\":\"9\"}\n\n",
+  "output": "data: {\"outputText\":\"sp\"}\n\ndata: {\"outputText\":\"lit e\"}\n\ndata: {\"outputText\":\"nd\"}\n\ndata: {\"outputText\":\"s here\"}\n\ndata: {\"outputText\":\" [EM\"}\n\ndata: {\"outputText\":\"AI\"}\n\ndata: {\"outputText\":\"L_3fa\"}\n\ndata: {\"outputText\":\"9\"}\n\n"
+ },
+ "gemini-sse/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\"}],\"role\":\"model\"}}]}\n\n",
+  "output": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}],\"role\":\"model\"}}]}\n\n"
+ },
+ "gemini-sse/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi [E\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"M\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"A\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"IL_\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"3fa\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"91c\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"0b], \"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"c\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"al\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"l\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" [P\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"HONE\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"_0a1\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"b2c3d\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"] a\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"bout [\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"SS\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"N\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"_d\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ea\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"dbe\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"e\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"f]; [n\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ot] o\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"n\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"e.\"}],\"role\":\"model\"}}]}\n\n",
+  "output": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}],\"role\":\"model\"}}]}\n\n"
+ },
+ "gemini-sse/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"plain answer without placeholders\"}],\"role\":\"model\"}}]}\n\n",
+  "output": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"plain answer without placeholders\"}],\"role\":\"model\"}}]}\n\n"
+ },
+ "gemini-sse/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"plain\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" answe\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"r\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" \"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"withou\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"t pl\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"a\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ceho\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"l\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ders\"}],\"role\":\"model\"}}]}\n\n",
+  "output": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"plain\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" answe\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"r\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" \"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"withou\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"t pl\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"a\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ceho\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"l\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ders\"}],\"role\":\"model\"}}]}\n\n"
+ },
+ "gemini-sse/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"split ends here [EMAIL_3fa9\"}],\"role\":\"model\"}}]}\n\n",
+  "output": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"split ends here [EMAIL_3fa9\"}],\"role\":\"model\"}}]}\n\n"
+ },
+ "gemini-sse/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"sp\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"lit e\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"nd\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"s here\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" [EM\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"AI\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"L_3fa\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"9\"}],\"role\":\"model\"}}]}\n\n",
+  "output": "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"sp\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"lit e\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"nd\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"s here\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" [EM\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"AI\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"L_3fa\"}],\"role\":\"model\"}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"9\"}],\"role\":\"model\"}}]}\n\n"
+ },
+ "generic-json-object/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"answer\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\",\"n\":3,\"nested\":{\"also\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\"}}",
+  "output": "{\"answer\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\",\"n\":3,\"nested\":{\"also\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}}"
+ },
+ "generic-json-object/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"answer\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\",\"n\":3,\"nested\":{\"also\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\"}}",
+  "output": "{\"answer\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\",\"n\":3,\"nested\":{\"also\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}}"
+ },
+ "generic-json-object/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"answer\":\"plain answer without placeholders\",\"n\":3,\"nested\":{\"also\":\"plain answer without placeholders\"}}",
+  "output": "{\"answer\":\"plain answer without placeholders\",\"n\":3,\"nested\":{\"also\":\"plain answer without placeholders\"}}"
+ },
+ "generic-json-object/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"answer\":\"plain answer without placeholders\",\"n\":3,\"nested\":{\"also\":\"plain answer without placeholders\"}}",
+  "output": "{\"answer\":\"plain answer without placeholders\",\"n\":3,\"nested\":{\"also\":\"plain answer without placeholders\"}}"
+ },
+ "generic-json-object/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"answer\":\"split ends here [EMAIL_3fa9\",\"n\":3,\"nested\":{\"also\":\"split ends here [EMAIL_3fa9\"}}",
+  "output": "{\"answer\":\"split ends here [EMAIL_3fa9\",\"n\":3,\"nested\":{\"also\":\"split ends here [EMAIL_3fa9\"}}"
+ },
+ "generic-json-object/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"answer\":\"split ends here [EMAIL_3fa9\",\"n\":3,\"nested\":{\"also\":\"split ends here [EMAIL_3fa9\"}}",
+  "output": "{\"answer\":\"split ends here [EMAIL_3fa9\",\"n\":3,\"nested\":{\"also\":\"split ends here [EMAIL_3fa9\"}}"
+ },
+ "legacy-completions-sse/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"text\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\"}]}\n\n",
+  "output": "data: {\"choices\":[{\"text\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}]}\n\n"
+ },
+ "legacy-completions-sse/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"text\":\"Hi [E\"}]}\n\ndata: {\"choices\":[{\"text\":\"M\"}]}\n\ndata: {\"choices\":[{\"text\":\"A\"}]}\n\ndata: {\"choices\":[{\"text\":\"IL_\"}]}\n\ndata: {\"choices\":[{\"text\":\"3fa\"}]}\n\ndata: {\"choices\":[{\"text\":\"91c\"}]}\n\ndata: {\"choices\":[{\"text\":\"0b], \"}]}\n\ndata: {\"choices\":[{\"text\":\"c\"}]}\n\ndata: {\"choices\":[{\"text\":\"al\"}]}\n\ndata: {\"choices\":[{\"text\":\"l\"}]}\n\ndata: {\"choices\":[{\"text\":\" [P\"}]}\n\ndata: {\"choices\":[{\"text\":\"HONE\"}]}\n\ndata: {\"choices\":[{\"text\":\"_0a1\"}]}\n\ndata: {\"choices\":[{\"text\":\"b2c3d\"}]}\n\ndata: {\"choices\":[{\"text\":\"] a\"}]}\n\ndata: {\"choices\":[{\"text\":\"bout [\"}]}\n\ndata: {\"choices\":[{\"text\":\"SS\"}]}\n\ndata: {\"choices\":[{\"text\":\"N\"}]}\n\ndata: {\"choices\":[{\"text\":\"_d\"}]}\n\ndata: {\"choices\":[{\"text\":\"ea\"}]}\n\ndata: {\"choices\":[{\"text\":\"dbe\"}]}\n\ndata: {\"choices\":[{\"text\":\"e\"}]}\n\ndata: {\"choices\":[{\"text\":\"f]; [n\"}]}\n\ndata: {\"choices\":[{\"text\":\"ot] o\"}]}\n\ndata: {\"choices\":[{\"text\":\"n\"}]}\n\ndata: {\"choices\":[{\"text\":\"e.\"}]}\n\n",
+  "output": "data: {\"choices\":[{\"text\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}]}\n\n"
+ },
+ "legacy-completions-sse/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"text\":\"plain answer without placeholders\"}]}\n\n",
+  "output": "data: {\"choices\":[{\"text\":\"plain answer without placeholders\"}]}\n\n"
+ },
+ "legacy-completions-sse/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"text\":\"plain\"}]}\n\ndata: {\"choices\":[{\"text\":\" answe\"}]}\n\ndata: {\"choices\":[{\"text\":\"r\"}]}\n\ndata: {\"choices\":[{\"text\":\" \"}]}\n\ndata: {\"choices\":[{\"text\":\"withou\"}]}\n\ndata: {\"choices\":[{\"text\":\"t pl\"}]}\n\ndata: {\"choices\":[{\"text\":\"a\"}]}\n\ndata: {\"choices\":[{\"text\":\"ceho\"}]}\n\ndata: {\"choices\":[{\"text\":\"l\"}]}\n\ndata: {\"choices\":[{\"text\":\"ders\"}]}\n\n",
+  "output": "data: {\"choices\":[{\"text\":\"plain\"}]}\n\ndata: {\"choices\":[{\"text\":\" answe\"}]}\n\ndata: {\"choices\":[{\"text\":\"r\"}]}\n\ndata: {\"choices\":[{\"text\":\" \"}]}\n\ndata: {\"choices\":[{\"text\":\"withou\"}]}\n\ndata: {\"choices\":[{\"text\":\"t pl\"}]}\n\ndata: {\"choices\":[{\"text\":\"a\"}]}\n\ndata: {\"choices\":[{\"text\":\"ceho\"}]}\n\ndata: {\"choices\":[{\"text\":\"l\"}]}\n\ndata: {\"choices\":[{\"text\":\"ders\"}]}\n\n"
+ },
+ "legacy-completions-sse/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"text\":\"split ends here [EMAIL_3fa9\"}]}\n\n",
+  "output": "data: {\"choices\":[{\"text\":\"split ends here [EMAIL_3fa9\"}]}\n\n"
+ },
+ "legacy-completions-sse/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"text\":\"sp\"}]}\n\ndata: {\"choices\":[{\"text\":\"lit e\"}]}\n\ndata: {\"choices\":[{\"text\":\"nd\"}]}\n\ndata: {\"choices\":[{\"text\":\"s here\"}]}\n\ndata: {\"choices\":[{\"text\":\" [EM\"}]}\n\ndata: {\"choices\":[{\"text\":\"AI\"}]}\n\ndata: {\"choices\":[{\"text\":\"L_3fa\"}]}\n\ndata: {\"choices\":[{\"text\":\"9\"}]}\n\n",
+  "output": "data: {\"choices\":[{\"text\":\"sp\"}]}\n\ndata: {\"choices\":[{\"text\":\"lit e\"}]}\n\ndata: {\"choices\":[{\"text\":\"nd\"}]}\n\ndata: {\"choices\":[{\"text\":\"s here\"}]}\n\ndata: {\"choices\":[{\"text\":\" [EM\"}]}\n\ndata: {\"choices\":[{\"text\":\"AI\"}]}\n\ndata: {\"choices\":[{\"text\":\"L_3fa\"}]}\n\ndata: {\"choices\":[{\"text\":\"9\"}]}\n\n"
+ },
+ "openai-chat-json/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n",
+  "output": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n"
+ },
+ "openai-chat-json/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n",
+  "output": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n"
+ },
+ "openai-chat-json/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"plain answer without placeholders\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n",
+  "output": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"plain answer without placeholders\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n"
+ },
+ "openai-chat-json/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"plain answer without placeholders\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n",
+  "output": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"plain answer without placeholders\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n"
+ },
+ "openai-chat-json/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"split ends here [EMAIL_3fa9\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n",
+  "output": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"split ends here [EMAIL_3fa9\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n"
+ },
+ "openai-chat-json/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"split ends here [EMAIL_3fa9\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n",
+  "output": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"split ends here [EMAIL_3fa9\",\"role\":\"assistant\"}}],\"id\":\"c1\",\"object\":\"chat.completion\"}\n"
+ },
+ "openai-chat-sse-crlf/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"content\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"content\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n"
+ },
+ "openai-chat-sse-crlf/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"content\":\"Hi [E\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"M\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"IL_\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"3fa\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"91c\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"0b], \"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"al\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"l\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\" [P\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"HONE\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"_0a1\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"b2c3d\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"] a\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"bout [\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"SS\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"N\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"_d\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ea\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"dbe\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"e\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"f]; [n\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ot] o\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"n\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"e.\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"content\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n"
+ },
+ "openai-chat-sse-crlf/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"content\":\"plain answer without placeholders\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"content\":\"plain answer without placeholders\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n"
+ },
+ "openai-chat-sse-crlf/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"content\":\"plain\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\" answe\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"r\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\" \"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"withou\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"t pl\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ceho\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"l\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ders\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"content\":\"plain\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\" answe\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"r\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\" \"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"withou\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"t pl\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ceho\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"l\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ders\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n"
+ },
+ "openai-chat-sse-crlf/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"content\":\"split ends here [EMAIL_3fa9\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"content\":\"split ends here [EMAIL_3fa9\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n"
+ },
+ "openai-chat-sse-crlf/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"content\":\"sp\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"lit e\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"nd\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"s here\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\" [EM\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"AI\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"L_3fa\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"9\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"content\":\"sp\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"lit e\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"nd\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"s here\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\" [EM\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"AI\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"L_3fa\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"9\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n"
+ },
+ "openai-chat-sse-with-comments-and-usage/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n",
+  "output": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse-with-comments-and-usage/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi [E\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"M\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"IL_\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"3fa\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"91c\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"0b], \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"al\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"l\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" [P\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"HONE\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"_0a1\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"b2c3d\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"] a\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"bout [\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"SS\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"N\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"_d\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ea\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"dbe\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"e\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"f]; [n\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ot] o\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"n\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"e.\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n",
+  "output": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"}}]}\n\n: ping\n\n: ping\n\n: ping\n\n: ping\n\n: ping\n\n: ping\n\n: ping\n\n: ping\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse-with-comments-and-usage/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"plain answer without placeholders\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n",
+  "output": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"plain answer without placeholders\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse-with-comments-and-usage/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"plain\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" answe\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"r\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"withou\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"t pl\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ceho\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"l\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ders\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n",
+  "output": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"plain\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" answe\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"r\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"withou\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"t pl\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ceho\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"l\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ders\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse-with-comments-and-usage/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"split ends here [EMAIL_3fa9\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n",
+  "output": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"split ends here [EMAIL_3fa9\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse-with-comments-and-usage/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"sp\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"lit e\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"nd\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"s here\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" [EM\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"AI\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"L_3fa\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"9\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n",
+  "output": ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"sp\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"lit e\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"nd\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"s here\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" [EM\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"AI\"}}]}\n\n: ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"L_3fa\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"9\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":30,\"prompt_tokens\":12}}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi [E\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"M\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"A\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"IL_\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"3fa\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"91c\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"0b], \"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"c\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"al\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"l\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" [P\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"HONE\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"_0a1\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"b2c3d\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"] a\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"bout [\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"SS\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"N\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"_d\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ea\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"dbe\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"e\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"f]; [n\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ot] o\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"n\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"e.\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [n\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ot] o\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"n\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"e.\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"plain answer without placeholders\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"plain answer without placeholders\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"plain\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" answe\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"r\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" \"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"withou\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"t pl\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"a\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ceho\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"l\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ders\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"plain\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" answe\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"r\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" \"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"withou\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"t pl\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"a\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ceho\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"l\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ders\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"split ends here [EMAIL_3fa9\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"split ends here [EMAIL_3fa9\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n"
+ },
+ "openai-chat-sse/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"sp\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"lit e\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"nd\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"s here\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" [EM\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"AI\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"L_3fa\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"9\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n",
+  "output": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"sp\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"lit e\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"nd\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"s here\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" [EM\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"AI\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"L_3fa\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"9\"},\"index\":0}],\"id\":\"c1\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"id\":\"c1\"}\n\ndata: [DONE]\n\n"
+ },
+ "plain-text/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.",
+  "output": "Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one."
+ },
+ "plain-text/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.",
+  "output": "Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one."
+ },
+ "plain-text/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "plain answer without placeholders",
+  "output": "plain answer without placeholders"
+ },
+ "plain-text/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "plain answer without placeholders",
+  "output": "plain answer without placeholders"
+ },
+ "plain-text/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "split ends here [EMAIL_3fa9",
+  "output": "split ends here [EMAIL_3fa9"
+ },
+ "plain-text/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "split ends here [EMAIL_3fa9",
+  "output": "split ends here [EMAIL_3fa9"
+ },
+ "responses-api-sse/text0/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"Hi [EMAIL_3fa91c0b], call [PHONE_0a1b2c3d] about [SSN_deadbeef]; [not] one.\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n",
+  "output": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n"
+ },
+ "responses-api-sse/text0/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"Hi [E\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"M\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"A\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"IL_\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"3fa\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"91c\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"0b], \",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"c\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"al\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"l\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\" [P\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"HONE\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"_0a1\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"b2c3d\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"] a\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"bout [\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"SS\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"N\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"_d\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"ea\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"dbe\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"e\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"f]; [n\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"ot] o\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"n\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"e.\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n",
+  "output": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"Hi bob@example.org, call (415) 555-0199 about 123-45-6789; [not] one.\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n"
+ },
+ "responses-api-sse/text1/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"plain answer without placeholders\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n",
+  "output": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"plain answer without placeholders\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n"
+ },
+ "responses-api-sse/text1/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"plain\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\" answe\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"r\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\" \",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"withou\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"t pl\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"a\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"ceho\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"l\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"ders\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n",
+  "output": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"plain\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\" answe\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"r\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\" \",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"withou\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"t pl\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"a\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"ceho\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"l\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"ders\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n"
+ },
+ "responses-api-sse/text2/pieces0": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"split ends here [EMAIL_3fa9\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n",
+  "output": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"split ends here [EMAIL_3fa9\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n"
+ },
+ "responses-api-sse/text2/pieces2": {
+  "mapping": {
+   "(415) 555-0199": "[PHONE_0a1b2c3d]",
+   "123-45-6789": "[SSN_deadbeef]",
+   "bob@example.org": "[EMAIL_3fa91c0b]"
+  },
+  "input": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"sp\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"lit e\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"nd\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"s here\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\" [EM\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"AI\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"L_3fa\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"9\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n",
+  "output": "event: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"sp\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"lit e\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"nd\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"s here\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\" [EM\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"AI\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"L_3fa\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"content_index\":0,\"delta\":\"9\",\"item_id\":\"i1\",\"output_index\":0,\"type\":\"response.output_text.delta\"}\n\n"
+ }
+}
